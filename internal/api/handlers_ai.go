@@ -87,7 +87,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
-	s.handleJSONUpstream(w, r, "/v1/messages", s.upstream.AnthropicMessages)
+	s.handleJSONOrStreamUpstream(w, r, "/v1/messages", s.upstream.AnthropicMessages, s.upstream.StreamAnthropicMessages, true)
 }
 
 func (s *Server) handleJSONUpstream(

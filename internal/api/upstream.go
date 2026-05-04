@@ -17,6 +17,7 @@ type Upstream interface {
 	Responses(ctx context.Context, req map[string]any) (map[string]any, error)
 	StreamResponses(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error
 	AnthropicMessages(ctx context.Context, req map[string]any) (map[string]any, error)
+	StreamAnthropicMessages(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error
 	RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string)
 }
 
@@ -84,6 +85,10 @@ func (NotImplementedUpstream) StreamResponses(ctx context.Context, req map[strin
 
 func (NotImplementedUpstream) AnthropicMessages(ctx context.Context, req map[string]any) (map[string]any, error) {
 	return nil, ErrUpstreamNotImplemented
+}
+
+func (NotImplementedUpstream) StreamAnthropicMessages(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
 }
 
 func (NotImplementedUpstream) RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string) {
