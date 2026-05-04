@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -78,11 +79,11 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	s.handleJSONUpstream(w, r, "/v1/chat/completions", s.upstream.ChatCompletions)
+	s.handleJSONOrStreamUpstream(w, r, "/v1/chat/completions", s.upstream.ChatCompletions, s.upstream.StreamChatCompletions, false)
 }
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
-	s.handleJSONUpstream(w, r, "/v1/responses", s.upstream.Responses)
+	s.handleJSONOrStreamUpstream(w, r, "/v1/responses", s.upstream.Responses, s.upstream.StreamResponses, true)
 }
 
 func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +117,97 @@ func (s *Server) handleJSONUpstream(
 	}
 	s.logCall(r, identity, endpoint, model, "success", "")
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleJSONOrStreamUpstream(
+	w http.ResponseWriter,
+	r *http.Request,
+	endpoint string,
+	jsonHandler func(context.Context, map[string]any) (map[string]any, error),
+	streamHandler func(context.Context, map[string]any, func(map[string]any) error) error,
+	namedEvents bool,
+) {
+	identity, ok := s.requireIdentity(w, r)
+	if !ok {
+		return
+	}
+	var req map[string]any
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	model := stringFromAny(req["model"], "auto")
+	if !boolFromAny(req["stream"]) {
+		result, err := jsonHandler(r.Context(), req)
+		if err != nil {
+			s.logCall(r, identity, endpoint, model, "failed", err.Error())
+			s.writeUpstreamError(w, err)
+			return
+		}
+		s.logCall(r, identity, endpoint, model, "success", "")
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	if err := s.streamJSONEvents(w, r, req, streamHandler, namedEvents); err != nil {
+		s.logCall(r, identity, endpoint, model, "failed", err.Error())
+		return
+	}
+	s.logCall(r, identity, endpoint, model, "success", "")
+}
+
+func (s *Server) streamJSONEvents(
+	w http.ResponseWriter,
+	r *http.Request,
+	req map[string]any,
+	streamHandler func(context.Context, map[string]any, func(map[string]any) error) error,
+	namedEvents bool,
+) error {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming_unsupported", "streaming is not supported by this response writer")
+		return fmt.Errorf("streaming is not supported")
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	err := streamHandler(r.Context(), req, func(event map[string]any) error {
+		if namedEvents {
+			if eventType, ok := event["type"].(string); ok && eventType != "" {
+				if _, err := fmt.Fprintf(w, "event: %s\n", eventType); err != nil {
+					return err
+				}
+			}
+		}
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	})
+	if err != nil {
+		writeStreamError(w, flusher, err, namedEvents)
+		return err
+	}
+	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
+}
+
+func writeStreamError(w http.ResponseWriter, flusher http.Flusher, err error, namedEvents bool) {
+	event := map[string]any{"error": map[string]any{"message": err.Error(), "type": "upstream_error"}}
+	if namedEvents {
+		_, _ = fmt.Fprint(w, "event: error\n")
+	}
+	payload, _ := json.Marshal(event)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+	flusher.Flush()
 }
 
 func parseImageEditPayload(w http.ResponseWriter, r *http.Request) (ImageEditPayload, bool) {

@@ -13,7 +13,9 @@ type Upstream interface {
 	GenerateImage(ctx context.Context, req ImageGenerationPayload) (map[string]any, error)
 	EditImage(ctx context.Context, req ImageEditPayload) (map[string]any, error)
 	ChatCompletions(ctx context.Context, req map[string]any) (map[string]any, error)
+	StreamChatCompletions(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error
 	Responses(ctx context.Context, req map[string]any) (map[string]any, error)
+	StreamResponses(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error
 	AnthropicMessages(ctx context.Context, req map[string]any) (map[string]any, error)
 	RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string)
 }
@@ -68,8 +70,16 @@ func (NotImplementedUpstream) ChatCompletions(ctx context.Context, req map[strin
 	return nil, ErrUpstreamNotImplemented
 }
 
+func (NotImplementedUpstream) StreamChatCompletions(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
 func (NotImplementedUpstream) Responses(ctx context.Context, req map[string]any) (map[string]any, error) {
 	return nil, ErrUpstreamNotImplemented
+}
+
+func (NotImplementedUpstream) StreamResponses(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
 }
 
 func (NotImplementedUpstream) AnthropicMessages(ctx context.Context, req map[string]any) (map[string]any, error) {

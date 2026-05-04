@@ -193,9 +193,6 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 }
 
 func (u *ChatGPTUpstream) ChatCompletions(ctx context.Context, req map[string]any) (map[string]any, error) {
-	if boolFromAny(req["stream"]) {
-		return nil, fmt.Errorf("streaming chat completions are not migrated yet")
-	}
 	model := stringFromAny(req["model"], "auto")
 	messages, err := messagesFromChatRequest(req)
 	if err != nil {
@@ -218,10 +215,46 @@ func (u *ChatGPTUpstream) ChatCompletions(ctx context.Context, req map[string]an
 	return chatCompletionResponse(model, content, messages), nil
 }
 
-func (u *ChatGPTUpstream) Responses(ctx context.Context, req map[string]any) (map[string]any, error) {
-	if boolFromAny(req["stream"]) {
-		return nil, fmt.Errorf("streaming responses are not migrated yet")
+func (u *ChatGPTUpstream) StreamChatCompletions(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	model := stringFromAny(req["model"], "auto")
+	messages, err := messagesFromChatRequest(req)
+	if err != nil {
+		return err
 	}
+	account, err := u.nextTextAccount(ctx, nil)
+	if err != nil {
+		return err
+	}
+	completionID := "chatcmpl-" + auth.RandomID(12)
+	created := time.Now().Unix()
+	sentRole := false
+	err = chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).StreamText(ctx, messages, model, func(delta string) error {
+		payloadDelta := map[string]any{"content": delta}
+		if !sentRole {
+			payloadDelta["role"] = "assistant"
+			sentRole = true
+		}
+		return onEvent(chatCompletionChunk(completionID, model, created, payloadDelta, nil))
+	})
+	if err != nil {
+		if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
+			status := "异常"
+			quota := 0
+			_, _ = u.store.UpdateAccount(ctx, account.AccessToken, storage.AccountUpdate{Status: &status, Quota: &quota})
+		}
+		return err
+	}
+	_ = u.store.MarkAccountUsed(ctx, account.AccessToken)
+	if !sentRole {
+		if err := onEvent(chatCompletionChunk(completionID, model, created, map[string]any{"role": "assistant", "content": ""}, nil)); err != nil {
+			return err
+		}
+	}
+	stop := "stop"
+	return onEvent(chatCompletionChunk(completionID, model, created, map[string]any{}, &stop))
+}
+
+func (u *ChatGPTUpstream) Responses(ctx context.Context, req map[string]any) (map[string]any, error) {
 	model := stringFromAny(req["model"], "auto")
 	messages := messagesFromResponseRequest(req)
 	if len(messages) == 0 {
@@ -242,6 +275,70 @@ func (u *ChatGPTUpstream) Responses(ctx context.Context, req map[string]any) (ma
 	}
 	_ = u.store.MarkAccountUsed(ctx, account.AccessToken)
 	return responseCreateResponse(model, content), nil
+}
+
+func (u *ChatGPTUpstream) StreamResponses(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	model := stringFromAny(req["model"], "auto")
+	messages := messagesFromResponseRequest(req)
+	if len(messages) == 0 {
+		return fmt.Errorf("input is required")
+	}
+	account, err := u.nextTextAccount(ctx, nil)
+	if err != nil {
+		return err
+	}
+	responseID := "resp_" + auth.RandomID(12)
+	itemID := "msg_" + auth.RandomID(12)
+	created := time.Now().Unix()
+	fullText := strings.Builder{}
+	if err := onEvent(responseCreatedEvent(responseID, model, created)); err != nil {
+		return err
+	}
+	if err := onEvent(map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item":         responseTextItem(itemID, "", "in_progress"),
+	}); err != nil {
+		return err
+	}
+	err = chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).StreamText(ctx, messages, model, func(delta string) error {
+		fullText.WriteString(delta)
+		return onEvent(map[string]any{
+			"type":          "response.output_text.delta",
+			"item_id":       itemID,
+			"output_index":  0,
+			"content_index": 0,
+			"delta":         delta,
+		})
+	})
+	if err != nil {
+		if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
+			status := "异常"
+			quota := 0
+			_, _ = u.store.UpdateAccount(ctx, account.AccessToken, storage.AccountUpdate{Status: &status, Quota: &quota})
+		}
+		return err
+	}
+	_ = u.store.MarkAccountUsed(ctx, account.AccessToken)
+	text := fullText.String()
+	if err := onEvent(map[string]any{
+		"type":          "response.output_text.done",
+		"item_id":       itemID,
+		"output_index":  0,
+		"content_index": 0,
+		"text":          text,
+	}); err != nil {
+		return err
+	}
+	item := responseTextItem(itemID, text, "completed")
+	if err := onEvent(map[string]any{
+		"type":         "response.output_item.done",
+		"output_index": 0,
+		"item":         item,
+	}); err != nil {
+		return err
+	}
+	return onEvent(responseCompletedEvent(responseID, model, created, []map[string]any{item}))
 }
 
 func (u *ChatGPTUpstream) AnthropicMessages(ctx context.Context, req map[string]any) (map[string]any, error) {
@@ -497,6 +594,24 @@ func chatCompletionResponse(model string, content string, messages []chatgpt.Mes
 	}
 }
 
+func chatCompletionChunk(id string, model string, created int64, delta map[string]any, finishReason *string) map[string]any {
+	var finish any
+	if finishReason != nil {
+		finish = *finishReason
+	}
+	return map[string]any{
+		"id":      id,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         delta,
+			"finish_reason": finish,
+		}},
+	}
+}
+
 func responseCreateResponse(model string, content string) map[string]any {
 	return map[string]any{
 		"id":      "resp_" + auth.RandomID(12),
@@ -512,6 +627,54 @@ func responseCreateResponse(model string, content string) map[string]any {
 			}},
 		}},
 		"output_text": content,
+	}
+}
+
+func responseCreatedEvent(id string, model string, created int64) map[string]any {
+	return map[string]any{
+		"type": "response.created",
+		"response": map[string]any{
+			"id":                  id,
+			"object":              "response",
+			"created_at":          created,
+			"status":              "in_progress",
+			"error":               nil,
+			"incomplete_details":  nil,
+			"model":               model,
+			"output":              []any{},
+			"parallel_tool_calls": false,
+		},
+	}
+}
+
+func responseCompletedEvent(id string, model string, created int64, output []map[string]any) map[string]any {
+	return map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":                  id,
+			"object":              "response",
+			"created_at":          created,
+			"status":              "completed",
+			"error":               nil,
+			"incomplete_details":  nil,
+			"model":               model,
+			"output":              output,
+			"parallel_tool_calls": false,
+		},
+	}
+}
+
+func responseTextItem(id string, text string, status string) map[string]any {
+	return map[string]any{
+		"id":     id,
+		"type":   "message",
+		"status": status,
+		"role":   "assistant",
+		"content": []map[string]any{{
+			"type":        "output_text",
+			"text":        text,
+			"annotations": []any{},
+		}},
 	}
 }
 
