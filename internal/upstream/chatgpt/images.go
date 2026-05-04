@@ -8,13 +8,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
+	stdhttp "net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
+
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 )
 
 type ImageRequest struct {
@@ -23,6 +30,13 @@ type ImageRequest struct {
 	Size           string
 	ResponseFormat string
 	PollTimeout    time.Duration
+	Images         []ImageInput
+}
+
+type ImageInput struct {
+	Name        string
+	ContentType string
+	Data        []byte
 }
 
 type ImageResult struct {
@@ -42,8 +56,27 @@ type conversationState struct {
 }
 
 func (c *Client) GenerateImage(ctx context.Context, request ImageRequest) ([]ImageResult, error) {
+	return c.runImage(ctx, request, nil)
+}
+
+func (c *Client) EditImage(ctx context.Context, request ImageRequest) ([]ImageResult, error) {
+	if len(request.Images) == 0 {
+		return nil, errors.New("image is required")
+	}
+	references := make([]uploadedImage, 0, len(request.Images))
+	for index, input := range request.Images {
+		reference, err := c.uploadImage(ctx, input, index+1)
+		if err != nil {
+			return nil, err
+		}
+		references = append(references, reference)
+	}
+	return c.runImage(ctx, request, references)
+}
+
+func (c *Client) runImage(ctx context.Context, request ImageRequest, references []uploadedImage) ([]ImageResult, error) {
 	if c.accessToken == "" {
-		return nil, errors.New("access token is required for image generation")
+		return nil, errors.New("access token is required for image endpoints")
 	}
 	request.Prompt = strings.TrimSpace(request.Prompt)
 	if request.Prompt == "" {
@@ -70,7 +103,7 @@ func (c *Client) GenerateImage(ctx context.Context, request ImageRequest) ([]Ima
 	if err != nil {
 		return nil, err
 	}
-	state, err := c.startImageConversation(ctx, prompt, requirements, conduitToken, request.Model)
+	state, err := c.startImageConversation(ctx, prompt, requirements, conduitToken, request.Model, references)
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +144,129 @@ func (c *Client) GenerateImage(ctx context.Context, request ImageRequest) ([]Ima
 	return results, nil
 }
 
+type uploadedImage struct {
+	FileID   string
+	FileName string
+	FileSize int
+	MIMEType string
+	Width    int
+	Height   int
+}
+
+func (c *Client) uploadImage(ctx context.Context, input ImageInput, index int) (uploadedImage, error) {
+	if len(input.Data) == 0 {
+		return uploadedImage{}, errors.New("image data is empty")
+	}
+	mimeType, width, height, ext, err := detectImageMetadata(input.Data, input.ContentType)
+	if err != nil {
+		return uploadedImage{}, err
+	}
+	fileName := cleanImageFileName(input.Name, index, ext)
+	path := "/backend-api/files"
+	data, err := c.postJSON(ctx, path, map[string]any{
+		"file_name": fileName,
+		"file_size": len(input.Data),
+		"use_case":  "multimodal",
+		"width":     width,
+		"height":    height,
+	}, map[string]string{"Accept": "application/json"})
+	if err != nil {
+		return uploadedImage{}, err
+	}
+	fileID := stringValue(data["file_id"], "")
+	uploadURL := stringValue(data["upload_url"], "")
+	if fileID == "" || uploadURL == "" {
+		return uploadedImage{}, errors.New("missing image upload metadata")
+	}
+	time.Sleep(500 * time.Millisecond)
+	if err := c.putUpload(ctx, uploadURL, mimeType, input.Data); err != nil {
+		return uploadedImage{}, err
+	}
+	if _, err := c.postJSON(ctx, "/backend-api/files/"+fileID+"/uploaded", map[string]any{}, map[string]string{
+		"Accept":       "application/json",
+		"Content-Type": "application/json",
+	}); err != nil {
+		return uploadedImage{}, err
+	}
+	return uploadedImage{
+		FileID:   fileID,
+		FileName: fileName,
+		FileSize: len(input.Data),
+		MIMEType: mimeType,
+		Width:    width,
+		Height:   height,
+	}, nil
+}
+
+func detectImageMetadata(data []byte, providedType string) (string, int, int, string, error) {
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return "", 0, 0, "", fmt.Errorf("unsupported image format: %w", err)
+	}
+	mimeType := strings.TrimSpace(providedType)
+	if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		mimeType = ""
+	}
+	ext := format
+	switch format {
+	case "jpeg":
+		if mimeType == "" {
+			mimeType = "image/jpeg"
+		}
+		ext = "jpg"
+	case "png":
+		if mimeType == "" {
+			mimeType = "image/png"
+		}
+	case "gif":
+		if mimeType == "" {
+			mimeType = "image/gif"
+		}
+	default:
+		if mimeType == "" {
+			mimeType = stdhttp.DetectContentType(data)
+		}
+	}
+	return mimeType, config.Width, config.Height, ext, nil
+}
+
+func cleanImageFileName(name string, index int, ext string) string {
+	name = strings.TrimSpace(filepath.Base(name))
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		name = fmt.Sprintf("image_%d.%s", index, ext)
+	}
+	if filepath.Ext(name) == "" && ext != "" {
+		name += "." + ext
+	}
+	return name
+}
+
+func (c *Client) putUpload(ctx context.Context, uploadURL string, mimeType string, data []byte) error {
+	req, err := fhttp.NewRequestWithContext(ctx, fhttp.MethodPut, uploadURL, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", mimeType)
+	req.Header.Set("x-ms-blob-type", "BlockBlob")
+	req.Header.Set("x-ms-version", "2020-04-08")
+	req.Header.Set("Origin", c.baseURL)
+	req.Header.Set("Referer", c.baseURL+"/")
+	req.Header.Set("User-Agent", c.userAgent)
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.8")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("image upload failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+	}
+	io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
 func (c *Client) prepareImageConversation(ctx context.Context, prompt string, requirements ChatRequirements, model string) (string, error) {
 	path := "/backend-api/f/conversation/prepare"
 	payload := map[string]any{
@@ -144,22 +300,17 @@ func (c *Client) prepareImageConversation(ctx context.Context, prompt string, re
 	return token, nil
 }
 
-func (c *Client) startImageConversation(ctx context.Context, prompt string, requirements ChatRequirements, conduitToken string, model string) (conversationState, error) {
+func (c *Client) startImageConversation(ctx context.Context, prompt string, requirements ChatRequirements, conduitToken string, model string, references []uploadedImage) (conversationState, error) {
 	path := "/backend-api/f/conversation"
+	content, metadata := imageConversationContent(prompt, references)
 	payload := map[string]any{
 		"action": "next",
 		"messages": []map[string]any{{
 			"id":          newUUID(),
 			"author":      map[string]any{"role": "user"},
-			"create_time": time.Now().UnixMilli(),
-			"content":     map[string]any{"content_type": "text", "parts": []string{prompt}},
-			"metadata": map[string]any{
-				"developer_mode_connector_ids": []any{},
-				"selected_github_repos":        []any{},
-				"selected_all_github_repos":    false,
-				"system_hints":                 []string{"picture_v2"},
-				"serialization_metadata":       map[string]any{"custom_symbol_offsets": []any{}},
-			},
+			"create_time": float64(time.Now().UnixMilli()) / 1000,
+			"content":     content,
+			"metadata":    metadata,
 		}},
 		"parent_message_id":        newUUID(),
 		"model":                    imageModelSlug(model),
@@ -208,6 +359,41 @@ func (c *Client) startImageConversation(ctx context.Context, prompt string, requ
 		return conversationState{}, fmt.Errorf("%s failed: HTTP %d %s", path, resp.StatusCode, strings.TrimSpace(string(payload)))
 	}
 	return parseImageSSE(resp.Body)
+}
+
+func imageConversationContent(prompt string, references []uploadedImage) (map[string]any, map[string]any) {
+	metadata := map[string]any{
+		"developer_mode_connector_ids": []any{},
+		"selected_github_repos":        []any{},
+		"selected_all_github_repos":    false,
+		"system_hints":                 []string{"picture_v2"},
+		"serialization_metadata":       map[string]any{"custom_symbol_offsets": []any{}},
+	}
+	if len(references) == 0 {
+		return map[string]any{"content_type": "text", "parts": []string{prompt}}, metadata
+	}
+	parts := make([]any, 0, len(references)+1)
+	attachments := make([]map[string]any, 0, len(references))
+	for _, reference := range references {
+		parts = append(parts, map[string]any{
+			"content_type":  "image_asset_pointer",
+			"asset_pointer": "file-service://" + reference.FileID,
+			"width":         reference.Width,
+			"height":        reference.Height,
+			"size_bytes":    reference.FileSize,
+		})
+		attachments = append(attachments, map[string]any{
+			"id":       reference.FileID,
+			"mimeType": reference.MIMEType,
+			"name":     reference.FileName,
+			"size":     reference.FileSize,
+			"width":    reference.Width,
+			"height":   reference.Height,
+		})
+	}
+	parts = append(parts, prompt)
+	metadata["attachments"] = attachments
+	return map[string]any{"content_type": "multimodal_text", "parts": parts}, metadata
 }
 
 func (c *Client) postImageJSON(ctx context.Context, path string, payload any, requirements ChatRequirements, conduitToken string, accept string) (map[string]any, error) {
@@ -468,12 +654,21 @@ func imageModelSlug(model string) string {
 }
 
 var (
-	fileIDPattern     = regexp.MustCompile(`file[-_][A-Za-z0-9_-]+`)
-	sedimentIDPattern = regexp.MustCompile(`sediment://([A-Za-z0-9_-]+)`)
+	fileServicePattern = regexp.MustCompile(`file-service://([A-Za-z0-9_-]+)`)
+	fileIDPattern      = regexp.MustCompile(`file[-_][A-Za-z0-9_-]+`)
+	sedimentIDPattern  = regexp.MustCompile(`sediment://([A-Za-z0-9_-]+)`)
 )
 
 func addImageIDs(text string, fileIDs *[]string, sedimentIDs *[]string) {
+	for _, match := range fileServicePattern.FindAllStringSubmatch(text, -1) {
+		if len(match) == 2 {
+			addUnique(fileIDs, match[1])
+		}
+	}
 	for _, fileID := range fileIDPattern.FindAllString(text, -1) {
+		if fileID == "file-service" {
+			continue
+		}
 		addUnique(fileIDs, fileID)
 	}
 	for _, match := range sedimentIDPattern.FindAllStringSubmatch(text, -1) {

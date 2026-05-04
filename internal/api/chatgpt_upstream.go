@@ -120,7 +120,76 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 }
 
 func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (map[string]any, error) {
-	return nil, ErrUpstreamNotImplemented
+	if req.N < 1 {
+		req.N = 1
+	}
+	if req.N > 4 {
+		return nil, fmt.Errorf("n must be between 1 and 4")
+	}
+	if len(req.Images) == 0 {
+		return nil, fmt.Errorf("image is required")
+	}
+	results := make([]map[string]any, 0, req.N)
+	attempted := make(map[string]struct{})
+	inputs := make([]chatgpt.ImageInput, 0, len(req.Images))
+	for _, image := range req.Images {
+		inputs = append(inputs, chatgpt.ImageInput{
+			Name:        image.Name,
+			ContentType: image.ContentType,
+			Data:        image.Data,
+		})
+	}
+	for index := 0; index < req.N; index++ {
+		account, release, err := u.pool.AcquireImage(ctx, attempted)
+		if err != nil {
+			if len(results) > 0 {
+				break
+			}
+			return nil, err
+		}
+		imageResults, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).EditImage(ctx, chatgpt.ImageRequest{
+			Prompt:         req.Prompt,
+			Model:          req.Model,
+			Size:           req.Size,
+			ResponseFormat: req.ResponseFormat,
+			PollTimeout:    120 * time.Second,
+			Images:         inputs,
+		})
+		release()
+		if err != nil {
+			attempted[account.AccessToken] = struct{}{}
+			u.markImageResult(ctx, account.AccessToken, false)
+			if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
+				status := "异常"
+				quota := 0
+				_, _ = u.store.UpdateAccount(ctx, account.AccessToken, storage.AccountUpdate{Status: &status, Quota: &quota})
+				index--
+				continue
+			}
+			if len(results) > 0 {
+				break
+			}
+			return nil, err
+		}
+		u.markImageResult(ctx, account.AccessToken, true)
+		for _, item := range imageResults {
+			result := map[string]any{"revised_prompt": item.RevisedPrompt}
+			if item.B64JSON != "" {
+				result["b64_json"] = item.B64JSON
+			}
+			if item.URL != "" {
+				result["url"] = item.URL
+			}
+			results = append(results, result)
+			if len(results) >= req.N {
+				break
+			}
+		}
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("image edit returned no image")
+	}
+	return map[string]any{"created": time.Now().Unix(), "data": results}, nil
 }
 
 func (u *ChatGPTUpstream) ChatCompletions(ctx context.Context, req map[string]any) (map[string]any, error) {
