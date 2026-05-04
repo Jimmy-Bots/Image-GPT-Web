@@ -14,18 +14,16 @@ This version intentionally removes the old register/register-machine module. The
 - User API key management, including compatibility endpoints at `/api/auth/users`.
 - Account pool CRUD endpoints.
 - Settings, logs, storage info, and health endpoints.
-- OpenAI-compatible model, image generation, chat completions, and responses routes.
-- Async image task queue with bounded workers for generation tasks.
+- OpenAI-compatible model, image generation/edit, chat completions, and responses routes.
+- Async image task queue with bounded workers for generation and edit tasks.
 - Outbound proxy support through `CHATGPT2API_PROXY_URL`.
 
 The ChatGPT Web reverse adapter is isolated in `internal/upstream/chatgpt` and uses a browser-like TLS client for endpoints that are sensitive to standard Go HTTP fingerprints.
 
 Still intentionally left as follow-up work:
 
-- `/v1/images/edits`
 - `/v1/messages`
 - Streaming responses for `/v1/chat/completions` and `/v1/responses`
-- Image edit async tasks
 
 ## Storage Choice
 
@@ -75,8 +73,7 @@ Use `Authorization: Bearer <token>` for all protected endpoints. The token can b
 
 ## Migration Plan
 
-1. Migrate image editing, including multipart upload and reference-image metadata.
-2. Add streaming output for chat completions and responses.
-3. Implement Anthropic `/v1/messages` compatibility on top of the text adapter.
-4. Point the existing Next frontend at this backend and remove all register pages/routes.
-5. Add optional PostgreSQL storage if multi-instance deployment becomes necessary.
+1. Add streaming output for chat completions and responses.
+2. Implement Anthropic `/v1/messages` compatibility on top of the text adapter.
+3. Point the existing Next frontend at this backend and remove all register pages/routes.
+4. Add optional PostgreSQL storage if multi-instance deployment becomes necessary.
