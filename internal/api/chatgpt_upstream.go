@@ -342,7 +342,83 @@ func (u *ChatGPTUpstream) StreamResponses(ctx context.Context, req map[string]an
 }
 
 func (u *ChatGPTUpstream) AnthropicMessages(ctx context.Context, req map[string]any) (map[string]any, error) {
-	return nil, ErrUpstreamNotImplemented
+	model := stringFromAny(req["model"], "auto")
+	messages := messagesFromAnthropicRequest(req)
+	if len(messages) == 0 {
+		return nil, fmt.Errorf("messages are required")
+	}
+	account, err := u.nextTextAccount(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	content, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).CollectText(ctx, messages, model)
+	if err != nil {
+		if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
+			status := "异常"
+			quota := 0
+			_, _ = u.store.UpdateAccount(ctx, account.AccessToken, storage.AccountUpdate{Status: &status, Quota: &quota})
+		}
+		return nil, err
+	}
+	_ = u.store.MarkAccountUsed(ctx, account.AccessToken)
+	return anthropicMessageResponse(model, content, messages), nil
+}
+
+func (u *ChatGPTUpstream) StreamAnthropicMessages(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	model := stringFromAny(req["model"], "auto")
+	messages := messagesFromAnthropicRequest(req)
+	if len(messages) == 0 {
+		return fmt.Errorf("messages are required")
+	}
+	account, err := u.nextTextAccount(ctx, nil)
+	if err != nil {
+		return err
+	}
+	messageID := "msg_" + auth.RandomID(12)
+	inputTokens := messageTokenCount(messages)
+	outputText := strings.Builder{}
+	if err := onEvent(map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id":            messageID,
+			"type":          "message",
+			"role":          "assistant",
+			"model":         model,
+			"content":       []any{},
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage":         map[string]any{"input_tokens": inputTokens, "output_tokens": 0},
+		},
+	}); err != nil {
+		return err
+	}
+	if err := onEvent(map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "text", "text": ""}}); err != nil {
+		return err
+	}
+	err = chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).StreamText(ctx, messages, model, func(delta string) error {
+		outputText.WriteString(delta)
+		return onEvent(map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": delta}})
+	})
+	if err != nil {
+		if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
+			status := "异常"
+			quota := 0
+			_, _ = u.store.UpdateAccount(ctx, account.AccessToken, storage.AccountUpdate{Status: &status, Quota: &quota})
+		}
+		return err
+	}
+	_ = u.store.MarkAccountUsed(ctx, account.AccessToken)
+	if err := onEvent(map[string]any{"type": "content_block_stop", "index": 0}); err != nil {
+		return err
+	}
+	if err := onEvent(map[string]any{
+		"type":  "message_delta",
+		"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
+		"usage": map[string]any{"output_tokens": roughTokenCount(outputText.String())},
+	}); err != nil {
+		return err
+	}
+	return onEvent(map[string]any{"type": "message_stop"})
 }
 
 func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string) {
@@ -545,6 +621,30 @@ func messagesFromResponseRequest(req map[string]any) []chatgpt.Message {
 	return messages
 }
 
+func messagesFromAnthropicRequest(req map[string]any) []chatgpt.Message {
+	messages := make([]chatgpt.Message, 0)
+	if system := textFromAnthropicContent(req["system"]); system != "" {
+		messages = append(messages, chatgpt.Message{Role: "system", Content: system})
+	}
+	rawMessages, _ := req["messages"].([]any)
+	for _, raw := range rawMessages {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		content := textFromAnthropicContent(item["content"])
+		if content == "" {
+			continue
+		}
+		role := stringFromAny(item["role"], "user")
+		if role != "assistant" && role != "system" {
+			role = "user"
+		}
+		messages = append(messages, chatgpt.Message{Role: role, Content: content})
+	}
+	return messages
+}
+
 func textFromContent(content any) string {
 	switch typed := content.(type) {
 	case string:
@@ -570,6 +670,46 @@ func textFromContent(content any) string {
 	}
 }
 
+func textFromAnthropicContent(content any) string {
+	switch typed := content.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, raw := range typed {
+			switch item := raw.(type) {
+			case string:
+				parts = append(parts, item)
+			case map[string]any:
+				blockType := stringFromAny(item["type"], "")
+				switch blockType {
+				case "text":
+					parts = append(parts, stringFromAny(item["text"], ""))
+				case "tool_use":
+					parts = append(parts, anthropicToolUseText(item))
+				case "tool_result":
+					parts = append(parts, "Tool result "+stringFromAny(item["tool_use_id"], "")+": "+textFromAnthropicContent(item["content"]))
+				}
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, "\n"))
+	case map[string]any:
+		if text := stringFromAny(typed["text"], ""); text != "" {
+			return text
+		}
+		return textFromAnthropicContent(typed["content"])
+	default:
+		return ""
+	}
+}
+
+func anthropicToolUseText(item map[string]any) string {
+	name := stringFromAny(item["name"], "")
+	input := item["input"]
+	payload, _ := json.Marshal(input)
+	return "<tool_calls><tool_call><tool_name>" + name + "</tool_name><parameters>" + string(payload) + "</parameters></tool_call></tool_calls>"
+}
+
 func chatCompletionResponse(model string, content string, messages []chatgpt.Message) map[string]any {
 	promptTokens := 0
 	for _, message := range messages {
@@ -592,6 +732,30 @@ func chatCompletionResponse(model string, content string, messages []chatgpt.Mes
 			"total_tokens":      promptTokens + completionTokens,
 		},
 	}
+}
+
+func anthropicMessageResponse(model string, content string, messages []chatgpt.Message) map[string]any {
+	return map[string]any{
+		"id":            "msg_" + auth.RandomID(12),
+		"type":          "message",
+		"role":          "assistant",
+		"model":         model,
+		"content":       []map[string]any{{"type": "text", "text": content}},
+		"stop_reason":   "end_turn",
+		"stop_sequence": nil,
+		"usage": map[string]any{
+			"input_tokens":  messageTokenCount(messages),
+			"output_tokens": roughTokenCount(content),
+		},
+	}
+}
+
+func messageTokenCount(messages []chatgpt.Message) int {
+	total := 0
+	for _, message := range messages {
+		total += roughTokenCount(message.Content)
+	}
+	return total
 }
 
 func chatCompletionChunk(id string, model string, created int64, delta map[string]any, finishReason *string) map[string]any {

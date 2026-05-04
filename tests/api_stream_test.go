@@ -50,6 +50,44 @@ func TestResponsesStreamsNamedEvents(t *testing.T) {
 	}
 }
 
+func TestAnthropicMessagesReturnsJSON(t *testing.T) {
+	server, cleanup := newTestServer(t, fakeStreamUpstream{})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer dev-key")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"message"`) || !strings.Contains(body, `"text":"hello"`) {
+		t.Fatalf("unexpected anthropic body: %s", body)
+	}
+}
+
+func TestAnthropicMessagesStreamsNamedEvents(t *testing.T) {
+	server, cleanup := newTestServer(t, fakeStreamUpstream{})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"auto","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer dev-key")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: message_start") || !strings.Contains(body, "event: content_block_delta") || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("unexpected anthropic stream body: %s", body)
+	}
+}
+
 func newTestServer(t *testing.T, upstream api.Upstream) (*api.Server, func()) {
 	t.Helper()
 	store, err := storage.Open(context.Background(), t.TempDir()+"/app.db", 1)
@@ -129,7 +167,26 @@ func (fakeStreamUpstream) StreamResponses(ctx context.Context, req map[string]an
 }
 
 func (fakeStreamUpstream) AnthropicMessages(ctx context.Context, req map[string]any) (map[string]any, error) {
-	return nil, api.ErrUpstreamNotImplemented
+	return map[string]any{
+		"id":            "msg_test",
+		"type":          "message",
+		"role":          "assistant",
+		"model":         "auto",
+		"content":       []map[string]any{{"type": "text", "text": "hello"}},
+		"stop_reason":   "end_turn",
+		"stop_sequence": nil,
+		"usage":         map[string]any{"input_tokens": 1, "output_tokens": 1},
+	}, nil
+}
+
+func (fakeStreamUpstream) StreamAnthropicMessages(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	if err := onEvent(map[string]any{"type": "message_start", "message": map[string]any{"id": "msg_test"}}); err != nil {
+		return err
+	}
+	if err := onEvent(map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": "hello"}}); err != nil {
+		return err
+	}
+	return onEvent(map[string]any{"type": "message_stop"})
 }
 
 func (fakeStreamUpstream) RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string) {
