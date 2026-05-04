@@ -1,0 +1,20 @@
+# Local data and secrets
+data/
+.env
+.env.local
+config.json
+test
+
+# Build outputs
+bin/
+dist/
+coverage.out
+
+# Go
+*.test
+
+# SQLite
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
