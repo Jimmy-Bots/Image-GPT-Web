@@ -1,0 +1,504 @@
+package chatgpt
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+
+	fhttp "github.com/bogdanfinn/fhttp"
+)
+
+type ImageRequest struct {
+	Prompt         string
+	Model          string
+	Size           string
+	ResponseFormat string
+	PollTimeout    time.Duration
+}
+
+type ImageResult struct {
+	B64JSON       string `json:"b64_json,omitempty"`
+	URL           string `json:"url,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
+}
+
+type conversationState struct {
+	Text         string
+	Conversation string
+	FileIDs      []string
+	SedimentIDs  []string
+	Blocked      bool
+	ToolInvoked  *bool
+	TurnUseCase  string
+}
+
+func (c *Client) GenerateImage(ctx context.Context, request ImageRequest) ([]ImageResult, error) {
+	if c.accessToken == "" {
+		return nil, errors.New("access token is required for image generation")
+	}
+	request.Prompt = strings.TrimSpace(request.Prompt)
+	if request.Prompt == "" {
+		return nil, errors.New("prompt is required")
+	}
+	if request.Model == "" {
+		request.Model = "gpt-image-2"
+	}
+	if request.ResponseFormat == "" {
+		request.ResponseFormat = "b64_json"
+	}
+	if request.PollTimeout <= 0 {
+		request.PollTimeout = 120 * time.Second
+	}
+	if err := c.bootstrap(ctx); err != nil {
+		return nil, err
+	}
+	requirements, err := c.chatRequirements(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prompt := buildImagePrompt(request.Prompt, request.Size)
+	conduitToken, err := c.prepareImageConversation(ctx, prompt, requirements, request.Model)
+	if err != nil {
+		return nil, err
+	}
+	state, err := c.startImageConversation(ctx, prompt, requirements, conduitToken, request.Model)
+	if err != nil {
+		return nil, err
+	}
+	if state.Text != "" && len(state.FileIDs) == 0 && len(state.SedimentIDs) == 0 {
+		isText := state.ToolInvoked != nil && !*state.ToolInvoked || state.TurnUseCase == "text"
+		if state.Blocked || isText {
+			return nil, errors.New(state.Text)
+		}
+	}
+	fileIDs, sedimentIDs := state.FileIDs, state.SedimentIDs
+	if state.Conversation != "" && len(fileIDs) == 0 && len(sedimentIDs) == 0 {
+		fileIDs, sedimentIDs = c.pollImageResults(ctx, state.Conversation, request.PollTimeout)
+	}
+	urls, err := c.resolveImageURLs(ctx, state.Conversation, fileIDs, sedimentIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(urls) == 0 {
+		if state.Text != "" {
+			return nil, errors.New(state.Text)
+		}
+		return nil, errors.New("image generation returned no image")
+	}
+	results := make([]ImageResult, 0, len(urls))
+	for _, imageURL := range urls {
+		result := ImageResult{RevisedPrompt: request.Prompt}
+		if request.ResponseFormat == "url" {
+			result.URL = imageURL
+		} else {
+			data, err := c.downloadBytes(ctx, imageURL)
+			if err != nil {
+				return nil, err
+			}
+			result.B64JSON = base64.StdEncoding.EncodeToString(data)
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (c *Client) prepareImageConversation(ctx context.Context, prompt string, requirements ChatRequirements, model string) (string, error) {
+	path := "/backend-api/f/conversation/prepare"
+	payload := map[string]any{
+		"action":                "next",
+		"fork_from_shared_post": false,
+		"parent_message_id":     newUUID(),
+		"model":                 imageModelSlug(model),
+		"client_prepare_state":  "success",
+		"timezone_offset_min":   -480,
+		"timezone":              "Asia/Shanghai",
+		"conversation_mode":     map[string]any{"kind": "primary_assistant"},
+		"system_hints":          []string{"picture_v2"},
+		"partial_query": map[string]any{
+			"id":      newUUID(),
+			"author":  map[string]any{"role": "user"},
+			"content": map[string]any{"content_type": "text", "parts": []string{prompt}},
+		},
+		"supports_buffering":       true,
+		"supported_encodings":      []string{"v1"},
+		"client_contextual_info":   map[string]any{"app_name": "chatgpt.com"},
+		"paragen_cot_summary_mode": "allow",
+	}
+	data, err := c.postImageJSON(ctx, path, payload, requirements, "", "*/*")
+	if err != nil {
+		return "", err
+	}
+	token := stringValue(data["conduit_token"], "")
+	if token == "" {
+		return "", errors.New("missing conduit token")
+	}
+	return token, nil
+}
+
+func (c *Client) startImageConversation(ctx context.Context, prompt string, requirements ChatRequirements, conduitToken string, model string) (conversationState, error) {
+	path := "/backend-api/f/conversation"
+	payload := map[string]any{
+		"action": "next",
+		"messages": []map[string]any{{
+			"id":          newUUID(),
+			"author":      map[string]any{"role": "user"},
+			"create_time": time.Now().UnixMilli(),
+			"content":     map[string]any{"content_type": "text", "parts": []string{prompt}},
+			"metadata": map[string]any{
+				"developer_mode_connector_ids": []any{},
+				"selected_github_repos":        []any{},
+				"selected_all_github_repos":    false,
+				"system_hints":                 []string{"picture_v2"},
+				"serialization_metadata":       map[string]any{"custom_symbol_offsets": []any{}},
+			},
+		}},
+		"parent_message_id":        newUUID(),
+		"model":                    imageModelSlug(model),
+		"client_prepare_state":     "sent",
+		"timezone_offset_min":      -480,
+		"timezone":                 "Asia/Shanghai",
+		"conversation_mode":        map[string]any{"kind": "primary_assistant"},
+		"enable_message_followups": true,
+		"system_hints":             []string{"picture_v2"},
+		"supports_buffering":       true,
+		"supported_encodings":      []string{"v1"},
+		"client_contextual_info": map[string]any{
+			"is_dark_mode":       false,
+			"time_since_loaded":  1200,
+			"page_height":        1072,
+			"page_width":         1724,
+			"pixel_ratio":        1.2,
+			"screen_height":      1440,
+			"screen_width":       2560,
+			"app_name":           "chatgpt.com",
+			"supports_buffering": true,
+		},
+		"paragen_cot_summary_display_override": "allow",
+		"force_parallel_switch":                "auto",
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return conversationState{}, err
+	}
+	req, err := fhttp.NewRequestWithContext(ctx, fhttp.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return conversationState{}, err
+	}
+	c.applyImageHeaders(req, path, requirements, conduitToken, "text/event-stream")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return conversationState{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == fhttp.StatusUnauthorized {
+		io.Copy(io.Discard, resp.Body)
+		return conversationState{}, ErrInvalidAccessToken
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return conversationState{}, fmt.Errorf("%s failed: HTTP %d %s", path, resp.StatusCode, strings.TrimSpace(string(payload)))
+	}
+	return parseImageSSE(resp.Body)
+}
+
+func (c *Client) postImageJSON(ctx context.Context, path string, payload any, requirements ChatRequirements, conduitToken string, accept string) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	req, err := fhttp.NewRequestWithContext(ctx, fhttp.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	c.applyImageHeaders(req, path, requirements, conduitToken, accept)
+	return c.doJSON(req)
+}
+
+func (c *Client) applyImageHeaders(req *fhttp.Request, path string, requirements ChatRequirements, conduitToken string, accept string) {
+	if accept == "" {
+		accept = "*/*"
+	}
+	headers := map[string]string{
+		"Accept":       accept,
+		"Content-Type": "application/json",
+		"OpenAI-Sentinel-Chat-Requirements-Token": requirements.Token,
+	}
+	if requirements.ProofToken != "" {
+		headers["OpenAI-Sentinel-Proof-Token"] = requirements.ProofToken
+	}
+	if conduitToken != "" {
+		headers["X-Conduit-Token"] = conduitToken
+	}
+	if accept == "text/event-stream" {
+		headers["X-Oai-Turn-Trace-Id"] = newUUID()
+	}
+	c.applyHeaders(req, path, headers)
+}
+
+func parseImageSSE(reader io.Reader) (conversationState, error) {
+	state := conversationState{}
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	currentText := ""
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			return state, nil
+		}
+		updateImageState(&state, payload)
+		nextText, ok := assistantTextFromPayload(payload, currentText)
+		if !ok || nextText == currentText {
+			continue
+		}
+		currentText = nextText
+		state.Text = nextText
+	}
+	return state, scanner.Err()
+}
+
+func updateImageState(state *conversationState, payload string) {
+	addImageIDs(payload, &state.FileIDs, &state.SedimentIDs)
+	var event map[string]any
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return
+	}
+	if state.Conversation == "" {
+		state.Conversation = stringValue(event["conversation_id"], "")
+	}
+	if value, ok := event["v"].(map[string]any); ok && state.Conversation == "" {
+		state.Conversation = stringValue(value["conversation_id"], "")
+	}
+	if eventType := stringValue(event["type"], ""); eventType == "moderation" {
+		if moderation, ok := event["moderation_response"].(map[string]any); ok && boolValue(moderation["blocked"]) {
+			state.Blocked = true
+		}
+	}
+	if eventType := stringValue(event["type"], ""); eventType == "server_ste_metadata" {
+		if metadata, ok := event["metadata"].(map[string]any); ok {
+			if value, ok := metadata["tool_invoked"].(bool); ok {
+				state.ToolInvoked = &value
+			}
+			state.TurnUseCase = stringValue(metadata["turn_use_case"], state.TurnUseCase)
+		}
+	}
+}
+
+func (c *Client) pollImageResults(ctx context.Context, conversationID string, timeout time.Duration) ([]string, []string) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conversation, err := c.getConversation(ctx, conversationID)
+		if err != nil {
+			time.Sleep(4 * time.Second)
+			continue
+		}
+		fileIDs, sedimentIDs := extractImageToolRecords(conversation)
+		if len(fileIDs) > 0 || len(sedimentIDs) > 0 {
+			return fileIDs, sedimentIDs
+		}
+		time.Sleep(4 * time.Second)
+	}
+	return nil, nil
+}
+
+func (c *Client) getConversation(ctx context.Context, conversationID string) (map[string]any, error) {
+	return c.getJSON(ctx, "/backend-api/conversation/"+conversationID, map[string]string{"Accept": "application/json"})
+}
+
+func extractImageToolRecords(conversation map[string]any) ([]string, []string) {
+	mapping, _ := conversation["mapping"].(map[string]any)
+	fileIDs := make([]string, 0)
+	sedimentIDs := make([]string, 0)
+	for _, rawNode := range mapping {
+		node, _ := rawNode.(map[string]any)
+		message, _ := node["message"].(map[string]any)
+		author, _ := message["author"].(map[string]any)
+		metadata, _ := message["metadata"].(map[string]any)
+		content, _ := message["content"].(map[string]any)
+		if stringValue(author["role"], "") != "tool" || stringValue(metadata["async_task_type"], "") != "image_gen" {
+			continue
+		}
+		for _, part := range sliceValue(content["parts"]) {
+			switch typed := part.(type) {
+			case string:
+				addImageIDs(typed, &fileIDs, &sedimentIDs)
+			case map[string]any:
+				addImageIDs(stringValue(typed["asset_pointer"], ""), &fileIDs, &sedimentIDs)
+			}
+		}
+	}
+	return fileIDs, sedimentIDs
+}
+
+func (c *Client) resolveImageURLs(ctx context.Context, conversationID string, fileIDs []string, sedimentIDs []string) ([]string, error) {
+	urls := make([]string, 0, len(fileIDs)+len(sedimentIDs))
+	for _, fileID := range uniqueStrings(fileIDs) {
+		if fileID == "file_upload" {
+			continue
+		}
+		data, err := c.getJSON(ctx, "/backend-api/files/"+fileID+"/download", map[string]string{"Accept": "application/json"})
+		if err == nil {
+			if url := stringValue(data["download_url"], ""); url != "" {
+				urls = append(urls, url)
+			} else if url := stringValue(data["url"], ""); url != "" {
+				urls = append(urls, url)
+			}
+		}
+	}
+	if len(urls) > 0 || conversationID == "" {
+		return urls, nil
+	}
+	for _, sedimentID := range uniqueStrings(sedimentIDs) {
+		data, err := c.getJSON(ctx, "/backend-api/conversation/"+conversationID+"/attachment/"+sedimentID+"/download", map[string]string{"Accept": "application/json"})
+		if err != nil {
+			continue
+		}
+		if url := stringValue(data["download_url"], ""); url != "" {
+			urls = append(urls, url)
+		} else if url := stringValue(data["url"], ""); url != "" {
+			urls = append(urls, url)
+		}
+	}
+	return urls, nil
+}
+
+func (c *Client) downloadBytes(ctx context.Context, url string) ([]byte, error) {
+	req, err := fhttp.NewRequestWithContext(ctx, fhttp.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.applyDownloadHeaders(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("image download failed: HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+}
+
+func (c *Client) applyDownloadHeaders(req *fhttp.Request) {
+	req.Header.Set("User-Agent", c.userAgent)
+	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Pragma", "no-cache")
+	req.Header.Set("Referer", c.baseURL+"/")
+	req.Header.Set("Sec-Ch-Ua", `"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"`)
+	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
+	req.Header.Set("Sec-Fetch-Dest", "image")
+	req.Header.Set("Sec-Fetch-Mode", "no-cors")
+	req.Header.Set("Sec-Fetch-Site", downloadFetchSite(c.baseURL, req.URL.String()))
+	if c.accessToken != "" && hostWithoutPort(c.baseURL) == hostWithoutPort(req.URL.String()) {
+		req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	}
+}
+
+func downloadFetchSite(baseURL string, targetURL string) string {
+	baseHost := hostWithoutPort(baseURL)
+	targetHost := hostWithoutPort(targetURL)
+	if baseHost == "" || targetHost == "" {
+		return "cross-site"
+	}
+	if targetHost == baseHost {
+		return "same-origin"
+	}
+	if strings.HasSuffix(targetHost, "."+baseHost) || strings.HasSuffix(baseHost, "."+targetHost) {
+		return "same-site"
+	}
+	return "cross-site"
+}
+
+func hostWithoutPort(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
+}
+
+func buildImagePrompt(prompt string, size string) string {
+	size = strings.TrimSpace(size)
+	if size == "" {
+		return prompt
+	}
+	hints := map[string]string{
+		"1:1":  "输出为 1:1 正方形构图，主体居中，适合正方形画幅。",
+		"16:9": "输出为 16:9 横屏构图，适合宽画幅展示。",
+		"9:16": "输出为 9:16 竖屏构图，适合竖版画幅展示。",
+		"4:3":  "输出为 4:3 比例，兼顾宽度与高度，适合展示画面细节。",
+		"3:4":  "输出为 3:4 比例，纵向构图，适合人物肖像或竖向场景。",
+	}
+	if hint, ok := hints[size]; ok {
+		return strings.TrimSpace(prompt) + "\n\n" + hint
+	}
+	return strings.TrimSpace(prompt) + "\n\n输出图片，宽高比为 " + size + "。"
+}
+
+func imageModelSlug(model string) string {
+	switch strings.TrimSpace(model) {
+	case "gpt-image-2":
+		return "gpt-5-3"
+	case "codex-gpt-image-2":
+		return "codex-gpt-image-2"
+	case "":
+		return "auto"
+	default:
+		return "auto"
+	}
+}
+
+var (
+	fileIDPattern     = regexp.MustCompile(`file[-_][A-Za-z0-9_-]+`)
+	sedimentIDPattern = regexp.MustCompile(`sediment://([A-Za-z0-9_-]+)`)
+)
+
+func addImageIDs(text string, fileIDs *[]string, sedimentIDs *[]string) {
+	for _, fileID := range fileIDPattern.FindAllString(text, -1) {
+		addUnique(fileIDs, fileID)
+	}
+	for _, match := range sedimentIDPattern.FindAllStringSubmatch(text, -1) {
+		if len(match) == 2 {
+			addUnique(sedimentIDs, match[1])
+		}
+	}
+}
+
+func addUnique(items *[]string, value string) {
+	if value == "" {
+		return
+	}
+	for _, item := range *items {
+		if item == value {
+			return
+		}
+	}
+	*items = append(*items, value)
+}
+
+func uniqueStrings(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		addUnique(&out, item)
+	}
+	return out
+}
