@@ -15,6 +15,7 @@ This version intentionally removes the old register/register-machine module. The
 - Account pool CRUD endpoints.
 - Settings, logs, storage info, and health endpoints.
 - OpenAI-compatible model, image generation/edit, chat completions, and responses routes.
+- Streaming output for `/v1/chat/completions` and `/v1/responses`.
 - Async image task queue with bounded workers for generation and edit tasks.
 - Outbound proxy support through `CHATGPT2API_PROXY_URL`.
 
@@ -23,7 +24,6 @@ The ChatGPT Web reverse adapter is isolated in `internal/upstream/chatgpt` and u
 Still intentionally left as follow-up work:
 
 - `/v1/messages`
-- Streaming responses for `/v1/chat/completions` and `/v1/responses`
 
 ## Storage Choice
 
@@ -73,7 +73,6 @@ Use `Authorization: Bearer <token>` for all protected endpoints. The token can b
 
 ## Migration Plan
 
-1. Add streaming output for chat completions and responses.
-2. Implement Anthropic `/v1/messages` compatibility on top of the text adapter.
-3. Point the existing Next frontend at this backend and remove all register pages/routes.
-4. Add optional PostgreSQL storage if multi-instance deployment becomes necessary.
+1. Implement Anthropic `/v1/messages` compatibility on top of the text adapter.
+2. Point the existing Next frontend at this backend and remove all register pages/routes.
+3. Add optional PostgreSQL storage if multi-instance deployment becomes necessary.

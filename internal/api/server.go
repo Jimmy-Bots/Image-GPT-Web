@@ -46,6 +46,12 @@ func (s *Server) Close() {
 	}
 }
 
+func (s *Server) SetUpstream(upstream Upstream) {
+	if upstream != nil {
+		s.upstream = upstream
+	}
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
