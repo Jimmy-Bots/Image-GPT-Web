@@ -570,7 +570,7 @@ function AccountRow({ item, selected, onSelect, onRefresh, onToggle, onDelete, o
 function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks, setImages, toast, openLightbox }: { token: string; identity: Identity; accounts: Account[]; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("gpt-image-2");
-  const [size, setSize] = useState("1:1");
+  const [size, setSize] = useState("");
   const [count, setCount] = useState(1);
   const [asyncMode, setAsyncMode] = useState(true);
   const [refs, setRefs] = useState<ReferenceImage[]>([]);
@@ -654,17 +654,17 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
   }
 
   async function createTaskForImage(turn: WorkbenchTurn, item: WorkbenchItem) {
-    const taskSize = normalizeWorkbenchSize(turn.size);
+    const taskSize = workbenchRequestSize(turn.size);
     if (turn.mode === "edit") {
       const form = new FormData();
       form.set("client_task_id", item.id);
       form.set("prompt", turn.prompt);
       form.set("model", turn.model);
-      form.set("size", taskSize);
+      if (taskSize) form.set("size", taskSize);
       turn.refs.forEach((ref) => form.append("image", ref.file, ref.name));
       return api.createEditTask(token, form);
     }
-    return api.createGenerationTask(token, { client_task_id: item.id, prompt: turn.prompt, model: turn.model, size: taskSize, n: 1 });
+    return api.createGenerationTask(token, { client_task_id: item.id, prompt: turn.prompt, model: turn.model, size: taskSize || undefined, n: 1 });
   }
 
   async function enqueueImages(turn: WorkbenchTurn, imageIds = turn.images.map((item) => item.id)) {
@@ -701,19 +701,19 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
 
   async function runSyncTurn(turn: WorkbenchTurn) {
     try {
-      const taskSize = normalizeWorkbenchSize(turn.size);
+      const taskSize = workbenchRequestSize(turn.size);
       if (turn.mode === "edit") {
         const form = new FormData();
         form.set("prompt", turn.prompt);
         form.set("model", turn.model);
         form.set("response_format", "url");
         form.set("n", String(turn.count));
-        form.set("size", taskSize);
+        if (taskSize) form.set("size", taskSize);
         turn.refs.forEach((ref) => form.append("image", ref.file, ref.name));
         const data = await request<{ data: ImageResult[] }>(token, "/v1/images/edits", { method: "POST", body: form });
         finishSyncTurn(turn.id, turn, data.data || []);
       } else {
-        const data = await request<{ data: ImageResult[] }>(token, "/v1/images/generations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: turn.prompt, model: turn.model, size: taskSize, n: turn.count, response_format: "url" }) });
+        const data = await request<{ data: ImageResult[] }>(token, "/v1/images/generations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: turn.prompt, model: turn.model, size: taskSize || undefined, n: turn.count, response_format: "url" }) });
         finishSyncTurn(turn.id, turn, data.data || []);
       }
       if (canRefreshArchive) {
@@ -898,7 +898,7 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
                     {turn.refs.map((ref) => <button key={ref.id} onClick={() => openLightbox(ref.dataUrl, ref.name)}><img src={ref.dataUrl} alt={ref.name} /></button>)}
                   </div>
                 ) : null}
-                <div className="turn-summary"><span>{turn.count} 张</span><span>{turn.model}</span>{turn.size ? <span>{turn.size}</span> : null}<Badge value={turn.status} /></div>
+                <div className="turn-summary"><span>{turn.count} 张</span><span>{turn.model}</span><span>{displayImageSize(turn.size)}</span><Badge value={turn.status} /></div>
                 <div className="creation-grid">
                   {turn.images.map((item, index) => (
                     <ResultCard
@@ -952,7 +952,7 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
                 <span className="composer-pill passive">额度 {quota}</span>
                 {activeTaskCount > 0 ? <span className="composer-pill running"><LoaderCircle className="spin" size={14} />{activeTaskCount} 处理中</span> : null}
                 <label className="composer-field"><span>模型</span><input value={model} onChange={(event) => setModel(event.target.value)} /></label>
-                <label className="composer-field small-field"><span>比例</span><select value={size} onChange={(event) => setSize(event.target.value)}><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></label>
+                <label className="composer-field small-field"><span>比例</span><select value={size} onChange={(event) => setSize(event.target.value)}><option value="">默认</option><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></label>
                 <label className="composer-field count-field"><span>张数</span><input type="number" min={1} max={4} value={count} onChange={(event) => setCount(Math.max(1, Math.min(4, Number(event.target.value) || 1)))} /></label>
                 <div className="mode-toggle">
                   <button className={classNames(asyncMode && "active")} onClick={() => setAsyncMode(true)}>异步</button>
@@ -1025,7 +1025,16 @@ function sizeAspectClass(size?: string) {
 
 function normalizeWorkbenchSize(size?: string) {
   const value = (size || "").trim();
-  return value || "1:1";
+  if (value === "auto" || value === "default" || value === "默认") return "";
+  return value;
+}
+
+function workbenchRequestSize(size?: string) {
+  return normalizeWorkbenchSize(size);
+}
+
+function displayImageSize(size?: string) {
+  return normalizeWorkbenchSize(size) || "默认";
 }
 
 function dataURLToFile(dataUrl: string, name: string) {
@@ -1100,11 +1109,28 @@ async function buildReferenceFromResult(item: WorkbenchItem): Promise<ReferenceI
 function mergeImageTasks(current: ImageTask[], updates: ImageTask[]) {
   if (!updates.length) return current;
   const map = new Map(current.map((task) => [task.id, task]));
-  updates.forEach((task) => map.set(task.id, task));
+  updates.forEach((task) => {
+    const previous = map.get(task.id);
+    map.set(task.id, previous ? { ...previous, ...task, data: task.data ?? previous.data } : task);
+  });
   return Array.from(map.values()).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 }
 
-function ActivityPanel({ token, tasks, setTasks, logs, setLogs, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: (items: ImageTask[]) => void; logs: SystemLog[]; setLogs: (items: SystemLog[]) => void; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
+function hasLogDetail(detail: unknown) {
+  return !!detail && typeof detail === "object" && !Array.isArray(detail) && Object.keys(detail as Record<string, unknown>).length > 0;
+}
+
+function mergeLogs(current: SystemLog[], updates: SystemLog[]) {
+  if (!updates.length) return current;
+  const map = new Map(current.map((log) => [log.id, log]));
+  updates.forEach((log) => {
+    const previous = map.get(log.id);
+    map.set(log.id, previous ? { ...previous, ...log, detail: hasLogDetail(log.detail) ? log.detail : previous.detail } : log);
+  });
+  return Array.from(map.values()).sort((a, b) => b.time.localeCompare(a.time));
+}
+
+function ActivityPanel({ token, tasks, setTasks, logs, setLogs, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; logs: SystemLog[]; setLogs: React.Dispatch<React.SetStateAction<SystemLog[]>>; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
   const [view, setView] = useState<"tasks" | "logs">("tasks");
   async function refresh() {
     const [taskData, logData] = await Promise.all([api.tasks(token), api.logs(token)]);
@@ -1126,35 +1152,69 @@ function ActivityPanel({ token, tasks, setTasks, logs, setLogs, openLightbox, to
   );
 }
 
-function TasksTable({ token, tasks, setTasks, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: (items: ImageTask[]) => void; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
+function TasksTable({ token, tasks, setTasks, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
   const rows = tasks.filter((item) => {
-    const text = `${item.id} ${item.mode} ${item.status} ${item.model} ${item.size} ${item.error}`.toLowerCase();
+    const text = `${item.id} ${item.mode} ${item.status} ${item.model} ${item.size} ${item.prompt} ${item.error}`.toLowerCase();
     return (!query || text.includes(query.toLowerCase())) && (!status || item.status === status);
   });
+  const selectedSet = new Set(selected);
+  const allVisibleSelected = rows.length > 0 && rows.every((task) => selectedSet.has(task.id));
+  function toggleVisible(checked: boolean) {
+    const visibleIDs = rows.map((task) => task.id);
+    setSelected((prev) => checked ? Array.from(new Set([...prev, ...visibleIDs])) : prev.filter((id) => !visibleIDs.includes(id)));
+  }
+  async function loadDetail(task: ImageTask) {
+    if (expanded === task.id) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(task.id);
+    if (task.data !== undefined) return;
+    setLoadingDetail(task.id);
+    try {
+      const data = await api.tasks(token, [task.id]);
+      setTasks((current) => mergeImageTasks(current, data.items || []));
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "读取任务详情失败");
+    } finally {
+      setLoadingDetail(null);
+    }
+  }
+  async function removeSelected() {
+    if (!selected.length || !confirm(`删除 ${selected.length} 个图片任务？`)) return;
+    const data = await api.deleteTasks(token, selected);
+    setTasks((current) => current.filter((task) => !selected.includes(task.id)));
+    setSelected([]);
+    toast("success", `已删除 ${data.removed} 个任务`);
+  }
   return (
     <>
-      <div className="filters activity-filters"><div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务 ID、模型、状态" /></div><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>queued</option><option>running</option><option>success</option><option>error</option></select><button className="secondary" onClick={() => api.tasks(token).then((data) => { setTasks(data.items || []); toast("success", "任务已刷新"); })}>刷新任务</button></div>
-      <div className="table-wrap"><table className="activity-table"><thead><tr><th>ID</th><th>Mode</th><th>Status</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
+      <div className="filters activity-filters"><div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务 ID、模型、提示词、状态" /></div><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>queued</option><option>running</option><option>success</option><option>error</option></select><button className="secondary" onClick={() => api.tasks(token).then((data) => { setTasks(data.items || []); toast("success", "任务已刷新"); })}>刷新任务</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
+      <div className="table-wrap"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
         const first = parseTaskData(task.data)[0];
         const src = first ? imageSrc(first) : "";
         const open = expanded === task.id;
         return (
           <React.Fragment key={task.id}>
             <tr>
+              <td><input type="checkbox" checked={selectedSet.has(task.id)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, task.id] : prev.filter((id) => id !== task.id))} /></td>
               <td><code>{task.id}</code></td>
               <td>{task.mode}</td>
               <td><Badge value={task.status} /></td>
+              <td>{task.prompt || "-"}</td>
               <td>{task.model || "-"}</td>
               <td>{task.size || "-"}</td>
               <td>{taskDuration(task)}</td>
               <td>{src ? <button className="link-button" onClick={() => openLightbox(src, task.id)}>预览</button> : "-"}</td>
               <td>{fmtDate(task.updated_at)}</td>
-              <td><button className="ghost small" onClick={() => setExpanded(open ? null : task.id)}>{open ? "收起" : "详情"}</button></td>
+              <td><button className="ghost small" onClick={() => loadDetail(task)}>{loadingDetail === task.id ? "加载" : open ? "收起" : "详情"}</button></td>
             </tr>
-            {open ? <tr className="detail-row"><td colSpan={9}><TaskDetail task={task} openLightbox={openLightbox} /></td></tr> : null}
+            {open ? <tr className="detail-row"><td colSpan={11}>{loadingDetail === task.id ? <div className="detail-panel">加载详情中...</div> : <TaskDetail task={task} openLightbox={openLightbox} />}</td></tr> : null}
           </React.Fragment>
         );
       })}</tbody></table></div>
@@ -1176,6 +1236,7 @@ function TaskDetail({ task, openLightbox }: { task: ImageTask; openLightbox: (sr
         <DetailItem label="比例" value={task.size || "-"} />
         <DetailItem label="模式" value={task.mode} />
       </div>
+      {task.prompt ? <div className="detail-prompt"><span>提示词</span><p>{task.prompt}</p></div> : null}
       {task.error ? <p className="detail-error">{task.error}</p> : null}
       {results.length ? <div className="detail-images">{results.map((item, index) => { const src = imageSrc(item); return src ? <button key={index} onClick={() => openLightbox(src, task.id)}><img src={src} alt={`task ${index + 1}`} /></button> : null; })}</div> : null}
       <pre className="detail-json">{safeJSON({ ...task, data: results })}</pre>
@@ -1183,16 +1244,40 @@ function TaskDetail({ task, openLightbox }: { task: ImageTask; openLightbox: (sr
   );
 }
 
-function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: SystemLog[]; setLogs: (items: SystemLog[]) => void; toast: (type: Toast["type"], message: string) => void }) {
+function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: SystemLog[]; setLogs: React.Dispatch<React.SetStateAction<SystemLog[]>>; toast: (type: Toast["type"], message: string) => void }) {
   const [type, setType] = useState("");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
   const rows = logs.filter((log) => {
     const text = `${log.type} ${log.summary} ${JSON.stringify(log.detail || {})}`.toLowerCase();
     return !query.trim() || text.includes(query.trim().toLowerCase());
   });
+  const selectedSet = new Set(selected);
+  const allVisibleSelected = rows.length > 0 && rows.every((log) => selectedSet.has(log.id));
+  function toggleVisible(checked: boolean) {
+    const visibleIDs = rows.map((log) => log.id);
+    setSelected((prev) => checked ? Array.from(new Set([...prev, ...visibleIDs])) : prev.filter((id) => !visibleIDs.includes(id)));
+  }
   async function load() { setLogs((await api.logs(token, type)).items || []); }
+  async function loadDetail(log: SystemLog) {
+    if (expanded === log.id) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(log.id);
+    if (Object.keys(logDetail(log)).length > 0) return;
+    setLoadingDetail(log.id);
+    try {
+      const data = await api.logs(token, "", [log.id]);
+      setLogs((current) => mergeLogs(current, data.items || []));
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "读取日志详情失败");
+    } finally {
+      setLoadingDetail(null);
+    }
+  }
   async function clear() {
     if (!selected.length || !confirm(`清理 ${selected.length} 条日志？`)) return;
     const data = await api.deleteLogs(token, selected);
@@ -1208,23 +1293,23 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
         <button className="secondary" onClick={() => load().catch((error) => toast("error", error.message))}>刷新日志</button>
         <button className="danger" disabled={!selected.length} onClick={() => clear().catch((error) => toast("error", error.message))}>清理选中</button>
       </div>
-      <div className="table-wrap"><table className="activity-table"><thead><tr><th></th><th>Time</th><th>Type</th><th>Status</th><th>Endpoint</th><th>Model</th><th>耗时</th><th>Summary</th><th></th></tr></thead><tbody>{rows.map((log) => {
+      <div className="table-wrap"><table className="activity-table log-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前日志" /></th><th>Time</th><th>Type</th><th>Status</th><th>Endpoint</th><th>Model</th><th>耗时</th><th>Summary</th><th></th></tr></thead><tbody>{rows.map((log) => {
         const detail = logDetail(log);
         const open = expanded === log.id;
         return (
           <React.Fragment key={log.id}>
             <tr>
-              <td><input type="checkbox" checked={selected.includes(log.id)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, log.id] : prev.filter((id) => id !== log.id))} /></td>
+              <td><input type="checkbox" checked={selectedSet.has(log.id)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, log.id] : prev.filter((id) => id !== log.id))} /></td>
               <td>{fmtDate(log.time)}</td>
               <td>{log.type}</td>
               <td>{detail.status ? <Badge value={String(detail.status)} /> : "-"}</td>
-              <td>{String(detail.endpoint || "-")}</td>
+              <td>{String(detail.endpoint || log.summary || "-")}</td>
               <td>{String(detail.model || "-")}</td>
               <td>{formatDuration(detail.duration_ms)}</td>
               <td>{log.summary}</td>
-              <td><button className="ghost small" onClick={() => setExpanded(open ? null : log.id)}>{open ? "收起" : "详情"}</button></td>
+              <td><button className="ghost small" onClick={() => loadDetail(log)}>{loadingDetail === log.id ? "加载" : open ? "收起" : "详情"}</button></td>
             </tr>
-            {open ? <tr className="detail-row"><td colSpan={9}><LogDetail log={log} /></td></tr> : null}
+            {open ? <tr className="detail-row"><td colSpan={9}>{loadingDetail === log.id ? <div className="detail-panel">加载详情中...</div> : <LogDetail log={log} />}</td></tr> : null}
           </React.Fragment>
         );
       })}</tbody></table></div>

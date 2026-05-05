@@ -77,6 +77,7 @@ type ImageTask struct {
 	Mode      string          `json:"mode"`
 	Model     string          `json:"model,omitempty"`
 	Size      string          `json:"size,omitempty"`
+	Prompt    string          `json:"prompt,omitempty"`
 	Data      json.RawMessage `json:"data,omitempty"`
 	Error     string          `json:"error,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`

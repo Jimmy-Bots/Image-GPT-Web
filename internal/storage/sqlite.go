@@ -133,6 +133,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			mode TEXT NOT NULL,
 			model TEXT NOT NULL DEFAULT '',
 			size TEXT NOT NULL DEFAULT '',
+			prompt TEXT NOT NULL DEFAULT '',
 			data_json TEXT,
 			error TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
@@ -147,6 +148,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	if err := s.addColumnIfMissing(ctx, "accounts", "limits_progress_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "image_tasks", "prompt", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	return nil
@@ -706,12 +710,28 @@ func (s *Store) AddLog(ctx context.Context, item domain.SystemLog) error {
 	return err
 }
 
-func (s *Store) ListLogs(ctx context.Context, logType string) ([]domain.SystemLog, error) {
-	query := `SELECT id, time, type, summary, detail_json FROM system_logs`
+func (s *Store) ListLogs(ctx context.Context, logType string, ids []string, includeDetail bool) ([]domain.SystemLog, error) {
+	detailExpr := `NULL`
+	if includeDetail {
+		detailExpr = `detail_json`
+	}
+	query := `SELECT id, time, type, summary, ` + detailExpr + ` FROM system_logs`
 	var args []any
 	if logType != "" {
 		query += ` WHERE type = ?`
 		args = append(args, logType)
+	}
+	if len(ids) > 0 {
+		if logType == "" {
+			query += ` WHERE`
+		} else {
+			query += ` AND`
+		}
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+		query += ` id IN (` + placeholders + `)`
+		for _, id := range ids {
+			args = append(args, id)
+		}
 	}
 	query += ` ORDER BY time DESC LIMIT 1000`
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -723,12 +743,14 @@ func (s *Store) ListLogs(ctx context.Context, logType string) ([]domain.SystemLo
 	for rows.Next() {
 		var item domain.SystemLog
 		var at string
-		var detail string
+		var detail sql.NullString
 		if err := rows.Scan(&item.ID, &at, &item.Type, &item.Summary, &detail); err != nil {
 			return nil, err
 		}
 		item.Time = parseTime(at)
-		item.Detail = json.RawMessage(detail)
+		if detail.Valid && detail.String != "" {
+			item.Detail = json.RawMessage(detail.String)
+		}
 		items = append(items, item)
 	}
 	if items == nil {
@@ -758,14 +780,15 @@ func (s *Store) DeleteLogs(ctx context.Context, ids []string) (int, error) {
 func (s *Store) CreateImageTask(ctx context.Context, task domain.ImageTask) error {
 	_, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO image_tasks (owner_id, id, status, mode, model, size, data_json, error, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO image_tasks (owner_id, id, status, mode, model, size, prompt, data_json, error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.OwnerID,
 		task.ID,
 		task.Status,
 		task.Mode,
 		task.Model,
 		task.Size,
+		task.Prompt,
 		nullJSON(task.Data),
 		task.Error,
 		formatTime(task.CreatedAt),
@@ -774,8 +797,12 @@ func (s *Store) CreateImageTask(ctx context.Context, task domain.ImageTask) erro
 	return err
 }
 
-func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string) ([]domain.ImageTask, error) {
-	query := `SELECT owner_id, id, status, mode, model, size, data_json, error, created_at, updated_at FROM image_tasks WHERE owner_id = ?`
+func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string, includeData bool) ([]domain.ImageTask, error) {
+	dataExpr := `NULL`
+	if includeData {
+		dataExpr = `data_json`
+	}
+	query := `SELECT owner_id, id, status, mode, model, size, prompt, ` + dataExpr + `, error, created_at, updated_at FROM image_tasks WHERE owner_id = ?`
 	args := []any{ownerID}
 	if len(ids) > 0 {
 		placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
@@ -804,6 +831,24 @@ func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string
 	return items, rows.Err()
 }
 
+func (s *Store) DeleteImageTasks(ctx context.Context, ownerID string, ids []string) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	removed := 0
+	for _, id := range ids {
+		res, err := tx.ExecContext(ctx, `DELETE FROM image_tasks WHERE owner_id = ? AND id = ?`, ownerID, strings.TrimSpace(id))
+		if err != nil {
+			return 0, err
+		}
+		affected, _ := res.RowsAffected()
+		removed += int(affected)
+	}
+	return removed, tx.Commit()
+}
+
 func (s *Store) UpdateImageTask(ctx context.Context, ownerID string, id string, status string, data json.RawMessage, taskErr string) error {
 	_, err := s.db.ExecContext(
 		ctx,
@@ -827,7 +872,7 @@ func defaultSettings() map[string]any {
 		"refresh_account_interval_minute":   5,
 		"image_retention_days":              30,
 		"image_poll_timeout_secs":           120,
-		"image_account_concurrency":         3,
+		"image_account_concurrency":         1,
 		"auto_remove_invalid_accounts":      false,
 		"auto_remove_rate_limited_accounts": false,
 		"log_levels":                        []any{},
@@ -938,7 +983,7 @@ func scanImageTask(row rowScanner) (domain.ImageTask, error) {
 	var data sql.NullString
 	var createdAt string
 	var updatedAt string
-	err := row.Scan(&item.OwnerID, &item.ID, &item.Status, &item.Mode, &item.Model, &item.Size, &data, &item.Error, &createdAt, &updatedAt)
+	err := row.Scan(&item.OwnerID, &item.ID, &item.Status, &item.Mode, &item.Model, &item.Size, &item.Prompt, &data, &item.Error, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ImageTask{}, ErrNotFound
 	}

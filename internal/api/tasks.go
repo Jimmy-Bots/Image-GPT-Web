@@ -19,7 +19,8 @@ const (
 	taskRunning          = "running"
 	taskSuccess          = "success"
 	taskError            = "error"
-	defaultImageTaskSize = "1:1"
+	defaultImageTaskSize = "auto"
+	maxImageTaskAttempts = 2
 )
 
 type TaskQueue struct {
@@ -92,10 +93,19 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		result map[string]any
 		err    error
 	)
-	if job.Mode == "edit" {
-		result, err = q.upstream.EditImage(ctx, job.Edit)
-	} else {
-		result, err = q.upstream.GenerateImage(ctx, job.Gen)
+	for attempt := 1; attempt <= maxImageTaskAttempts; attempt++ {
+		if job.Mode == "edit" {
+			result, err = q.upstream.EditImage(ctx, job.Edit)
+		} else {
+			result, err = q.upstream.GenerateImage(ctx, job.Gen)
+		}
+		if err == nil {
+			break
+		}
+		if attempt < maxImageTaskAttempts {
+			log.Printf("image_task retry id=%s owner=%s mode=%s attempt=%d err=%v", job.TaskID, job.OwnerID, job.Mode, attempt+1, err)
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
 	}
 	if err != nil {
 		log.Printf("image_task failed id=%s owner=%s mode=%s err=%v", job.TaskID, job.OwnerID, job.Mode, err)
@@ -117,19 +127,42 @@ type imageTaskCreateRequest struct {
 	N            int    `json:"n"`
 }
 
+type imageTaskDeleteRequest struct {
+	IDs []string `json:"ids"`
+}
+
 func (s *Server) handleListImageTasks(w http.ResponseWriter, r *http.Request) {
 	identity, ok := s.requireIdentity(w, r)
 	if !ok {
 		return
 	}
 	ids := compactStrings(strings.Split(r.URL.Query().Get("ids"), ","))
-	items, err := s.store.ListImageTasks(r.Context(), identity.ID, ids)
+	includeData := len(ids) > 0 || boolFromAny(r.URL.Query().Get("detail"))
+	items, err := s.store.ListImageTasks(r.Context(), identity.ID, ids, includeData)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
 	missing := missingTaskIDs(ids, items)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "missing_ids": missing})
+}
+
+func (s *Server) handleDeleteImageTasks(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.requireIdentity(w, r)
+	if !ok {
+		return
+	}
+	var req imageTaskDeleteRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	removed, err := s.store.DeleteImageTasks(r.Context(), identity.ID, compactStrings(req.IDs))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
 func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Request) {
@@ -164,12 +197,13 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 		Mode:      "generate",
 		Model:     req.Model,
 		Size:      req.Size,
+		Prompt:    req.Prompt,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 	if err := s.store.CreateImageTask(r.Context(), task); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
-			items, _ := s.store.ListImageTasks(r.Context(), identity.ID, []string{taskID})
+			items, _ := s.store.ListImageTasks(r.Context(), identity.ID, []string{taskID}, true)
 			if len(items) > 0 {
 				writeJSON(w, http.StatusOK, items[0])
 				return
@@ -224,6 +258,7 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 		Mode:      "edit",
 		Model:     req.Model,
 		Size:      req.Size,
+		Prompt:    req.Prompt,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -272,7 +307,7 @@ func clampImageTaskCount(value int) int {
 
 func normalizeImageTaskSize(value string) string {
 	value = strings.TrimSpace(value)
-	if value == "" {
+	if value == "" || strings.EqualFold(value, "auto") || strings.EqualFold(value, "default") || value == "默认" {
 		return defaultImageTaskSize
 	}
 	return value

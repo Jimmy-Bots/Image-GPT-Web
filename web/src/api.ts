@@ -117,6 +117,12 @@ export const api = {
     }),
   tasks: (token: string, ids: string[] = []) =>
     request<{ items: ImageTask[]; missing_ids: string[] }>(token, ids.length ? `/api/image-tasks?ids=${encodeURIComponent(ids.join(","))}` : "/api/image-tasks"),
+  deleteTasks: (token: string, ids: string[]) =>
+    request<{ removed: number }>(token, "/api/image-tasks/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids })
+    }),
   createGenerationTask: (token: string, body: { client_task_id: string; prompt: string; model: string; size?: string; n?: number }) =>
     request<ImageTask>(token, "/api/image-tasks/generations", {
       method: "POST",
@@ -143,7 +149,13 @@ export const api = {
       body: JSON.stringify(settings)
     }),
   storage: (token: string) => request<{ backend: { type: string; path: string }; health: { status: string } }>(token, "/api/storage/info"),
-  logs: (token: string, type = "") => request<{ items: SystemLog[] }>(token, type ? `/api/logs?type=${encodeURIComponent(type)}` : "/api/logs"),
+  logs: (token: string, type = "", ids: string[] = []) => {
+    const params = new URLSearchParams();
+    if (type) params.set("type", type);
+    if (ids.length) params.set("ids", ids.join(","));
+    const query = params.toString();
+    return request<{ items: SystemLog[] }>(token, query ? `/api/logs?${query}` : "/api/logs");
+  },
   deleteLogs: (token: string, ids: string[]) =>
     request<{ removed: number }>(token, "/api/logs/delete", {
       method: "POST",
