@@ -8,10 +8,9 @@ This version intentionally removes the old register/register-machine module. The
 
 - Go HTTP backend using the standard library router.
 - SQLite storage with WAL mode, busy timeout, indexes, and bounded connection pool.
-- Legacy admin API key compatibility through `CHATGPT2API_AUTH_KEY`.
 - User login/register foundation with signed session tokens.
 - Admin user management APIs.
-- User API key management, including compatibility endpoints at `/api/auth/users`.
+- One generated API key per user, managed from the admin user table.
 - Account pool CRUD endpoints.
 - React/Vite management UI served from `/`.
 - Settings, logs, storage info, and health endpoints.
@@ -64,7 +63,7 @@ Vite proxies `/api`, `/auth`, `/v1`, and `/images` to the Go server on `127.0.0.
 
 Useful environment variables:
 
-- `CHATGPT2API_AUTH_KEY`: legacy admin bearer key and bootstrap admin API key.
+- `CHATGPT2API_AUTH_KEY`: optional legacy admin bearer key for compatibility API calls, not web login.
 - `CHATGPT2API_ADMIN_EMAIL`: bootstrap admin email.
 - `CHATGPT2API_ADMIN_PASSWORD`: bootstrap admin password.
 - `CHATGPT2API_SESSION_SECRET`: stable HMAC secret for login sessions.
@@ -83,12 +82,12 @@ Useful environment variables:
 
 ## Main Endpoints
 
-- `POST /auth/login`: login with `email/password`, or validate an existing bearer token.
+- `POST /auth/login`: login with `email/password`, or validate an existing session token.
 - `POST /auth/register`: create the first admin, or a normal user when public registration is enabled.
 - `GET /api/me`: current identity.
-- `GET|POST|PATCH|DELETE /api/users`: admin user management.
-- `GET|POST|PATCH|DELETE /api/me/api-keys`: per-user API keys.
-- `GET|POST|DELETE /api/auth/users`: compatibility user-key management for the old frontend.
+- `GET|POST|PATCH|DELETE /api/users`: admin user management. Creating a user automatically creates one API key.
+- `POST /api/users/{user_id}/api-key/reset`: reset that user's single API key.
+- `GET /api/me/api-keys`: inspect the current user's single API key metadata.
 - `GET|POST|DELETE /api/accounts`: account pool management.
 - `POST /api/accounts/refresh`: refresh account profile, plan, model, and image quota state.
 - `GET|POST /api/settings`: system settings.
@@ -97,9 +96,9 @@ Useful environment variables:
 - `GET /v1/models`: OpenAI-compatible model list.
 - `POST /v1/images/generations`, `/v1/images/edits`, `/v1/chat/completions`, `/v1/complete`, `/v1/responses`, `/v1/messages`: preserved compatibility surface.
 
-Use `Authorization: Bearer <token>` for all protected endpoints. The token can be a login session token, a generated user API key, or the legacy `CHATGPT2API_AUTH_KEY` admin key.
+Use `Authorization: Bearer <token>` for protected API endpoints. Browser login uses session tokens from `/auth/login`; OpenAI-compatible API calls can also use a generated user API key or the legacy `CHATGPT2API_AUTH_KEY`.
 
-Open `http://localhost:3000/` for the built-in management UI. It covers account pool operations, users, API keys, image tasks, settings, logs, and a small compatibility playground. Account APIs accept raw `access_token` on create/refresh for upstream calls, but list/update/delete responses expose only `token_ref` plus a masked display value.
+Open `http://localhost:3000/` for the built-in management UI. It covers account pool operations, users and their API keys, image tasks, settings, logs, and a small compatibility playground. Account APIs accept raw `access_token` on create/refresh for upstream calls, but list/update/delete responses expose only `token_ref` plus a masked display value.
 
 ## Migration Plan
 

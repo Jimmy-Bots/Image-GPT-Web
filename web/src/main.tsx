@@ -4,12 +4,12 @@ import {
   Activity,
   ArrowUp,
   Ban,
-  CheckCircle2,
   Clock3,
   Copy,
+  Eye,
+  EyeOff,
   ImageIcon,
   ImagePlus,
-  KeyRound,
   LayoutDashboard,
   LoaderCircle,
   LogOut,
@@ -27,11 +27,11 @@ import {
   X
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
-import type { Account, ApiKey, Identity, ImageResult, ImageTask, ModelItem, ReferenceImage, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
+import type { Account, Identity, ImageResult, ImageTask, ModelItem, ReferenceImage, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
 import { classNames, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatQuota, imageSrc, parseJSON, parseTaskData, quotaSummary, safeJSON, statusClass } from "./utils";
 import "./styles.css";
 
-type Tab = "dashboard" | "accounts" | "activity" | "images" | "playground" | "keys" | "users" | "settings";
+type Tab = "dashboard" | "accounts" | "activity" | "images" | "playground" | "users" | "settings";
 type WorkbenchItem = {
   id: string;
   status: "queued" | "running" | "success" | "error";
@@ -73,7 +73,6 @@ const navItems: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: "activity", label: "任务日志", icon: LoaderCircle },
   { id: "images", label: "图片库", icon: ImageIcon },
   { id: "playground", label: "Playground", icon: Play },
-  { id: "keys", label: "API Keys", icon: KeyRound },
   { id: "users", label: "用户", icon: Users },
   { id: "settings", label: "设置", icon: Settings }
 ];
@@ -84,7 +83,6 @@ const pageTitle: Record<Tab, string> = {
   activity: "任务日志",
   images: "图片库",
   playground: "Playground",
-  keys: "API Keys",
   users: "用户",
   settings: "设置"
 };
@@ -105,7 +103,6 @@ function App() {
   const [version, setVersion] = useState("-");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [users, setUsers] = useState<User[]>([]);
-  const [keys, setKeys] = useState<ApiKey[]>([]);
   const [models, setModels] = useState<ModelItem[]>([]);
   const [tasks, setTasks] = useState<ImageTask[]>([]);
   const [images, setImages] = useState<StoredImage[]>([]);
@@ -115,10 +112,9 @@ function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [lightbox, setLightbox] = useState<{ src: string; title?: string } | null>(null);
+  const [loginError, setLoginError] = useState("");
 
   const isAdmin = identity?.role === "admin";
-  const legacyKeys = identity?.auth_type === "legacy";
-
   function toast(type: Toast["type"], message: string) {
     const id = createID("toast");
     setToasts((items) => [...items, { id, type, message }]);
@@ -143,15 +139,14 @@ function App() {
     setIdentity(me.identity);
     setVersion("connected");
     if (me.identity.role !== "admin") setAdminMode(false);
-    await refreshAll(currentToken, me.identity.role === "admin", me.identity.auth_type === "legacy");
+    await refreshAll(currentToken, me.identity.role === "admin");
   }
 
-  async function refreshAll(currentToken = token, admin = isAdmin, legacy = legacyKeys) {
+  async function refreshAll(currentToken = token, admin = isAdmin) {
     const common = admin
       ? [
           api.models(currentToken).then((data) => setModels(data.data || [])),
-          api.tasks(currentToken).then((data) => setTasks(data.items || [])),
-          api.keys(currentToken, Boolean(legacy)).then((data) => setKeys(data.items || []))
+          api.tasks(currentToken).then((data) => setTasks(data.items || []))
         ]
       : [];
     const adminLoads = admin
@@ -177,19 +172,26 @@ function App() {
   }, []);
 
   async function handleLogin(email: string, password: string) {
-    if (!password.trim()) return;
-    if (email.trim()) {
-      const data = await api.loginWithPassword(email.trim(), password);
-      setStoredToken(data.token);
-      setToken(data.token);
-      await bootstrap(data.token);
-      return;
+    if (!email.trim() || !password.trim()) {
+      throw new Error("请输入邮箱和密码");
     }
-    const raw = password.trim();
-    await api.loginWithToken(raw);
-    setStoredToken(raw);
-    setToken(raw);
-    await bootstrap(raw);
+    const data = await api.loginWithPassword(email.trim(), password);
+    setStoredToken(data.token);
+    setToken(data.token);
+    await bootstrap(data.token);
+  }
+
+  async function submitLogin(email: string, password: string) {
+    if (busy) return;
+    setBusy("login");
+    setLoginError("");
+    try {
+      await handleLogin(email, password);
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : "登录失败");
+    } finally {
+      setBusy(null);
+    }
   }
 
   function logout() {
@@ -201,7 +203,7 @@ function App() {
   }
 
   if (!token || !identity) {
-    return <LoginView busy={busy === "login"} onLogin={(email, password) => runBusy("login", () => handleLogin(email, password))} />;
+    return <LoginView busy={busy === "login"} error={loginError} onLogin={submitLogin} />;
   }
 
   if (!adminMode || !isAdmin) {
@@ -276,7 +278,6 @@ function App() {
         {activeTab === "activity" && isAdmin && <ActivityPanel token={token} tasks={tasks} setTasks={setTasks} logs={logs} setLogs={setLogs} openLightbox={(src, title) => setLightbox({ src, title })} toast={toast} />}
         {activeTab === "images" && isAdmin && <ImagesPanel token={token} images={images} setImages={setImages} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
         {activeTab === "playground" && <Playground token={token} models={models} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
-        {activeTab === "keys" && <KeysPanel token={token} legacy={Boolean(legacyKeys)} keys={keys} setKeys={setKeys} toast={toast} />}
         {activeTab === "users" && isAdmin && <UsersPanel token={token} users={users} setUsers={setUsers} toast={toast} />}
         {activeTab === "settings" && isAdmin && <SettingsPanel token={token} settings={settings} setSettings={setSettings} toast={toast} />}
       </main>
@@ -294,11 +295,17 @@ function App() {
   );
 }
 
-function LoginView({ busy, onLogin }: { busy: boolean; onLogin: (email: string, password: string) => void }) {
+function LoginView({ busy, error, onLogin }: { busy: boolean; error: string; onLogin: (email: string, password: string) => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [localError, setLocalError] = useState("");
   function submit(event: FormEvent) {
     event.preventDefault();
+    setLocalError("");
+    if (!email.trim() || !password.trim()) {
+      setLocalError("请输入邮箱和密码");
+      return;
+    }
     onLogin(email, password);
   }
   return (
@@ -312,9 +319,10 @@ function LoginView({ busy, onLogin }: { busy: boolean; onLogin: (email: string, 
           </div>
         </div>
         <label><span>Email</span><input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" placeholder="admin@example.com" /></label>
-        <label><span>Password / Admin Key</span><input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="密码或 legacy admin key" /></label>
+        <label><span>Password</span><input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="账户密码" /></label>
+        {localError || error ? <p className="form-error">{localError || error}</p> : null}
         <button disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : null}登录</button>
-        <p className="hint">不填写 Email 时，密码框内容会作为 Bearer Key 校验。</p>
+        <p className="hint">管理后台创建用户后，会自动生成该用户唯一 API Key；网页登录只使用邮箱密码。</p>
       </form>
     </main>
   );
@@ -1454,19 +1462,102 @@ function Playground({ token, models, toast, openLightbox }: { token: string; mod
   );
 }
 
-function KeysPanel({ token, legacy, keys, setKeys, toast }: { token: string; legacy: boolean; keys: ApiKey[]; setKeys: (items: ApiKey[]) => void; toast: (type: Toast["type"], message: string) => void }) {
-  const [name, setName] = useState("");
-  const [newKey, setNewKey] = useState("");
-  async function reload() { setKeys((await api.keys(token, legacy)).items || []); }
-  async function create() { const data = await api.createKey(token, legacy, name.trim() || "API Key"); setNewKey(data.key); setName(""); await reload(); }
-  return <section className="panel"><PanelHead title="API Keys" subtitle="为当前用户创建和管理访问密钥" /><div className="toolbar compact"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Key name" /><button onClick={() => create().then(() => toast("success", "Key 已创建")).catch((error) => toast("error", error.message))}>创建 API Key</button></div>{newKey ? <div className="notice"><span>新 Key 只显示一次：</span><code>{newKey}</code><IconButton onClick={() => copyText(newKey).then(() => toast("success", "已复制"))}><Copy size={14} /></IconButton></div> : null}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Enabled</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>{keys.map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.role}</td><td><Badge value={item.enabled} /></td><td>{fmtDate(item.created_at)}</td><td>{fmtDate(item.last_used_at)}</td><td className="row-actions"><IconButton onClick={() => api.updateKey(token, legacy, item.id, { enabled: !item.enabled }).then(reload)}>{item.enabled ? <Ban size={15} /> : <CheckCircle2 size={15} />}</IconButton><IconButton className="danger-icon" onClick={() => confirm("删除这个 API Key？") && api.deleteKey(token, legacy, item.id).then(reload)}><Trash2 size={15} /></IconButton></td></tr>)}</tbody></table></div></section>;
-}
-
 function UsersPanel({ token, users, setUsers, toast }: { token: string; users: User[]; setUsers: (items: User[]) => void; toast: (type: Toast["type"], message: string) => void }) {
   const [form, setForm] = useState({ email: "", name: "", password: "", role: "user" });
+  const [newKey, setNewKey] = useState("");
   async function reload() { setUsers((await api.users(token)).items || []); }
-  async function create() { await api.createUser(token, form); setForm({ email: "", name: "", password: "", role: "user" }); await reload(); toast("success", "用户已创建"); }
-  return <section className="panel"><PanelHead title="用户" subtitle="创建用户、调整角色和启停账号" /><div className="toolbar user-toolbar"><input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="email" /><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="name" /><input value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} type="password" placeholder="password" /><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option>user</option><option>admin</option></select><button onClick={() => create().catch((error) => toast("error", error.message))}>创建用户</button></div><div className="table-wrap"><table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Created</th><th>Last login</th><th></th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td>{user.email}</td><td>{user.name || "-"}</td><td><Badge value={user.role} /></td><td><Badge value={user.status} /></td><td>{fmtDate(user.created_at)}</td><td>{fmtDate(user.last_login_at)}</td><td><button className="secondary small" onClick={() => api.updateUser(token, user.id, { status: user.status === "active" ? "disabled" : "active" }).then(reload)}>{user.status === "active" ? "停用" : "启用"}</button></td></tr>)}</tbody></table></div></section>;
+  async function create() {
+    const data = await api.createUser(token, form);
+    setForm({ email: "", name: "", password: "", role: "user" });
+    if (data.key) setNewKey(data.key);
+    await reload();
+    toast("success", "用户已创建");
+  }
+  return (
+    <section className="panel">
+      <PanelHead title="用户" subtitle="创建用户、编辑资料、删除账号，并维护每个用户唯一 API Key" />
+      <div className="toolbar user-toolbar">
+        <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="email" />
+        <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="name" />
+        <input value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} type="password" placeholder="password" />
+        <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option>user</option><option>admin</option></select>
+        <button onClick={() => create().catch((error) => toast("error", error.message))}>创建用户</button>
+      </div>
+      {newKey ? <div className="notice"><span>新 API Key 只显示一次：</span><code>{newKey}</code><IconButton title="复制" onClick={() => copyText(newKey).then(() => toast("success", "已复制"))}><Copy size={14} /></IconButton><IconButton title="隐藏" onClick={() => setNewKey("")}><EyeOff size={14} /></IconButton></div> : null}
+      <div className="table-wrap"><table className="users-table"><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>API Key</th><th>Last login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} />)}</tbody></table></div>
+    </section>
+  );
+}
+
+function UserRow({ token, user, reload, toast, showKey }: { token: string; user: User; reload: () => Promise<void>; toast: (type: Toast["type"], message: string) => void; showKey: (key: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [draft, setDraft] = useState({ email: user.email, name: user.name || "", password: "", role: user.role, status: user.status });
+  useEffect(() => {
+    if (!editing) setDraft({ email: user.email, name: user.name || "", password: "", role: user.role, status: user.status });
+  }, [editing, user.email, user.name, user.role, user.status]);
+  async function save() {
+    setSaving(true);
+    try {
+      const body: Partial<Pick<User, "email" | "name" | "role" | "status">> & { password?: string } = {
+        email: draft.email.trim(),
+        name: draft.name.trim(),
+        role: draft.role,
+        status: draft.status
+      };
+      if (draft.password.trim()) body.password = draft.password;
+      await api.updateUser(token, user.id, body);
+      await reload();
+      setEditing(false);
+      toast("success", "用户已更新");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function toggleStatus() {
+    await api.updateUser(token, user.id, { status: user.status === "active" ? "disabled" : "active" });
+    await reload();
+    toast("success", user.status === "active" ? "用户已停用" : "用户已启用");
+  }
+  async function remove() {
+    if (!confirm(`删除用户 ${user.email}？`)) return;
+    await api.deleteUser(token, user.id);
+    await reload();
+    toast("success", "用户已删除");
+  }
+  async function resetKey() {
+    if (!confirm(`重置 ${user.email} 的 API Key？旧 key 会立即失效。`)) return;
+    const data = await api.resetUserKey(token, user.id);
+    showKey(data.key);
+    await reload();
+    toast("success", "API Key 已重置");
+  }
+  return (
+    <tr>
+      <td>{editing ? <input className="cell-input" value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} /> : user.email}</td>
+      <td>{editing ? <input className="cell-input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /> : (user.name || "-")}</td>
+      <td>{editing ? <select className="cell-input" value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value as User["role"] })}><option>user</option><option>admin</option></select> : <Badge value={user.role} />}</td>
+      <td>{editing ? <select className="cell-input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as User["status"] })}><option value="active">active</option><option value="disabled">disabled</option></select> : <Badge value={user.status} />}</td>
+      <td><Badge value={user.api_key?.enabled ?? false} /><small>{user.api_key ? `${user.api_key.name} · ${fmtDate(user.api_key.last_used_at)}` : "missing"}</small></td>
+      <td>{fmtDate(user.last_login_at)}</td>
+      <td className="row-actions">
+        {editing ? (
+          <>
+            <input className="cell-input password-cell" type="password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} placeholder="new password" />
+            <button className="secondary small" disabled={saving} onClick={save}>{saving ? "保存中" : "保存"}</button>
+            <button className="ghost small" disabled={saving} onClick={() => setEditing(false)}>取消</button>
+          </>
+        ) : (
+          <>
+            <button className="ghost small" onClick={() => setEditing(true)}>编辑</button>
+            <IconButton title={user.status === "active" ? "停用" : "启用"} onClick={() => toggleStatus().catch((error) => toast("error", error.message))}>{user.status === "active" ? <Ban size={15} /> : <Eye size={15} />}</IconButton>
+            <IconButton title="重置 API Key" onClick={() => resetKey().catch((error) => toast("error", error.message))}><RotateCcw size={15} /></IconButton>
+            <IconButton title="删除" className="danger-icon" onClick={() => remove().catch((error) => toast("error", error.message))}><Trash2 size={15} /></IconButton>
+          </>
+        )}
+      </td>
+    </tr>
+  );
 }
 
 function SettingsPanel({ token, settings, setSettings, toast }: { token: string; settings: SettingsType; setSettings: (settings: SettingsType) => void; toast: (type: Toast["type"], message: string) => void }) {

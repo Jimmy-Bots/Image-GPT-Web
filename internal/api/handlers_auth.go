@@ -31,6 +31,12 @@ type userCreateRequest struct {
 	Role     domain.Role `json:"role"`
 }
 
+type userCreateResponse struct {
+	Item   domain.User    `json:"item"`
+	APIKey map[string]any `json:"api_key"`
+	Key    string         `json:"key"`
+}
+
 type userUpdateRequest struct {
 	Email    *string      `json:"email"`
 	Name     *string      `json:"name"`
@@ -39,19 +45,8 @@ type userUpdateRequest struct {
 	Status   *string      `json:"status"`
 }
 
-type keyCreateRequest struct {
-	Name   string `json:"name"`
-	UserID string `json:"user_id"`
-}
-
-type keyUpdateRequest struct {
-	Name    *string `json:"name"`
-	Enabled *bool   `json:"enabled"`
-	Key     *string `json:"key"`
-}
-
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if identity, ok := s.identityFromRequest(r); ok {
+	if identity, ok := s.sessionIdentityFromRequest(r); ok {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":         true,
 			"version":    s.cfg.AppVersion,
@@ -63,6 +58,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	var req loginRequest
 	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "email and password are required")
+		return
+	}
+	req.Email = strings.TrimSpace(req.Email)
+	if req.Email == "" || strings.TrimSpace(req.Password) == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "email and password are required")
 		return
 	}
@@ -117,6 +117,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "create_user_failed", err.Error())
 		return
 	}
+	keyItem, _, err := s.ensureUserAPIKey(r.Context(), user, "Default API Key", false)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "create_key_failed", err.Error())
+		return
+	}
+	user.APIKey = &keyItem
 	token, expiresAt, err := s.sessions.Sign(user.ID, user.Role)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "session_error", err.Error())
@@ -136,10 +142,6 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := s.store.GetUserByID(r.Context(), identity.ID)
 	if err != nil {
-		if identity.AuthType == "legacy" {
-			writeJSON(w, http.StatusOK, map[string]any{"identity": identity})
-			return
-		}
 		writeError(w, storageStatus(err), "user_not_found", err.Error())
 		return
 	}
@@ -150,7 +152,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	users, err := s.store.ListUsers(r.Context())
+	users, err := s.store.ListUsersWithAPIKeys(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
@@ -175,7 +177,13 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "create_user_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"item": user})
+	keyItem, raw, err := s.ensureUserAPIKey(r.Context(), user, "Default API Key", false)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "create_key_failed", err.Error())
+		return
+	}
+	user.APIKey = &keyItem
+	writeJSON(w, http.StatusCreated, userCreateResponse{Item: user, APIKey: publicKey(keyItem), Key: raw})
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +213,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, storageStatus(err), "update_user_failed", err.Error())
 		return
 	}
+	if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
+		user.APIKey = &key
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"item": user})
 }
 
@@ -218,7 +229,27 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, storageStatus(err), "delete_user_failed", err.Error())
 		return
 	}
+	if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
+		user.APIKey = &key
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"item": user})
+}
+
+func (s *Server) handleResetUserAPIKey(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	user, err := s.store.GetUserByID(r.Context(), r.PathValue("user_id"))
+	if err != nil {
+		writeError(w, storageStatus(err), "user_not_found", err.Error())
+		return
+	}
+	item, raw, err := s.ensureUserAPIKey(r.Context(), user, "Default API Key", true)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reset_key_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"item": publicKey(item), "key": raw})
 }
 
 func (s *Server) handleMyAPIKeys(w http.ResponseWriter, r *http.Request) {
@@ -226,127 +257,33 @@ func (s *Server) handleMyAPIKeys(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := s.store.ListAPIKeys(r.Context(), identity.ID, "")
+	item, err := s.store.GetAPIKeyByUserID(r.Context(), identity.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		writeError(w, storageStatus(err), "key_not_found", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": publicKeys(items)})
+	writeJSON(w, http.StatusOK, map[string]any{"items": publicKeys([]domain.APIKey{item})})
 }
 
 func (s *Server) handleCreateMyAPIKey(w http.ResponseWriter, r *http.Request) {
-	identity, ok := s.requireIdentity(w, r)
-	if !ok {
+	if _, ok := s.requireIdentity(w, r); !ok {
 		return
 	}
-	var req keyCreateRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
-	}
-	item, raw, err := s.createAPIKey(r.Context(), identity.ID, identity.Role, req.Name)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "create_key_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"item": publicKey(item), "key": raw})
+	writeError(w, http.StatusGone, "key_creation_disabled", "API keys are created with users; reset the user's key instead")
 }
 
 func (s *Server) handleUpdateMyAPIKey(w http.ResponseWriter, r *http.Request) {
-	identity, ok := s.requireIdentity(w, r)
-	if !ok {
+	if _, ok := s.requireIdentity(w, r); !ok {
 		return
 	}
-	s.updateAPIKey(w, r, r.PathValue("key_id"), identity.ID)
+	writeError(w, http.StatusGone, "key_update_disabled", "manage the user's API key from the admin user table")
 }
 
 func (s *Server) handleDeleteMyAPIKey(w http.ResponseWriter, r *http.Request) {
-	identity, ok := s.requireIdentity(w, r)
-	if !ok {
+	if _, ok := s.requireIdentity(w, r); !ok {
 		return
 	}
-	if err := s.store.DeleteAPIKey(r.Context(), r.PathValue("key_id"), identity.ID); err != nil {
-		writeError(w, storageStatus(err), "delete_key_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (s *Server) handleLegacyListUserKeys(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
-	items, err := s.store.ListAPIKeys(r.Context(), "", string(domain.RoleUser))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": publicKeys(items)})
-}
-
-func (s *Server) handleLegacyCreateUserKey(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
-	var req keyCreateRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
-	}
-	userID := strings.TrimSpace(req.UserID)
-	if userID == "" {
-		user, err := s.ensureDefaultAPIUser(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "default_user_failed", err.Error())
-			return
-		}
-		userID = user.ID
-	}
-	item, raw, err := s.createAPIKey(r.Context(), userID, domain.RoleUser, req.Name)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "create_key_failed", err.Error())
-		return
-	}
-	items, _ := s.store.ListAPIKeys(r.Context(), "", string(domain.RoleUser))
-	writeJSON(w, http.StatusCreated, map[string]any{"item": publicKey(item), "key": raw, "items": publicKeys(items)})
-}
-
-func (s *Server) handleLegacyUpdateUserKey(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
-	s.updateAPIKey(w, r, r.PathValue("key_id"), "")
-}
-
-func (s *Server) handleLegacyDeleteUserKey(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
-	if err := s.store.DeleteAPIKey(r.Context(), r.PathValue("key_id"), ""); err != nil {
-		writeError(w, storageStatus(err), "delete_key_failed", err.Error())
-		return
-	}
-	items, _ := s.store.ListAPIKeys(r.Context(), "", string(domain.RoleUser))
-	writeJSON(w, http.StatusOK, map[string]any{"items": publicKeys(items)})
-}
-
-func (s *Server) updateAPIKey(w http.ResponseWriter, r *http.Request, keyID string, userID string) {
-	var req keyUpdateRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
-	}
-	update := storage.APIKeyUpdate{Name: req.Name, Enabled: req.Enabled}
-	if req.Key != nil {
-		hash := auth.HashAPIKey(*req.Key)
-		update.KeyHash = &hash
-	}
-	item, err := s.store.UpdateAPIKey(r.Context(), keyID, userID, update)
-	if err != nil {
-		writeError(w, storageStatus(err), "update_key_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"item": publicKey(item)})
+	writeError(w, http.StatusGone, "key_deletion_disabled", "each user keeps one API key; disable or delete the user instead")
 }
 
 func (s *Server) createUser(ctx context.Context, email string, name string, password string, role domain.Role) (domain.User, error) {
@@ -382,40 +319,56 @@ func (s *Server) createUser(ctx context.Context, email string, name string, pass
 	return user, nil
 }
 
-func (s *Server) ensureDefaultAPIUser(ctx context.Context) (domain.User, error) {
-	users, err := s.store.ListUsers(ctx)
-	if err != nil {
-		return domain.User{}, err
-	}
-	for _, user := range users {
-		if user.Role == domain.RoleUser && user.Email == "api-user@local" {
-			return user, nil
+func (s *Server) ensureUserAPIKey(ctx context.Context, user domain.User, name string, reset bool) (domain.APIKey, string, error) {
+	if !reset {
+		key, err := s.store.GetAPIKeyByUserID(ctx, user.ID)
+		if err == nil {
+			return key, "", nil
 		}
-	}
-	return s.createUser(ctx, "api-user@local", "API User", auth.RandomID(18), domain.RoleUser)
-}
-
-func (s *Server) createAPIKey(ctx context.Context, userID string, role domain.Role, name string) (domain.APIKey, string, error) {
-	if _, err := s.store.GetUserByID(ctx, userID); err != nil {
-		return domain.APIKey{}, "", err
+		if !errors.Is(err, storage.ErrNotFound) {
+			return domain.APIKey{}, "", err
+		}
 	}
 	raw := auth.NewAPIKey()
 	if strings.TrimSpace(name) == "" {
-		name = "API Key"
+		name = "Default API Key"
 	}
 	item := domain.APIKey{
 		ID:        auth.RandomID(12),
-		UserID:    userID,
+		UserID:    user.ID,
 		Name:      strings.TrimSpace(name),
-		Role:      role,
+		Role:      user.Role,
 		KeyHash:   auth.HashAPIKey(raw),
-		Enabled:   true,
+		Enabled:   user.Status == domain.UserStatusActive,
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := s.store.CreateAPIKey(ctx, item); err != nil {
+	if err := s.store.UpsertUserAPIKey(ctx, item); err != nil {
 		return domain.APIKey{}, "", err
 	}
-	return item, raw, nil
+	saved, err := s.store.GetAPIKeyByUserID(ctx, user.ID)
+	if err != nil {
+		return domain.APIKey{}, "", err
+	}
+	return saved, raw, nil
+}
+
+func (s *Server) syncUserAPIKey(ctx context.Context, user domain.User) (domain.APIKey, error) {
+	key, err := s.store.GetAPIKeyByUserID(ctx, user.ID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) && user.Status != domain.UserStatusDeleted {
+			key, _, err = s.ensureUserAPIKey(ctx, user, "Default API Key", false)
+		}
+		return key, err
+	}
+	enabled := user.Status == domain.UserStatusActive
+	name := key.Name
+	role := user.Role
+	update := storage.APIKeyUpdate{Name: &name, Enabled: &enabled, Role: &role}
+	item, err := s.store.UpdateAPIKey(ctx, key.ID, user.ID, update)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	return item, nil
 }
 
 func remoteAddr(r *http.Request) string {

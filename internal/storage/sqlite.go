@@ -147,6 +147,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := s.ensureSingleAPIKeyPerUser(ctx); err != nil {
+		return err
+	}
 	if err := s.addColumnIfMissing(ctx, "accounts", "limits_progress_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
@@ -154,6 +157,23 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Store) ensureSingleAPIKeyPerUser(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM api_keys
+		WHERE rowid NOT IN (
+			SELECT (
+				SELECT candidate.rowid FROM api_keys AS candidate
+				WHERE candidate.user_id = users.user_id
+				ORDER BY candidate.created_at DESC, candidate.id DESC
+				LIMIT 1
+			)
+			FROM (SELECT DISTINCT user_id FROM api_keys) AS users
+		)`); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique ON api_keys(user_id)`)
+	return err
 }
 
 func (s *Store) addColumnIfMissing(ctx context.Context, table string, column string, definition string) error {
@@ -231,6 +251,24 @@ func (s *Store) ListUsers(ctx context.Context) ([]domain.User, error) {
 	return users, rows.Err()
 }
 
+func (s *Store) ListUsersWithAPIKeys(ctx context.Context) ([]domain.User, error) {
+	users, err := s.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for index := range users {
+		key, err := s.GetAPIKeyByUserID(ctx, users[index].ID)
+		if err == nil {
+			users[index].APIKey = &key
+			continue
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	}
+	return users, nil
+}
+
 func (s *Store) GetUserByID(ctx context.Context, id string) (domain.User, error) {
 	row := s.db.QueryRowContext(
 		ctx,
@@ -284,6 +322,9 @@ func (s *Store) UpdateUser(ctx context.Context, id string, update UserUpdate) (d
 	if update.Status != nil {
 		current.Status = *update.Status
 	}
+	if current.Status != domain.UserStatusActive && current.Status != domain.UserStatusDisabled && current.Status != domain.UserStatusDeleted {
+		return domain.User{}, fmt.Errorf("invalid user status")
+	}
 	current.UpdatedAt = time.Now().UTC()
 	_, err = s.db.ExecContext(
 		ctx,
@@ -302,11 +343,18 @@ func (s *Store) UpdateUser(ctx context.Context, id string, update UserUpdate) (d
 	return current, nil
 }
 
-func (s *Store) CreateAPIKey(ctx context.Context, item domain.APIKey) error {
+func (s *Store) UpsertUserAPIKey(ctx context.Context, item domain.APIKey) error {
 	_, err := s.db.ExecContext(
 		ctx,
 		`INSERT INTO api_keys (id, user_id, name, role, key_hash, enabled, created_at, last_used_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id) DO UPDATE SET
+			name = excluded.name,
+			role = excluded.role,
+			key_hash = excluded.key_hash,
+			enabled = excluded.enabled,
+			created_at = excluded.created_at,
+			last_used_at = NULL`,
 		item.ID,
 		item.UserID,
 		item.Name,
@@ -317,37 +365,6 @@ func (s *Store) CreateAPIKey(ctx context.Context, item domain.APIKey) error {
 		formatTimePtr(item.LastUsedAt),
 	)
 	return err
-}
-
-func (s *Store) ListAPIKeys(ctx context.Context, userID string, role string) ([]domain.APIKey, error) {
-	query := `SELECT id, user_id, name, role, key_hash, enabled, created_at, last_used_at FROM api_keys WHERE 1 = 1`
-	var args []any
-	if userID != "" {
-		query += ` AND user_id = ?`
-		args = append(args, userID)
-	}
-	if role != "" {
-		query += ` AND role = ?`
-		args = append(args, role)
-	}
-	query += ` ORDER BY created_at DESC`
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []domain.APIKey
-	for rows.Next() {
-		item, err := scanAPIKey(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	if items == nil {
-		items = []domain.APIKey{}
-	}
-	return items, rows.Err()
 }
 
 func (s *Store) FindAPIKeyByHash(ctx context.Context, hash string) (domain.APIKey, error) {
@@ -364,10 +381,11 @@ type APIKeyUpdate struct {
 	Name    *string
 	Enabled *bool
 	KeyHash *string
+	Role    *domain.Role
 }
 
 func (s *Store) UpdateAPIKey(ctx context.Context, id string, userID string, update APIKeyUpdate) (domain.APIKey, error) {
-	current, err := s.GetAPIKey(ctx, id, userID)
+	current, err := s.getAPIKey(ctx, id, userID)
 	if err != nil {
 		return domain.APIKey{}, err
 	}
@@ -380,12 +398,16 @@ func (s *Store) UpdateAPIKey(ctx context.Context, id string, userID string, upda
 	if update.KeyHash != nil {
 		current.KeyHash = *update.KeyHash
 	}
+	if update.Role != nil {
+		current.Role = *update.Role
+	}
 	_, err = s.db.ExecContext(
 		ctx,
-		`UPDATE api_keys SET name = ?, enabled = ?, key_hash = ? WHERE id = ?`,
+		`UPDATE api_keys SET name = ?, enabled = ?, key_hash = ?, role = ? WHERE id = ?`,
 		current.Name,
 		boolInt(current.Enabled),
 		current.KeyHash,
+		string(current.Role),
 		id,
 	)
 	if err != nil {
@@ -394,7 +416,7 @@ func (s *Store) UpdateAPIKey(ctx context.Context, id string, userID string, upda
 	return current, nil
 }
 
-func (s *Store) GetAPIKey(ctx context.Context, id string, userID string) (domain.APIKey, error) {
+func (s *Store) getAPIKey(ctx context.Context, id string, userID string) (domain.APIKey, error) {
 	query := `SELECT id, user_id, name, role, key_hash, enabled, created_at, last_used_at FROM api_keys WHERE id = ?`
 	args := []any{id}
 	if userID != "" {
@@ -404,22 +426,14 @@ func (s *Store) GetAPIKey(ctx context.Context, id string, userID string) (domain
 	return scanAPIKey(s.db.QueryRowContext(ctx, query, args...))
 }
 
-func (s *Store) DeleteAPIKey(ctx context.Context, id string, userID string) error {
-	query := `DELETE FROM api_keys WHERE id = ?`
-	args := []any{id}
-	if userID != "" {
-		query += ` AND user_id = ?`
-		args = append(args, userID)
-	}
-	res, err := s.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return err
-	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		return ErrNotFound
-	}
-	return nil
+func (s *Store) GetAPIKeyByUserID(ctx context.Context, userID string) (domain.APIKey, error) {
+	row := s.db.QueryRowContext(
+		ctx,
+		`SELECT id, user_id, name, role, key_hash, enabled, created_at, last_used_at
+		 FROM api_keys WHERE user_id = ?`,
+		userID,
+	)
+	return scanAPIKey(row)
 }
 
 func (s *Store) TouchAPIKey(ctx context.Context, id string, at time.Time) error {
