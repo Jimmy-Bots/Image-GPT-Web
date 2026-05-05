@@ -14,9 +14,14 @@ type Config struct {
 	Addr                    string
 	AppVersion              string
 	DataDir                 string
+	WebDir                  string
 	DatabasePath            string
 	DBMaxOpenConns          int
 	ProxyURL                string
+	CORSAllowedOrigins      []string
+	MaxRequestBodyBytes     int64
+	LoginRateLimitMax       int
+	LoginRateLimitWindowSec int
 	LegacyAdminKey          string
 	SessionSecret           string
 	SessionTTLHours         int
@@ -35,9 +40,14 @@ func Load() (Config, error) {
 		Addr:                    envString("CHATGPT2API_ADDR", ":3000"),
 		AppVersion:              envString("CHATGPT2API_VERSION", "0.1.0-go"),
 		DataDir:                 dataDir,
+		WebDir:                  envString("CHATGPT2API_WEB_DIR", "./web"),
 		DatabasePath:            dbPath,
 		DBMaxOpenConns:          envInt("CHATGPT2API_DB_MAX_OPEN_CONNS", 16, 1),
 		ProxyURL:                envString("CHATGPT2API_PROXY_URL", ""),
+		CORSAllowedOrigins:      envList("CHATGPT2API_CORS_ALLOWED_ORIGINS"),
+		MaxRequestBodyBytes:     int64(envInt("CHATGPT2API_MAX_REQUEST_BODY_MB", 80, 1)) << 20,
+		LoginRateLimitMax:       envInt("CHATGPT2API_LOGIN_RATE_LIMIT_MAX", 8, 1),
+		LoginRateLimitWindowSec: envInt("CHATGPT2API_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300, 1),
 		LegacyAdminKey:          strings.TrimSpace(os.Getenv("CHATGPT2API_AUTH_KEY")),
 		SessionSecret:           strings.TrimSpace(os.Getenv("CHATGPT2API_SESSION_SECRET")),
 		SessionTTLHours:         envInt("CHATGPT2API_SESSION_TTL_HOURS", 24*14, 1),
@@ -86,6 +96,22 @@ func envBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func envList(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return []string{}
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
 }
 
 func randomSecret() string {

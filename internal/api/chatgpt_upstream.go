@@ -473,7 +473,7 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 	for result := range results {
 		if result.err != nil {
 			errorsList = append(errorsList, map[string]string{
-				"access_token": maskToken(result.token),
+				"access_token": result.token,
 				"error":        result.err.Error(),
 			})
 			continue
