@@ -218,7 +218,9 @@ func (s *Server) handleListLogs(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	items, err := s.store.ListLogs(r.Context(), strings.TrimSpace(r.URL.Query().Get("type")))
+	ids := compactStrings(strings.Split(r.URL.Query().Get("ids"), ","))
+	includeDetail := len(ids) > 0 || boolFromAny(r.URL.Query().Get("detail"))
+	items, err := s.store.ListLogs(r.Context(), strings.TrimSpace(r.URL.Query().Get("type")), ids, includeDetail)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return

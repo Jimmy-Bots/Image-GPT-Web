@@ -62,7 +62,7 @@ func Load() (Config, error) {
 		AllowPublicRegistration: envBool("CHATGPT2API_ALLOW_REGISTRATION", false),
 		ImageWorkerCount:        envInt("CHATGPT2API_IMAGE_WORKERS", 4, 1),
 		ImageQueueSize:          envInt("CHATGPT2API_IMAGE_QUEUE_SIZE", 128, 1),
-		ImageAccountConcurrency: envInt("CHATGPT2API_IMAGE_ACCOUNT_CONCURRENCY", 3, 1),
+		ImageAccountConcurrency: envInt("CHATGPT2API_IMAGE_ACCOUNT_CONCURRENCY", 1, 1),
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create data dir: %w", err)

@@ -624,7 +624,7 @@ func hostWithoutPort(rawURL string) string {
 
 func buildImagePrompt(prompt string, size string) string {
 	size = strings.TrimSpace(size)
-	if size == "" {
+	if size == "" || strings.EqualFold(size, "auto") || strings.EqualFold(size, "default") {
 		return prompt
 	}
 	hints := map[string]string{

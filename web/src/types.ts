@@ -54,6 +54,7 @@ export type ImageTask = {
   mode: "generate" | "edit";
   model?: string;
   size?: string;
+  prompt?: string;
   data?: ImageResult[];
   error?: string;
   created_at: string;

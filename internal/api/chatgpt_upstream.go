@@ -68,11 +68,15 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 	}
 	results := make([]map[string]any, 0, req.N)
 	attempted := make(map[string]struct{})
+	var lastErr error
 	for index := 0; index < req.N; index++ {
 		account, release, err := u.pool.AcquireImage(ctx, attempted)
 		if err != nil {
 			if len(results) > 0 {
 				break
+			}
+			if lastErr != nil {
+				return nil, lastErr
 			}
 			return nil, err
 		}
@@ -89,6 +93,7 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 		if err != nil {
 			log.Printf("upstream_image generate_failed index=%d account=%s duration_ms=%d err=%v", index+1, maskToken(account.AccessToken), time.Since(start).Milliseconds(), err)
 			attempted[account.AccessToken] = struct{}{}
+			lastErr = err
 			u.markImageResult(ctx, account.AccessToken, false)
 			if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
 				status := "异常"
@@ -97,10 +102,8 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 				index--
 				continue
 			}
-			if len(results) > 0 {
-				break
-			}
-			return nil, err
+			index--
+			continue
 		}
 		log.Printf("upstream_image generate_success index=%d account=%s results=%d duration_ms=%d", index+1, maskToken(account.AccessToken), len(imageResults), time.Since(start).Milliseconds())
 		u.markImageResult(ctx, account.AccessToken, true)
@@ -119,6 +122,9 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 		}
 	}
 	if len(results) == 0 {
+		if lastErr != nil {
+			return nil, lastErr
+		}
 		return nil, fmt.Errorf("image generation returned no image")
 	}
 	return map[string]any{"created": time.Now().Unix(), "data": results}, nil
@@ -136,6 +142,7 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 	}
 	results := make([]map[string]any, 0, req.N)
 	attempted := make(map[string]struct{})
+	var lastErr error
 	inputs := make([]chatgpt.ImageInput, 0, len(req.Images))
 	for _, image := range req.Images {
 		inputs = append(inputs, chatgpt.ImageInput{
@@ -149,6 +156,9 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 		if err != nil {
 			if len(results) > 0 {
 				break
+			}
+			if lastErr != nil {
+				return nil, lastErr
 			}
 			return nil, err
 		}
@@ -166,6 +176,7 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 		if err != nil {
 			log.Printf("upstream_image edit_failed index=%d account=%s duration_ms=%d err=%v", index+1, maskToken(account.AccessToken), time.Since(start).Milliseconds(), err)
 			attempted[account.AccessToken] = struct{}{}
+			lastErr = err
 			u.markImageResult(ctx, account.AccessToken, false)
 			if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
 				status := "异常"
@@ -174,10 +185,8 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 				index--
 				continue
 			}
-			if len(results) > 0 {
-				break
-			}
-			return nil, err
+			index--
+			continue
 		}
 		log.Printf("upstream_image edit_success index=%d account=%s results=%d duration_ms=%d", index+1, maskToken(account.AccessToken), len(imageResults), time.Since(start).Milliseconds())
 		u.markImageResult(ctx, account.AccessToken, true)
@@ -196,6 +205,9 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 		}
 	}
 	if len(results) == 0 {
+		if lastErr != nil {
+			return nil, lastErr
+		}
 		return nil, fmt.Errorf("image edit returned no image")
 	}
 	return map[string]any{"created": time.Now().Unix(), "data": results}, nil
