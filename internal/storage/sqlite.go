@@ -831,6 +831,7 @@ func defaultSettings() map[string]any {
 		"auto_remove_invalid_accounts":      false,
 		"auto_remove_rate_limited_accounts": false,
 		"log_levels":                        []any{},
+		"ai_review":                         map[string]any{"enabled": false, "base_url": "", "api_key": "", "model": "", "prompt": ""},
 	}
 }
 

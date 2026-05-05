@@ -17,6 +17,8 @@ This version intentionally removes the old register/register-machine module. The
 - Settings, logs, storage info, and health endpoints.
 - OpenAI-compatible model, image generation/edit, chat completions, responses, and Anthropic messages routes.
 - Streaming output for `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`.
+- Legacy `/v1/complete` compatibility for text completion clients.
+- Sensitive-word filtering and optional OpenAI-compatible AI review before upstream calls.
 - Async image task queue with bounded workers for generation and edit tasks.
 - Outbound proxy support through `CHATGPT2API_PROXY_URL`.
 
@@ -69,7 +71,7 @@ Useful environment variables:
 - `GET|POST /api/settings`: system settings.
 - `GET /api/storage/info`: storage status.
 - `GET /v1/models`: OpenAI-compatible model list.
-- `POST /v1/images/generations`, `/v1/images/edits`, `/v1/chat/completions`, `/v1/responses`, `/v1/messages`: preserved compatibility surface.
+- `POST /v1/images/generations`, `/v1/images/edits`, `/v1/chat/completions`, `/v1/complete`, `/v1/responses`, `/v1/messages`: preserved compatibility surface.
 
 Use `Authorization: Bearer <token>` for all protected endpoints. The token can be a login session token, a generated user API key, or the legacy `CHATGPT2API_AUTH_KEY` admin key.
 

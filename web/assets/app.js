@@ -345,6 +345,7 @@ async function runPlayground() {
   if (endpoint === "/v1/responses") payload = { model: "auto", input: prompt, stream };
   else if (endpoint === "/v1/messages") payload = { model: "auto", messages: [{ role: "user", content: prompt }], stream };
   else if (endpoint === "/v1/images/generations") payload = { model: "gpt-image-2", prompt, response_format: "url", n: 1 };
+  else if (endpoint === "/v1/complete") payload = { model: "auto", prompt, stream };
   else payload = { model: "auto", messages: [{ role: "user", content: prompt }], stream };
 
   if (!stream) {

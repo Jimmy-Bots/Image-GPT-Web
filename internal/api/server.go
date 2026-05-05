@@ -94,6 +94,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/images/generations", s.handleImageGenerations)
 	mux.HandleFunc("POST /v1/images/edits", s.handleImageEdits)
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
+	mux.HandleFunc("POST /v1/complete", s.handleLegacyComplete)
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
 	mux.HandleFunc("POST /v1/messages", s.handleAnthropicMessages)
 	mux.HandleFunc("GET /", s.handleWebIndex)
