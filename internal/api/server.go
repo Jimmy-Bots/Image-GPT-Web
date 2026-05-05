@@ -55,6 +55,9 @@ func (s *Server) Close() {
 func (s *Server) SetUpstream(upstream Upstream) {
 	if upstream != nil {
 		s.upstream = upstream
+		if s.tasks != nil {
+			s.tasks.upstream = upstream
+		}
 	}
 }
 

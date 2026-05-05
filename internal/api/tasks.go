@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	taskQueued  = "queued"
-	taskRunning = "running"
-	taskSuccess = "success"
-	taskError   = "error"
+	taskQueued           = "queued"
+	taskRunning          = "running"
+	taskSuccess          = "success"
+	taskError            = "error"
+	defaultImageTaskSize = "1:1"
 )
 
 type TaskQueue struct {
@@ -142,12 +143,18 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	taskID := strings.TrimSpace(req.ClientTaskID)
-	if taskID == "" || strings.TrimSpace(req.Prompt) == "" {
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	req.Model = strings.TrimSpace(req.Model)
+	req.Size = normalizeImageTaskSize(req.Size)
+	if taskID == "" || req.Prompt == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "client_task_id and prompt are required")
 		return
 	}
 	if req.Model == "" {
 		req.Model = "gpt-image-2"
+	}
+	if !s.checkContentPolicy(w, r, identity, "/api/image-tasks/generations", req.Model, req.Prompt) {
+		return
 	}
 	now := time.Now().UTC()
 	task := domain.ImageTask{
@@ -198,6 +205,10 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 	}
 	req, ok := parseImageEditPayload(w, r)
 	if !ok {
+		return
+	}
+	req.Size = normalizeImageTaskSize(req.Size)
+	if !s.checkContentPolicy(w, r, identity, "/api/image-tasks/edits", req.Model, req.Prompt) {
 		return
 	}
 	taskID := strings.TrimSpace(r.FormValue("client_task_id"))
@@ -255,6 +266,14 @@ func clampImageTaskCount(value int) int {
 	}
 	if value > 4 {
 		return 4
+	}
+	return value
+}
+
+func normalizeImageTaskSize(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return defaultImageTaskSize
 	}
 	return value
 }
