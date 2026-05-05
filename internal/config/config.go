@@ -43,7 +43,7 @@ func Load() (Config, error) {
 		Addr:                    envString("CHATGPT2API_ADDR", ":3000"),
 		AppVersion:              envString("CHATGPT2API_VERSION", "0.1.0-go"),
 		DataDir:                 dataDir,
-		WebDir:                  envString("CHATGPT2API_WEB_DIR", "./web"),
+		WebDir:                  envString("CHATGPT2API_WEB_DIR", "./web/dist"),
 		ImagesDir:               envString("CHATGPT2API_IMAGES_DIR", filepath.Join(dataDir, "images")),
 		DatabasePath:            dbPath,
 		DBMaxOpenConns:          envInt("CHATGPT2API_DB_MAX_OPEN_CONNS", 16, 1),

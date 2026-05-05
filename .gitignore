@@ -8,6 +8,11 @@ test
 # Build outputs
 bin/
 dist/
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
 coverage.out
 /server
 

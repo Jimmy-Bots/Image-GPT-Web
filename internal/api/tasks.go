@@ -113,6 +113,7 @@ type imageTaskCreateRequest struct {
 	Prompt       string `json:"prompt"`
 	Model        string `json:"model"`
 	Size         string `json:"size"`
+	N            int    `json:"n"`
 }
 
 func (s *Server) handleListImageTasks(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +178,7 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 		Gen: ImageGenerationPayload{
 			Prompt:         req.Prompt,
 			Model:          req.Model,
-			N:              1,
+			N:              clampImageTaskCount(req.N),
 			Size:           req.Size,
 			ResponseFormat: "b64_json",
 		},
@@ -246,4 +247,14 @@ func missingTaskIDs(requested []string, items []domain.ImageTask) []string {
 
 func randomLogID() string {
 	return auth.RandomID(12)
+}
+
+func clampImageTaskCount(value int) int {
+	if value < 1 {
+		return 1
+	}
+	if value > 4 {
+		return 4
+	}
+	return value
 }
