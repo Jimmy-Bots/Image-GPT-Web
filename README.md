@@ -15,6 +15,7 @@ This version intentionally removes the old register/register-machine module. The
 - Account pool CRUD endpoints.
 - Static management UI served from `/`.
 - Settings, logs, storage info, and health endpoints.
+- Local image archive with list/delete APIs and `/images/*` static serving.
 - OpenAI-compatible model, image generation/edit, chat completions, responses, and Anthropic messages routes.
 - Streaming output for `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`.
 - Legacy `/v1/complete` compatibility for text completion clients.
@@ -60,7 +61,9 @@ Useful environment variables:
 - `CHATGPT2API_DATA_DIR`: data directory, default `./data`.
 - `CHATGPT2API_DB_PATH`: SQLite DB path, default `./data/app.db`.
 - `CHATGPT2API_WEB_DIR`: static management UI directory, default `./web`.
+- `CHATGPT2API_IMAGES_DIR`: local image archive directory, default `./data/images`.
 - `CHATGPT2API_PROXY_URL`: optional outbound proxy, for example `http://localhost:20122`.
+- `CHATGPT2API_BASE_URL`: public base URL used by async image tasks when producing archived image URLs.
 - `CHATGPT2API_CORS_ALLOWED_ORIGINS`: comma-separated allowed browser origins. Empty means same-origin only.
 - `CHATGPT2API_MAX_REQUEST_BODY_MB`: request body cap, default `80`.
 - `CHATGPT2API_LOGIN_RATE_LIMIT_MAX`: login attempts per IP/email window, default `8`.
@@ -78,6 +81,7 @@ Useful environment variables:
 - `POST /api/accounts/refresh`: refresh account profile, plan, model, and image quota state.
 - `GET|POST /api/settings`: system settings.
 - `GET /api/storage/info`: storage status.
+- `GET /api/images`, `POST /api/images/delete`: local image archive management.
 - `GET /v1/models`: OpenAI-compatible model list.
 - `POST /v1/images/generations`, `/v1/images/edits`, `/v1/chat/completions`, `/v1/complete`, `/v1/responses`, `/v1/messages`: preserved compatibility surface.
 

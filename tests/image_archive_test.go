@@ -1,0 +1,69 @@
+package tests
+
+import (
+	"context"
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"gpt-image-web/internal/api"
+)
+
+func TestImageGenerationPersistsLocalArchive(t *testing.T) {
+	server, cleanup := newTestServer(t, imageArchiveUpstream{})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"draw","model":"gpt-image-2","response_format":"b64_json"}`))
+	req.Host = "example.test"
+	req.Header.Set("Authorization", "Bearer dev-key")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("generation failed: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"url":"http://example.test/images/`) {
+		t.Fatalf("response missing local image URL: %s", rec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/images", nil)
+	listReq.Host = "example.test"
+	listReq.Header.Set("Authorization", "Bearer dev-key")
+	listRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list failed: %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	body := listRec.Body.String()
+	if !strings.Contains(body, `"items":[`) || !strings.Contains(body, `/images/`) {
+		t.Fatalf("unexpected image list: %s", body)
+	}
+	path := strings.Split(strings.Split(body, `"path":"`)[1], `"`)[0]
+
+	deleteReq := httptest.NewRequest(http.MethodPost, "/api/images/delete", strings.NewReader(`{"paths":["`+path+`"]}`))
+	deleteReq.Header.Set("Authorization", "Bearer dev-key")
+	deleteReq.Header.Set("Content-Type", "application/json")
+	deleteRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK || !strings.Contains(deleteRec.Body.String(), `"removed":1`) {
+		t.Fatalf("delete failed: %d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+}
+
+type imageArchiveUpstream struct {
+	fakeStreamUpstream
+}
+
+func (imageArchiveUpstream) GenerateImage(ctx context.Context, req api.ImageGenerationPayload) (map[string]any, error) {
+	return map[string]any{
+		"created": int64(1),
+		"data": []map[string]any{{
+			"b64_json":       base64.StdEncoding.EncodeToString([]byte("png-ish")),
+			"revised_prompt": "draw",
+		}},
+	}, nil
+}
+
+var _ api.Upstream = imageArchiveUpstream{}
