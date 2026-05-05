@@ -57,6 +57,16 @@ type WorkbenchTurn = {
   error?: string;
 };
 
+type StoredWorkbenchRef = Omit<ReferenceImage, "file">;
+type StoredWorkbenchTurn = Omit<WorkbenchTurn, "refs"> & { refs: StoredWorkbenchRef[] };
+type StoredWorkbenchState = {
+  version: 1;
+  activeTurnId: string | null;
+  turns: StoredWorkbenchTurn[];
+};
+
+const workbenchStoragePrefix = "gpt_image_web_workbench:";
+
 const navItems: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: "dashboard", label: "总览", icon: Activity },
   { id: "accounts", label: "账号池", icon: Users },
@@ -359,7 +369,7 @@ function ImageHome({
         </div>
       </header>
 
-      <ImageWorkbench token={token} accounts={accounts} canRefreshArchive={isAdmin} setTasks={setTasks} setImages={setImages} toast={toast} openLightbox={openLightbox} />
+      <ImageWorkbench token={token} identity={identity} accounts={accounts} canRefreshArchive={isAdmin} setTasks={setTasks} setImages={setImages} toast={toast} openLightbox={openLightbox} />
 
       <div className="toast-stack">
         {toasts.map((item) => <div key={item.id} className={classNames("toast", item.type)}>{item.message}</div>)}
@@ -515,7 +525,7 @@ function AccountsPanel({ token, accounts, setAccounts, toast, busy, runBusy }: {
   );
 }
 
-function ImageWorkbench({ token, accounts, canRefreshArchive, setTasks, setImages, toast, openLightbox }: { token: string; accounts: Account[]; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
+function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks, setImages, toast, openLightbox }: { token: string; identity: Identity; accounts: Account[]; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("gpt-image-2");
   const [size, setSize] = useState("");
@@ -525,12 +535,37 @@ function ImageWorkbench({ token, accounts, canRefreshArchive, setTasks, setImage
   const [turns, setTurns] = useState<WorkbenchTurn[]>([]);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [historyReady, setHistoryReady] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const storageKey = useMemo(() => `${workbenchStoragePrefix}${identity.id || identity.key_id || "legacy"}`, [identity.id, identity.key_id]);
   const quota = accounts.length ? quotaSummary(accounts) : "可用";
   const activeTaskCount = useMemo(() => turns.reduce((sum, turn) => sum + turn.images.filter((item) => item.status === "queued" || item.status === "running").length, 0), [turns]);
   const activeTaskIds = useMemo(() => Array.from(new Set(turns.flatMap((turn) => turn.images.flatMap((item) => item.taskId && (item.status === "queued" || item.status === "running") ? [item.taskId] : [])))), [turns]);
   const activeTaskKey = activeTaskIds.join(",");
   const hasHistory = turns.length > 0;
+
+  useEffect(() => {
+    let cancelled = false;
+    setHistoryReady(false);
+    setTurns([]);
+    setActiveTurnId(null);
+    loadWorkbenchState(storageKey).then((state) => {
+      if (cancelled) return;
+      setTurns(state.turns);
+      setActiveTurnId(state.activeTurnId);
+      setHistoryReady(true);
+    }).catch(() => {
+      if (!cancelled) setHistoryReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!historyReady) return;
+    saveWorkbenchState(storageKey, { version: 1, activeTurnId, turns: serializeWorkbenchTurns(turns) });
+  }, [activeTurnId, historyReady, storageKey, turns]);
 
   async function addFiles(files: File[]) {
     const next = await Promise.all(files.filter((file) => file.type.startsWith("image/")).map(async (file) => ({ id: createID("ref"), name: file.name, file, dataUrl: await fileToDataURL(file) })));
@@ -538,7 +573,7 @@ function ImageWorkbench({ token, accounts, canRefreshArchive, setTasks, setImage
   }
 
   useEffect(() => {
-    if (!activeTaskKey) return;
+    if (!historyReady || !activeTaskKey) return;
     const ids = activeTaskKey.split(",").filter(Boolean);
     const poll = async () => {
       try {
@@ -555,7 +590,7 @@ function ImageWorkbench({ token, accounts, canRefreshArchive, setTasks, setImage
     poll();
     const timer = window.setInterval(poll, 2500);
     return () => window.clearInterval(timer);
-  }, [activeTaskKey, token]);
+  }, [activeTaskKey, historyReady, token]);
 
   function applyTaskUpdates(items: ImageTask[]) {
     const taskMap = new Map(items.map((task) => [task.id, task]));
@@ -762,7 +797,12 @@ function ImageWorkbench({ token, accounts, canRefreshArchive, setTasks, setImage
       <aside className="creator-rail">
         <div className="rail-actions">
           <button onClick={() => { setActiveTurnId(null); setPrompt(""); setRefs([]); }}><MessageSquarePlus size={16} />新建</button>
-          <IconButton title="清空历史" disabled={!turns.length} onClick={() => confirm("清空当前页面的图片记录？") && setTurns([])}><Trash2 size={15} /></IconButton>
+          <IconButton title="清空历史" disabled={!turns.length} onClick={() => {
+            if (!confirm("清空当前页面的图片记录？")) return;
+            setTurns([]);
+            setActiveTurnId(null);
+            localStorage.removeItem(storageKey);
+          }}><Trash2 size={15} /></IconButton>
         </div>
         <div className="history-list">
           {!hasHistory ? <div className="history-empty">暂无图片记录</div> : turns.map((turn) => (
@@ -934,6 +974,50 @@ function dataURLToFile(dataUrl: string, name: string) {
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return new File([bytes], name, { type: mime });
+}
+
+function serializeWorkbenchTurns(turns: WorkbenchTurn[]): StoredWorkbenchTurn[] {
+  return turns.slice(0, 80).map((turn) => ({
+    ...turn,
+    refs: turn.refs.map(({ id, name, dataUrl }) => ({ id, name, dataUrl }))
+  }));
+}
+
+async function loadWorkbenchState(key: string): Promise<{ activeTurnId: string | null; turns: WorkbenchTurn[] }> {
+  const raw = localStorage.getItem(key);
+  if (!raw) return { activeTurnId: null, turns: [] };
+  const parsed = JSON.parse(raw) as Partial<StoredWorkbenchState>;
+  if (parsed.version !== 1 || !Array.isArray(parsed.turns)) return { activeTurnId: null, turns: [] };
+  const turns = await Promise.all(parsed.turns.map(restoreWorkbenchTurn));
+  const activeTurnId = parsed.activeTurnId && turns.some((turn) => turn.id === parsed.activeTurnId) ? parsed.activeTurnId : turns[0]?.id ?? null;
+  return { activeTurnId, turns };
+}
+
+async function restoreWorkbenchTurn(turn: StoredWorkbenchTurn): Promise<WorkbenchTurn> {
+  const refs = turn.refs.map((ref) => {
+    const file = dataURLToFile(ref.dataUrl, ref.name || `${ref.id}.png`);
+    return { ...ref, file };
+  });
+  const images = Array.isArray(turn.images) ? turn.images : [];
+  return {
+    ...turn,
+    refs,
+    images,
+    status: deriveTurnStatus(images),
+    error: turn.error || images.find((item) => item.error)?.error
+  };
+}
+
+function saveWorkbenchState(key: string, state: StoredWorkbenchState) {
+  try {
+    if (!state.turns.length) {
+      localStorage.removeItem(key);
+      return;
+    }
+    localStorage.setItem(key, JSON.stringify(state));
+  } catch {
+    // Browser storage can be full when many base64 images are kept; the UI still works in memory.
+  }
 }
 
 async function buildReferenceFromResult(item: WorkbenchItem): Promise<ReferenceImage> {
