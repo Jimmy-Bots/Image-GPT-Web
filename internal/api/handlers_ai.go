@@ -47,6 +47,7 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	if req.Model == "" {
 		req.Model = "gpt-image-2"
 	}
+	req.Size = normalizeImageTaskSize(req.Size)
 	if !s.checkContentPolicy(w, r, identity, "/v1/images/generations", req.Model, req.Prompt) {
 		return
 	}
@@ -83,6 +84,7 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	req.Size = normalizeImageTaskSize(req.Size)
 	if !s.checkContentPolicy(w, r, identity, "/v1/images/edits", req.Model, req.Prompt) {
 		return
 	}

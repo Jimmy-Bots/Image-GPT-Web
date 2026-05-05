@@ -528,7 +528,7 @@ function AccountsPanel({ token, accounts, setAccounts, toast, busy, runBusy }: {
 function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks, setImages, toast, openLightbox }: { token: string; identity: Identity; accounts: Account[]; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("gpt-image-2");
-  const [size, setSize] = useState("");
+  const [size, setSize] = useState("1:1");
   const [count, setCount] = useState(1);
   const [asyncMode, setAsyncMode] = useState(true);
   const [refs, setRefs] = useState<ReferenceImage[]>([]);
@@ -612,16 +612,17 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
   }
 
   async function createTaskForImage(turn: WorkbenchTurn, item: WorkbenchItem) {
+    const taskSize = normalizeWorkbenchSize(turn.size);
     if (turn.mode === "edit") {
       const form = new FormData();
       form.set("client_task_id", item.id);
       form.set("prompt", turn.prompt);
       form.set("model", turn.model);
-      if (turn.size) form.set("size", turn.size);
+      form.set("size", taskSize);
       turn.refs.forEach((ref) => form.append("image", ref.file, ref.name));
       return api.createEditTask(token, form);
     }
-    return api.createGenerationTask(token, { client_task_id: item.id, prompt: turn.prompt, model: turn.model, size: turn.size, n: 1 });
+    return api.createGenerationTask(token, { client_task_id: item.id, prompt: turn.prompt, model: turn.model, size: taskSize, n: 1 });
   }
 
   async function enqueueImages(turn: WorkbenchTurn, imageIds = turn.images.map((item) => item.id)) {
@@ -658,18 +659,19 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
 
   async function runSyncTurn(turn: WorkbenchTurn) {
     try {
+      const taskSize = normalizeWorkbenchSize(turn.size);
       if (turn.mode === "edit") {
         const form = new FormData();
         form.set("prompt", turn.prompt);
         form.set("model", turn.model);
         form.set("response_format", "url");
         form.set("n", String(turn.count));
-        if (turn.size) form.set("size", turn.size);
+        form.set("size", taskSize);
         turn.refs.forEach((ref) => form.append("image", ref.file, ref.name));
         const data = await request<{ data: ImageResult[] }>(token, "/v1/images/edits", { method: "POST", body: form });
         finishSyncTurn(turn.id, turn, data.data || []);
       } else {
-        const data = await request<{ data: ImageResult[] }>(token, "/v1/images/generations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: turn.prompt, model: turn.model, size: turn.size, n: turn.count, response_format: "url" }) });
+        const data = await request<{ data: ImageResult[] }>(token, "/v1/images/generations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: turn.prompt, model: turn.model, size: taskSize, n: turn.count, response_format: "url" }) });
         finishSyncTurn(turn.id, turn, data.data || []);
       }
       if (canRefreshArchive) {
@@ -706,13 +708,14 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
     setBusy(true);
     try {
       const countValue = Math.max(1, Math.min(4, count || 1));
+      const sizeValue = normalizeWorkbenchSize(size);
       const mode = refs.length ? "edit" : "generate";
-      const images: WorkbenchItem[] = Array.from({ length: countValue }, () => ({ id: createID("img"), status: "queued", prompt: text, model, size }));
+      const images: WorkbenchItem[] = Array.from({ length: countValue }, () => ({ id: createID("img"), status: "queued", prompt: text, model, size: sizeValue }));
       const turn: WorkbenchTurn = {
         id: createID("turn"),
         prompt: text,
         model,
-        size,
+        size: sizeValue,
         count: countValue,
         mode,
         refs: mode === "edit" ? refs : [],
@@ -742,13 +745,23 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
     const source = turns.find((turn) => turn.id === turnId);
     const item = source?.images.find((image) => image.id === imageId);
     if (!source || !item) return;
+    const retryId = createID("img");
+    const retrySize = normalizeWorkbenchSize(source.size);
+    const retryItem: WorkbenchItem = { ...item, id: retryId, status: "queued", taskId: undefined, image: undefined, error: undefined, size: retrySize };
+    const retryTurn: WorkbenchTurn = {
+      ...source,
+      size: retrySize,
+      images: source.images.map((image) => image.id === imageId ? retryItem : image),
+      status: "queued",
+      error: undefined
+    };
     setTurns((current) => current.map((turn) => {
       if (turn.id !== turnId) return turn;
-      const images = turn.images.map((image) => image.id === imageId ? { ...image, status: "queued" as const, taskId: undefined, image: undefined, error: undefined } : image);
-      return { ...turn, images, status: deriveTurnStatus(images), error: undefined };
+      const images = turn.images.map((image) => image.id === imageId ? retryItem : image);
+      return { ...turn, size: retrySize, images, status: deriveTurnStatus(images), error: undefined };
     }));
     try {
-      await enqueueImages({ ...source, images: source.images.map((image) => image.id === imageId ? { ...image, status: "queued", taskId: undefined, image: undefined, error: undefined } : image) }, [imageId]);
+      await enqueueImages(retryTurn, [retryId]);
       toast("success", "已重新提交");
     } catch (error) {
       toast("error", error instanceof Error ? error.message : "重新提交失败");
@@ -756,8 +769,9 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
   }
 
   async function regenerateTurn(turn: WorkbenchTurn) {
-    const images = Array.from({ length: turn.count }, () => ({ id: createID("img"), status: "queued" as const, prompt: turn.prompt, model: turn.model, size: turn.size }));
-    const nextTurn = { ...turn, id: createID("turn"), images, status: "queued" as const, createdAt: new Date().toISOString(), error: undefined };
+    const turnSize = normalizeWorkbenchSize(turn.size);
+    const images = Array.from({ length: turn.count }, () => ({ id: createID("img"), status: "queued" as const, prompt: turn.prompt, model: turn.model, size: turnSize }));
+    const nextTurn = { ...turn, id: createID("turn"), size: turnSize, images, status: "queued" as const, createdAt: new Date().toISOString(), error: undefined };
     setTurns((current) => [nextTurn, ...current]);
     setActiveTurnId(nextTurn.id);
     try {
@@ -771,7 +785,7 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
   function reuseTurn(turn: WorkbenchTurn) {
     setPrompt(turn.prompt);
     setModel(turn.model);
-    setSize(turn.size || "");
+    setSize(normalizeWorkbenchSize(turn.size));
     setCount(turn.count);
     setRefs(turn.refs);
     setActiveTurnId(turn.id);
@@ -896,7 +910,7 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
                 <span className="composer-pill passive">额度 {quota}</span>
                 {activeTaskCount > 0 ? <span className="composer-pill running"><LoaderCircle className="spin" size={14} />{activeTaskCount} 处理中</span> : null}
                 <label className="composer-field"><span>模型</span><input value={model} onChange={(event) => setModel(event.target.value)} /></label>
-                <label className="composer-field small-field"><span>比例</span><select value={size} onChange={(event) => setSize(event.target.value)}><option value="">自动</option><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></label>
+                <label className="composer-field small-field"><span>比例</span><select value={size} onChange={(event) => setSize(event.target.value)}><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></label>
                 <label className="composer-field count-field"><span>张数</span><input type="number" min={1} max={4} value={count} onChange={(event) => setCount(Math.max(1, Math.min(4, Number(event.target.value) || 1)))} /></label>
                 <div className="mode-toggle">
                   <button className={classNames(asyncMode && "active")} onClick={() => setAsyncMode(true)}>异步</button>
@@ -965,6 +979,11 @@ function sizeAspectClass(size?: string) {
   if (size === "4:3") return "landscape";
   if (size === "3:4") return "portrait";
   return "square";
+}
+
+function normalizeWorkbenchSize(size?: string) {
+  const value = (size || "").trim();
+  return value || "1:1";
 }
 
 function dataURLToFile(dataUrl: string, name: string) {
