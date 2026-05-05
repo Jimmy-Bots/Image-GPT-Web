@@ -13,6 +13,7 @@ This version intentionally removes the old register/register-machine module. The
 - Admin user management APIs.
 - User API key management, including compatibility endpoints at `/api/auth/users`.
 - Account pool CRUD endpoints.
+- Static management UI served from `/`.
 - Settings, logs, storage info, and health endpoints.
 - OpenAI-compatible model, image generation/edit, chat completions, responses, and Anthropic messages routes.
 - Streaming output for `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`.
@@ -48,7 +49,12 @@ Useful environment variables:
 - `CHATGPT2API_ALLOW_REGISTRATION`: allow public `/auth/register` for normal users.
 - `CHATGPT2API_DATA_DIR`: data directory, default `./data`.
 - `CHATGPT2API_DB_PATH`: SQLite DB path, default `./data/app.db`.
+- `CHATGPT2API_WEB_DIR`: static management UI directory, default `./web`.
 - `CHATGPT2API_PROXY_URL`: optional outbound proxy, for example `http://localhost:20122`.
+- `CHATGPT2API_CORS_ALLOWED_ORIGINS`: comma-separated allowed browser origins. Empty means same-origin only.
+- `CHATGPT2API_MAX_REQUEST_BODY_MB`: request body cap, default `80`.
+- `CHATGPT2API_LOGIN_RATE_LIMIT_MAX`: login attempts per IP/email window, default `8`.
+- `CHATGPT2API_LOGIN_RATE_LIMIT_WINDOW_SECONDS`: login rate-limit window, default `300`.
 
 ## Main Endpoints
 
@@ -67,7 +73,9 @@ Useful environment variables:
 
 Use `Authorization: Bearer <token>` for all protected endpoints. The token can be a login session token, a generated user API key, or the legacy `CHATGPT2API_AUTH_KEY` admin key.
 
+Open `http://localhost:3000/` for the built-in management UI. It covers account pool operations, users, API keys, image tasks, settings, logs, and a small compatibility playground. Account APIs accept raw `access_token` on create/refresh for upstream calls, but list/update/delete responses expose only `token_ref` plus a masked display value.
+
 ## Migration Plan
 
-1. Point the existing Next frontend at this backend and remove all register pages/routes.
-2. Add optional PostgreSQL storage if multi-instance deployment becomes necessary.
+1. Add optional PostgreSQL storage if multi-instance deployment becomes necessary.
+2. Add encrypted-at-rest account token storage if the deployment target needs stronger local secret protection than SQLite file permissions.

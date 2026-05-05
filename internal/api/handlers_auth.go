@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -63,6 +64,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "email and password are required")
+		return
+	}
+	limitKey := remoteAddr(r) + "|" + strings.ToLower(strings.TrimSpace(req.Email))
+	if !s.limiter.Allow(limitKey, time.Now().UTC()) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many login attempts")
 		return
 	}
 	user, err := s.store.GetUserByEmail(r.Context(), req.Email)
@@ -410,6 +416,14 @@ func (s *Server) createAPIKey(ctx context.Context, userID string, role domain.Ro
 		return domain.APIKey{}, "", err
 	}
 	return item, raw, nil
+}
+
+func remoteAddr(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func publicKeys(items []domain.APIKey) []map[string]any {

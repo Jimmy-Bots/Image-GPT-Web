@@ -6,7 +6,10 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gpt-image-web/internal/auth"
@@ -22,6 +25,7 @@ type Server struct {
 	upstream Upstream
 	pool     *AccountPool
 	tasks    *TaskQueue
+	limiter  *loginLimiter
 }
 
 func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
@@ -31,6 +35,7 @@ func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
 		store:    store,
 		sessions: auth.NewSessionSigner(cfg.SessionSecret, time.Duration(cfg.SessionTTLHours)*time.Hour),
 		pool:     pool,
+		limiter:  newLoginLimiter(cfg.LoginRateLimitMax, time.Duration(cfg.LoginRateLimitWindowSec)*time.Second),
 	}
 	s.upstream = NewChatGPTUpstream(store, pool, cfg.ProxyURL)
 	if err := s.bootstrap(context.Background()); err != nil {
@@ -91,7 +96,33 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
 	mux.HandleFunc("POST /v1/messages", s.handleAnthropicMessages)
-	return s.withRecover(s.withCORS(mux))
+	mux.HandleFunc("GET /", s.handleWebIndex)
+	mux.HandleFunc("GET /assets/", s.handleWebAsset)
+	return s.withRecover(s.withRequestLimits(s.withSecurityHeaders(s.withCORS(mux))))
+}
+
+func (s *Server) handleWebIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	path := filepath.Join(s.cfg.WebDir, "index.html")
+	http.ServeFile(w, r, path)
+}
+
+func (s *Server) handleWebAsset(w http.ResponseWriter, r *http.Request) {
+	rel := strings.TrimPrefix(r.URL.Path, "/assets/")
+	clean := filepath.Clean("/" + rel)
+	if rel == "" || clean == "/" || strings.Contains(clean, "..") {
+		http.NotFound(w, r)
+		return
+	}
+	path := filepath.Join(s.cfg.WebDir, "assets", strings.TrimPrefix(clean, "/"))
+	if _, err := os.Stat(path); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, path)
 }
 
 func (s *Server) bootstrap(ctx context.Context) error {
@@ -196,7 +227,10 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (Identity,
 
 func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if origin := s.allowedOrigin(r.Header.Get("Origin")); origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, x-api-key, anthropic-version")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
@@ -205,6 +239,75 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) allowedOrigin(origin string) string {
+	if origin == "" {
+		return ""
+	}
+	for _, allowed := range s.cfg.CORSAllowedOrigins {
+		if allowed == "*" || strings.EqualFold(allowed, origin) {
+			return allowed
+		}
+	}
+	return ""
+}
+
+func (s *Server) withRequestLimits(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.MaxRequestBodyBytes > 0 && r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+type loginLimiter struct {
+	mu      sync.Mutex
+	max     int
+	window  time.Duration
+	entries map[string]loginLimitEntry
+}
+
+type loginLimitEntry struct {
+	Count      int
+	WindowEnds time.Time
+}
+
+func newLoginLimiter(max int, window time.Duration) *loginLimiter {
+	if max < 1 {
+		max = 1
+	}
+	if window <= 0 {
+		window = 5 * time.Minute
+	}
+	return &loginLimiter{max: max, window: window, entries: map[string]loginLimitEntry{}}
+}
+
+func (l *loginLimiter) Allow(key string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[key]
+	if entry.WindowEnds.IsZero() || now.After(entry.WindowEnds) {
+		l.entries[key] = loginLimitEntry{Count: 1, WindowEnds: now.Add(l.window)}
+		return true
+	}
+	if entry.Count >= l.max {
+		return false
+	}
+	entry.Count++
+	l.entries[key] = entry
+	return true
 }
 
 func (s *Server) withRecover(next http.Handler) http.Handler {
