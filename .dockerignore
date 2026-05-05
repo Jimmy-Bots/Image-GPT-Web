@@ -1,0 +1,13 @@
+.git
+.env
+.env.local
+data
+test
+bin
+dist
+coverage.out
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.test
