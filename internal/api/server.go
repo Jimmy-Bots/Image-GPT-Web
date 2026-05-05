@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -102,7 +103,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /", s.handleWebIndex)
 	mux.HandleFunc("GET /assets/", s.handleWebAsset)
 	mux.HandleFunc("GET /images/", s.handleImageAsset)
-	return s.withRecover(s.withRequestLimits(s.withSecurityHeaders(s.withCORS(mux))))
+	return s.withAccessLog(s.withRecover(s.withRequestLimits(s.withSecurityHeaders(s.withCORS(mux)))))
 }
 
 func (s *Server) handleWebIndex(w http.ResponseWriter, r *http.Request) {
@@ -295,6 +296,78 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
+}
+
+type accessLogWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (w *accessLogWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+		w.ResponseWriter.WriteHeader(status)
+	}
+}
+
+func (w *accessLogWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.ResponseWriter.Write(data)
+	w.bytes += n
+	return n, err
+}
+
+func (w *accessLogWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (s *Server) withAccessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		recorder := &accessLogWriter{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		status := recorder.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if r.URL.Path == "/healthz" && !s.cfg.DebugLogging() {
+			return
+		}
+		log.Printf(
+			"request method=%s path=%s status=%d duration_ms=%d bytes=%d remote=%s",
+			r.Method,
+			safeLogPath(r),
+			status,
+			time.Since(start).Milliseconds(),
+			recorder.bytes,
+			clientIP(r),
+		)
+	})
+}
+
+func safeLogPath(r *http.Request) string {
+	path := r.URL.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	if !r.URL.Query().Has("ids") {
+		return path
+	}
+	return path + "?ids=" + strconv.Itoa(len(strings.Split(r.URL.Query().Get("ids"), ",")))
+}
+
+func clientIP(r *http.Request) string {
+	for _, header := range []string{"X-Forwarded-For", "X-Real-IP"} {
+		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
+			return strings.TrimSpace(strings.Split(value, ",")[0])
+		}
+	}
+	return r.RemoteAddr
 }
 
 type loginLimiter struct {

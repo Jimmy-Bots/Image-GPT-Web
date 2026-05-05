@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -50,6 +51,7 @@ func NewTaskQueue(store *storage.Store, upstream Upstream, imagesDir string, bas
 	}
 	for i := 0; i < workers; i++ {
 		q.wg.Add(1)
+		log.Printf("image_task worker_start index=%d", i+1)
 		go q.worker(ctx)
 	}
 	return q
@@ -95,10 +97,13 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		result, err = q.upstream.GenerateImage(ctx, job.Gen)
 	}
 	if err != nil {
+		log.Printf("image_task failed id=%s owner=%s mode=%s err=%v", job.TaskID, job.OwnerID, job.Mode, err)
 		_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskError, jsonData([]any{}), err.Error())
 		return
 	}
-	persistImageResultItems(q.imagesDir, q.baseURL, result)
+	saved := persistImageResultItems(q.imagesDir, q.baseURL, result)
+	shapeImageResponseForClient(result, "url")
+	log.Printf("image_task success id=%s owner=%s mode=%s items=%d archived=%d base_url_configured=%t", job.TaskID, job.OwnerID, job.Mode, imageResultCount(result), saved, q.baseURL != "")
 	data := result["data"]
 	_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskSuccess, jsonData(data), "")
 }
@@ -174,7 +179,7 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 			Model:          req.Model,
 			N:              1,
 			Size:           req.Size,
-			ResponseFormat: "url",
+			ResponseFormat: "b64_json",
 		},
 	})
 	if err != nil {

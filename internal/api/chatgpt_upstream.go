@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +76,8 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 			}
 			return nil, err
 		}
+		start := time.Now()
+		log.Printf("upstream_image generate_attempt index=%d account=%s model=%s size=%s format=%s", index+1, maskToken(account.AccessToken), req.Model, req.Size, req.ResponseFormat)
 		imageResults, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).GenerateImage(ctx, chatgpt.ImageRequest{
 			Prompt:         req.Prompt,
 			Model:          req.Model,
@@ -84,6 +87,7 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 		})
 		release()
 		if err != nil {
+			log.Printf("upstream_image generate_failed index=%d account=%s duration_ms=%d err=%v", index+1, maskToken(account.AccessToken), time.Since(start).Milliseconds(), err)
 			attempted[account.AccessToken] = struct{}{}
 			u.markImageResult(ctx, account.AccessToken, false)
 			if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
@@ -98,6 +102,7 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 			}
 			return nil, err
 		}
+		log.Printf("upstream_image generate_success index=%d account=%s results=%d duration_ms=%d", index+1, maskToken(account.AccessToken), len(imageResults), time.Since(start).Milliseconds())
 		u.markImageResult(ctx, account.AccessToken, true)
 		for _, item := range imageResults {
 			result := map[string]any{"revised_prompt": item.RevisedPrompt}
@@ -147,6 +152,8 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 			}
 			return nil, err
 		}
+		start := time.Now()
+		log.Printf("upstream_image edit_attempt index=%d account=%s model=%s size=%s format=%s images=%d", index+1, maskToken(account.AccessToken), req.Model, req.Size, req.ResponseFormat, len(req.Images))
 		imageResults, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).EditImage(ctx, chatgpt.ImageRequest{
 			Prompt:         req.Prompt,
 			Model:          req.Model,
@@ -157,6 +164,7 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 		})
 		release()
 		if err != nil {
+			log.Printf("upstream_image edit_failed index=%d account=%s duration_ms=%d err=%v", index+1, maskToken(account.AccessToken), time.Since(start).Milliseconds(), err)
 			attempted[account.AccessToken] = struct{}{}
 			u.markImageResult(ctx, account.AccessToken, false)
 			if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
@@ -171,6 +179,7 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 			}
 			return nil, err
 		}
+		log.Printf("upstream_image edit_success index=%d account=%s results=%d duration_ms=%d", index+1, maskToken(account.AccessToken), len(imageResults), time.Since(start).Milliseconds())
 		u.markImageResult(ctx, account.AccessToken, true)
 		for _, item := range imageResults {
 			result := map[string]any{"revised_prompt": item.RevisedPrompt}

@@ -20,6 +20,7 @@ type Config struct {
 	DBMaxOpenConns          int
 	ProxyURL                string
 	BaseURL                 string
+	LogLevel                string
 	CORSAllowedOrigins      []string
 	MaxRequestBodyBytes     int64
 	LoginRateLimitMax       int
@@ -48,6 +49,7 @@ func Load() (Config, error) {
 		DBMaxOpenConns:          envInt("CHATGPT2API_DB_MAX_OPEN_CONNS", 16, 1),
 		ProxyURL:                envString("CHATGPT2API_PROXY_URL", ""),
 		BaseURL:                 strings.TrimRight(envString("CHATGPT2API_BASE_URL", ""), "/"),
+		LogLevel:                normalizeLogLevel(envString("CHATGPT2API_LOG_LEVEL", "info")),
 		CORSAllowedOrigins:      envList("CHATGPT2API_CORS_ALLOWED_ORIGINS"),
 		MaxRequestBodyBytes:     int64(envInt("CHATGPT2API_MAX_REQUEST_BODY_MB", 80, 1)) << 20,
 		LoginRateLimitMax:       envInt("CHATGPT2API_LOGIN_RATE_LIMIT_MAX", 8, 1),
@@ -79,6 +81,20 @@ func Load() (Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func (c Config) DebugLogging() bool {
+	return c.LogLevel == "debug"
+}
+
+func normalizeLogLevel(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "debug":
+		return "debug"
+	default:
+		return "info"
+	}
 }
 
 func envString(key string, fallback string) string {

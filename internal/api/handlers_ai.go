@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gpt-image-web/internal/domain"
 )
@@ -51,16 +53,23 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	if req.N == 0 {
 		req.N = 1
 	}
-	if req.ResponseFormat == "" {
-		req.ResponseFormat = "b64_json"
+	requestedFormat := normalizeImageResponseFormat(req.ResponseFormat)
+	req.ResponseFormat = "b64_json"
+	start := time.Now()
+	log.Printf("image_generation start user=%s auth=%s model=%s n=%d size=%s requested_format=%s", identity.ID, identity.AuthType, req.Model, req.N, req.Size, requestedFormat)
+	if s.cfg.DebugLogging() {
+		log.Printf("image_generation debug prompt_chars=%d prompt_preview=%q", utf8.RuneCountInString(req.Prompt), truncateForLog(req.Prompt, 120))
 	}
 	result, err := s.upstream.GenerateImage(r.Context(), req)
 	if err != nil {
+		log.Printf("image_generation failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, time.Since(start).Milliseconds(), err)
 		s.logCall(r, identity, "/v1/images/generations", req.Model, "failed", err.Error())
 		s.writeUpstreamError(w, err)
 		return
 	}
-	s.persistImageResults(r, result)
+	saved := s.persistImageResults(r, result)
+	shapeImageResponseForClient(result, requestedFormat)
+	log.Printf("image_generation success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, imageResultCount(result), saved, time.Since(start).Milliseconds())
 	s.logCall(r, identity, "/v1/images/generations", req.Model, "success", "")
 	writeJSON(w, http.StatusOK, result)
 }
@@ -77,13 +86,23 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	if !s.checkContentPolicy(w, r, identity, "/v1/images/edits", req.Model, req.Prompt) {
 		return
 	}
+	requestedFormat := normalizeImageResponseFormat(req.ResponseFormat)
+	req.ResponseFormat = "b64_json"
+	start := time.Now()
+	log.Printf("image_edit start user=%s auth=%s model=%s n=%d size=%s images=%d requested_format=%s", identity.ID, identity.AuthType, req.Model, req.N, req.Size, len(req.Images), requestedFormat)
+	if s.cfg.DebugLogging() {
+		log.Printf("image_edit debug prompt_chars=%d prompt_preview=%q", utf8.RuneCountInString(req.Prompt), truncateForLog(req.Prompt, 120))
+	}
 	result, err := s.upstream.EditImage(r.Context(), req)
 	if err != nil {
+		log.Printf("image_edit failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, time.Since(start).Milliseconds(), err)
 		s.logCall(r, identity, "/v1/images/edits", req.Model, "failed", err.Error())
 		s.writeUpstreamError(w, err)
 		return
 	}
-	s.persistImageResults(r, result)
+	saved := s.persistImageResults(r, result)
+	shapeImageResponseForClient(result, requestedFormat)
+	log.Printf("image_edit success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, imageResultCount(result), saved, time.Since(start).Milliseconds())
 	s.logCall(r, identity, "/v1/images/edits", req.Model, "success", "")
 	writeJSON(w, http.StatusOK, result)
 }
@@ -322,6 +341,15 @@ func writeStreamError(w http.ResponseWriter, flusher http.Flusher, err error, na
 	payload, _ := json.Marshal(event)
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
 	flusher.Flush()
+}
+
+func truncateForLog(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if max <= 0 || utf8.RuneCountInString(value) <= max {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:max]) + "..."
 }
 
 func parseImageEditPayload(w http.ResponseWriter, r *http.Request) (ImageEditPayload, bool) {

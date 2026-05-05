@@ -64,6 +64,7 @@ Useful environment variables:
 - `CHATGPT2API_IMAGES_DIR`: local image archive directory, default `./data/images`.
 - `CHATGPT2API_PROXY_URL`: optional outbound proxy, for example `http://localhost:20122`.
 - `CHATGPT2API_BASE_URL`: public base URL used by async image tasks when producing archived image URLs.
+- `CHATGPT2API_LOG_LEVEL`: `info` or `debug`. Debug includes extra request and image-generation diagnostics.
 - `CHATGPT2API_CORS_ALLOWED_ORIGINS`: comma-separated allowed browser origins. Empty means same-origin only.
 - `CHATGPT2API_MAX_REQUEST_BODY_MB`: request body cap, default `80`.
 - `CHATGPT2API_LOGIN_RATE_LIMIT_MAX`: login attempts per IP/email window, default `8`.
