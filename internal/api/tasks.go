@@ -21,11 +21,13 @@ const (
 )
 
 type TaskQueue struct {
-	store    *storage.Store
-	upstream Upstream
-	jobs     chan taskJob
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	imagesDir string
+	baseURL   string
+	store     *storage.Store
+	upstream  Upstream
+	jobs      chan taskJob
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 type taskJob struct {
@@ -36,13 +38,15 @@ type taskJob struct {
 	Edit    ImageEditPayload
 }
 
-func NewTaskQueue(store *storage.Store, upstream Upstream, workers int, queueSize int) *TaskQueue {
+func NewTaskQueue(store *storage.Store, upstream Upstream, imagesDir string, baseURL string, workers int, queueSize int) *TaskQueue {
 	ctx, cancel := context.WithCancel(context.Background())
 	q := &TaskQueue{
-		store:    store,
-		upstream: upstream,
-		jobs:     make(chan taskJob, queueSize),
-		cancel:   cancel,
+		imagesDir: imagesDir,
+		baseURL:   baseURL,
+		store:     store,
+		upstream:  upstream,
+		jobs:      make(chan taskJob, queueSize),
+		cancel:    cancel,
 	}
 	for i := 0; i < workers; i++ {
 		q.wg.Add(1)
@@ -94,6 +98,7 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskError, jsonData([]any{}), err.Error())
 		return
 	}
+	persistImageResultItems(q.imagesDir, q.baseURL, result)
 	data := result["data"]
 	_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskSuccess, jsonData(data), "")
 }

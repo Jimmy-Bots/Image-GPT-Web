@@ -41,7 +41,7 @@ func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
 	if err := s.bootstrap(context.Background()); err != nil {
 		return nil, err
 	}
-	s.tasks = NewTaskQueue(store, s.upstream, cfg.ImageWorkerCount, cfg.ImageQueueSize)
+	s.tasks = NewTaskQueue(store, s.upstream, cfg.ImagesDir, cfg.BaseURL, cfg.ImageWorkerCount, cfg.ImageQueueSize)
 	return s, nil
 }
 
@@ -87,6 +87,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/storage/info", s.handleStorageInfo)
 	mux.HandleFunc("GET /api/logs", s.handleListLogs)
 	mux.HandleFunc("POST /api/logs/delete", s.handleDeleteLogs)
+	mux.HandleFunc("GET /api/images", s.handleListImages)
+	mux.HandleFunc("POST /api/images/delete", s.handleDeleteImages)
 	mux.HandleFunc("GET /api/image-tasks", s.handleListImageTasks)
 	mux.HandleFunc("POST /api/image-tasks/generations", s.handleCreateGenerationTask)
 	mux.HandleFunc("POST /api/image-tasks/edits", s.handleCreateEditTask)
@@ -99,6 +101,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/messages", s.handleAnthropicMessages)
 	mux.HandleFunc("GET /", s.handleWebIndex)
 	mux.HandleFunc("GET /assets/", s.handleWebAsset)
+	mux.HandleFunc("GET /images/", s.handleImageAsset)
 	return s.withRecover(s.withRequestLimits(s.withSecurityHeaders(s.withCORS(mux))))
 }
 
@@ -113,17 +116,38 @@ func (s *Server) handleWebIndex(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWebAsset(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(r.URL.Path, "/assets/")
-	clean := filepath.Clean("/" + rel)
-	if rel == "" || clean == "/" || strings.Contains(clean, "..") {
+	path, ok := safeJoin(filepath.Join(s.cfg.WebDir, "assets"), rel)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	path := filepath.Join(s.cfg.WebDir, "assets", strings.TrimPrefix(clean, "/"))
 	if _, err := os.Stat(path); err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	http.ServeFile(w, r, path)
+}
+
+func (s *Server) handleImageAsset(w http.ResponseWriter, r *http.Request) {
+	rel := strings.TrimPrefix(r.URL.Path, "/images/")
+	path, ok := safeJoin(s.cfg.ImagesDir, rel)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, path)
+}
+
+func safeJoin(root string, rel string) (string, bool) {
+	clean := filepath.Clean("/" + rel)
+	if rel == "" || clean == "/" || strings.Contains(clean, "..") {
+		return "", false
+	}
+	return filepath.Join(root, strings.TrimPrefix(clean, "/")), true
 }
 
 func (s *Server) bootstrap(ctx context.Context) error {

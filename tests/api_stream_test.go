@@ -90,7 +90,8 @@ func TestAnthropicMessagesStreamsNamedEvents(t *testing.T) {
 
 func newTestServer(t *testing.T, upstream api.Upstream) (*api.Server, func()) {
 	t.Helper()
-	store, err := storage.Open(context.Background(), t.TempDir()+"/app.db", 1)
+	tempDir := t.TempDir()
+	store, err := storage.Open(context.Background(), tempDir+"/app.db", 1)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -102,6 +103,7 @@ func newTestServer(t *testing.T, upstream api.Upstream) (*api.Server, func()) {
 		AdminPassword:           "password123",
 		SessionSecret:           "secret",
 		SessionTTLHours:         24,
+		ImagesDir:               tempDir + "/images",
 		MaxRequestBodyBytes:     80 << 20,
 		LoginRateLimitMax:       8,
 		LoginRateLimitWindowSec: 300,

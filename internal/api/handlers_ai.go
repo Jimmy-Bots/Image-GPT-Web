@@ -60,6 +60,7 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		s.writeUpstreamError(w, err)
 		return
 	}
+	s.persistImageResults(r, result)
 	s.logCall(r, identity, "/v1/images/generations", req.Model, "success", "")
 	writeJSON(w, http.StatusOK, result)
 }
@@ -82,6 +83,7 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, err)
 		return
 	}
+	s.persistImageResults(r, result)
 	s.logCall(r, identity, "/v1/images/edits", req.Model, "success", "")
 	writeJSON(w, http.StatusOK, result)
 }

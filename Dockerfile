@@ -27,7 +27,9 @@ USER appuser
 ENV CHATGPT2API_ADDR=:3000 \
     CHATGPT2API_DATA_DIR=/app/data \
     CHATGPT2API_DB_PATH=/app/data/app.db \
-    CHATGPT2API_WEB_DIR=/app/web
+    CHATGPT2API_IMAGES_DIR=/app/data/images \
+    CHATGPT2API_WEB_DIR=/app/web \
+    CHATGPT2API_BASE_URL=
 
 EXPOSE 3000
 

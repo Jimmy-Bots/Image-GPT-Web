@@ -7,6 +7,7 @@ const state = {
   users: [],
   keys: [],
   tasks: [],
+  images: [],
   settings: {},
   busy: new Set(),
 };
@@ -68,6 +69,7 @@ function setTab(name) {
     users: "用户",
     keys: "API Keys",
     tasks: "图片任务",
+    images: "图片",
     settings: "设置",
     playground: "调试",
     logs: "日志",
@@ -145,7 +147,7 @@ async function bootstrap() {
 async function refreshAll() {
   const loaders = [loadKeys(), loadModels(), loadTasks()];
   if (isAdmin()) {
-    loaders.push(loadAccounts(), loadUsers(), loadSettings(), loadLogs(), loadStorageInfo());
+    loaders.push(loadAccounts(), loadUsers(), loadImages(), loadSettings(), loadLogs(), loadStorageInfo());
   }
   await Promise.allSettled(loaders);
 }
@@ -226,6 +228,17 @@ async function loadTasks() {
       <td>${fmtDate(item.updated_at)}</td>
     </tr>`).join("");
   $("#metric-tasks").textContent = state.tasks.length;
+}
+
+async function loadImages() {
+  const data = await api("/api/images");
+  state.images = data.items || [];
+  $("#images-grid").innerHTML = state.images.map((item) => `
+    <article class="image-item">
+      <label><input type="checkbox" data-image-path="${escapeHTML(item.path)}" /> <span class="mono">${escapeHTML(item.name)}</span></label>
+      <a href="${escapeHTML(item.url)}" target="_blank" rel="noreferrer"><img src="${escapeHTML(item.url)}" alt="${escapeHTML(item.name)}" loading="lazy" /></a>
+      <div class="muted">${fmtDate(item.created_at)} · ${bytes(Number(item.size || 0))}</div>
+    </article>`).join("");
 }
 
 async function loadSettings() {
@@ -389,6 +402,13 @@ document.addEventListener("click", async (event) => {
   });
   if (target.id === "load-tasks") guarded("load-tasks", loadTasks);
   if (target.id === "create-task") guarded("create-task", createImageTask);
+  if (target.id === "load-images") guarded("load-images", loadImages);
+  if (target.id === "delete-images") guarded("delete-images", async () => {
+    const paths = $$("[data-image-path]:checked").map((input) => input.dataset.imagePath).filter(Boolean);
+    if (!paths.length || !confirm("删除选中的图片？")) return;
+    await api("/api/images/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths }) });
+    await loadImages();
+  });
   if (target.id === "run-play") guarded("run-play", runPlayground);
   if (target.dataset.refreshAccount) guarded("refresh-accounts", () => refreshAccounts([target.dataset.refreshAccount]));
   if (target.dataset.deleteAccount && confirm("删除这个账号？")) {

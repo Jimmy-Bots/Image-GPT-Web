@@ -74,6 +74,11 @@ td.actions { text-align: right; width: 130px; }
 .settings-editor { padding: 14px; display: grid; gap: 12px; max-width: 980px; }
 .settings-editor textarea { min-height: 520px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.55; }
 .settings-actions { display: flex; justify-content: flex-end; }
+.image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.image-item { background: white; border: 1px solid #e1e7f0; border-radius: 8px; padding: 10px; display: grid; gap: 8px; min-width: 0; }
+.image-item img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; background: #eef3fa; display: block; }
+.image-item label { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.image-item input { width: auto; }
 @media (max-width: 1100px) {
   body { min-width: 760px; }
   .app { grid-template-columns: 190px minmax(0, 1fr); }
