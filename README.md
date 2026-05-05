@@ -13,7 +13,7 @@ This version intentionally removes the old register/register-machine module. The
 - Admin user management APIs.
 - User API key management, including compatibility endpoints at `/api/auth/users`.
 - Account pool CRUD endpoints.
-- Static management UI served from `/`.
+- React/Vite management UI served from `/`.
 - Settings, logs, storage info, and health endpoints.
 - Local image archive with list/delete APIs and `/images/*` static serving.
 - OpenAI-compatible model, image generation/edit, chat completions, responses, and Anthropic messages routes.
@@ -37,6 +37,8 @@ Use PostgreSQL later if you need multi-instance deployment, high sustained write
 
 ```bash
 cp .env.example .env
+npm --prefix web install
+npm --prefix web run build
 go mod tidy
 go run ./cmd/server
 ```
@@ -51,6 +53,15 @@ docker compose up --build
 
 The compose file mounts `./data` into the container and serves the management UI on `http://localhost:3000/`.
 
+Frontend development:
+
+```bash
+go run ./cmd/server
+npm --prefix web run dev
+```
+
+Vite proxies `/api`, `/auth`, `/v1`, and `/images` to the Go server on `127.0.0.1:3000`.
+
 Useful environment variables:
 
 - `CHATGPT2API_AUTH_KEY`: legacy admin bearer key and bootstrap admin API key.
@@ -60,7 +71,7 @@ Useful environment variables:
 - `CHATGPT2API_ALLOW_REGISTRATION`: allow public `/auth/register` for normal users.
 - `CHATGPT2API_DATA_DIR`: data directory, default `./data`.
 - `CHATGPT2API_DB_PATH`: SQLite DB path, default `./data/app.db`.
-- `CHATGPT2API_WEB_DIR`: static management UI directory, default `./web`.
+- `CHATGPT2API_WEB_DIR`: built management UI directory, default `./web/dist`.
 - `CHATGPT2API_IMAGES_DIR`: local image archive directory, default `./data/images`.
 - `CHATGPT2API_PROXY_URL`: optional outbound proxy, for example `http://localhost:20122`.
 - `CHATGPT2API_BASE_URL`: public base URL used by async image tasks when producing archived image URLs.

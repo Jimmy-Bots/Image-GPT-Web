@@ -1,3 +1,13 @@
+FROM node:22-bookworm AS web-build
+
+WORKDIR /src/web
+
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+COPY web ./
+RUN npm run build
+
 FROM golang:1.25-bookworm AS build
 
 WORKDIR /src
@@ -18,7 +28,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=build /out/gpt-image-web /app/gpt-image-web
-COPY web /app/web
+COPY --from=web-build /src/web/dist /app/web
 
 RUN mkdir -p /app/data && chown -R appuser:appuser /app
 

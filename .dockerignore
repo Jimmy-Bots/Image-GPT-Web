@@ -5,6 +5,8 @@ data
 test
 bin
 dist
+web/node_modules
+web/dist
 coverage.out
 *.db
 *.db-*
