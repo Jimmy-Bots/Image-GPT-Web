@@ -29,6 +29,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	log.Printf(
+		"config addr=%s data_dir=%s db=%s web_dir=%s images_dir=%s proxy_configured=%t base_url_configured=%t log_level=%s image_workers=%d image_queue=%d image_account_concurrency=%d",
+		cfg.Addr,
+		cfg.DataDir,
+		cfg.DatabasePath,
+		cfg.WebDir,
+		cfg.ImagesDir,
+		cfg.ProxyURL != "",
+		cfg.BaseURL != "",
+		cfg.LogLevel,
+		cfg.ImageWorkerCount,
+		cfg.ImageQueueSize,
+		cfg.ImageAccountConcurrency,
+	)
 
 	ctx := context.Background()
 	store, err := storage.Open(ctx, cfg.DatabasePath, cfg.DBMaxOpenConns)

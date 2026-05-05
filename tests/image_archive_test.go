@@ -52,6 +52,32 @@ func TestImageGenerationPersistsLocalArchive(t *testing.T) {
 	}
 }
 
+func TestImageGenerationURLResponseUsesLocalArchive(t *testing.T) {
+	upstream := &formatCaptureUpstream{}
+	server, cleanup := newTestServer(t, upstream)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"draw","model":"gpt-image-2","response_format":"url"}`))
+	req.Host = "example.test"
+	req.Header.Set("Authorization", "Bearer dev-key")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("generation failed: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if upstream.format != "b64_json" {
+		t.Fatalf("upstream format = %q, want b64_json", upstream.format)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"url":"http://example.test/images/`) {
+		t.Fatalf("response missing local image URL: %s", body)
+	}
+	if strings.Contains(body, `"b64_json"`) {
+		t.Fatalf("url response leaked b64_json: %s", body)
+	}
+}
+
 type imageArchiveUpstream struct {
 	fakeStreamUpstream
 }
@@ -67,3 +93,13 @@ func (imageArchiveUpstream) GenerateImage(ctx context.Context, req api.ImageGene
 }
 
 var _ api.Upstream = imageArchiveUpstream{}
+
+type formatCaptureUpstream struct {
+	imageArchiveUpstream
+	format string
+}
+
+func (u *formatCaptureUpstream) GenerateImage(ctx context.Context, req api.ImageGenerationPayload) (map[string]any, error) {
+	u.format = req.ResponseFormat
+	return u.imageArchiveUpstream.GenerateImage(ctx, req)
+}
