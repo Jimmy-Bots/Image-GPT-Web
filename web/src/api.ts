@@ -56,7 +56,6 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password })
     }),
-  loginWithToken: (token: string) => request<{ ok: boolean; role: string; name: string; version: string }>(token, "/auth/login", { method: "POST" }),
   me: (token: string) => request<MeResponse>(token, "/api/me"),
   version: (token: string) => request<{ version: string }>(token, "/version"),
   models: (token: string) => request<{ data: ModelItem[] }>(token, "/v1/models"),
@@ -87,7 +86,7 @@ export const api = {
     }),
   users: (token: string) => request<{ items: User[] }>(token, "/api/users"),
   createUser: (token: string, body: { email: string; name?: string; password: string; role: string }) =>
-    request<{ item: User }>(token, "/api/users", {
+    request<{ item: User; api_key?: ApiKey; key?: string }>(token, "/api/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
@@ -98,22 +97,13 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     }),
-  keys: (token: string, legacy: boolean) => request<{ items: ApiKey[] }>(token, legacy ? "/api/auth/users" : "/api/me/api-keys"),
-  createKey: (token: string, legacy: boolean, name: string) =>
-    request<{ item: ApiKey; key: string }>(token, legacy ? "/api/auth/users" : "/api/me/api-keys", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name })
-    }),
-  updateKey: (token: string, legacy: boolean, id: string, body: { enabled?: boolean; name?: string }) =>
-    request<{ item: ApiKey }>(token, legacy ? `/api/auth/users/${encodeURIComponent(id)}` : `/api/me/api-keys/${encodeURIComponent(id)}`, {
-      method: legacy ? "POST" : "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    }),
-  deleteKey: (token: string, legacy: boolean, id: string) =>
-    request<{ removed?: number }>(token, legacy ? `/api/auth/users/${encodeURIComponent(id)}` : `/api/me/api-keys/${encodeURIComponent(id)}`, {
+  deleteUser: (token: string, id: string) =>
+    request<{ item: User }>(token, `/api/users/${encodeURIComponent(id)}`, {
       method: "DELETE"
+    }),
+  resetUserKey: (token: string, id: string) =>
+    request<{ item: ApiKey; key: string }>(token, `/api/users/${encodeURIComponent(id)}/api-key/reset`, {
+      method: "POST"
     }),
   tasks: (token: string, ids: string[] = []) =>
     request<{ items: ImageTask[]; missing_ids: string[] }>(token, ids.length ? `/api/image-tasks?ids=${encodeURIComponent(ids.join(","))}` : "/api/image-tasks"),

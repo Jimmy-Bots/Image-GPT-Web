@@ -33,6 +33,7 @@ export type User = {
   name: string;
   role: Role;
   status: "active" | "disabled" | "deleted";
+  api_key?: ApiKey;
   created_at: string;
   updated_at: string;
   last_login_at?: string;

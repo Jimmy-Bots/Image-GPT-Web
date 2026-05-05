@@ -77,10 +77,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/users", s.handleCreateUser)
 	mux.HandleFunc("PATCH /api/users/{user_id}", s.handleUpdateUser)
 	mux.HandleFunc("DELETE /api/users/{user_id}", s.handleDeleteUser)
-	mux.HandleFunc("GET /api/auth/users", s.handleLegacyListUserKeys)
-	mux.HandleFunc("POST /api/auth/users", s.handleLegacyCreateUserKey)
-	mux.HandleFunc("POST /api/auth/users/{key_id}", s.handleLegacyUpdateUserKey)
-	mux.HandleFunc("DELETE /api/auth/users/{key_id}", s.handleLegacyDeleteUserKey)
+	mux.HandleFunc("POST /api/users/{user_id}/api-key/reset", s.handleResetUserAPIKey)
 	mux.HandleFunc("GET /api/accounts", s.handleListAccounts)
 	mux.HandleFunc("POST /api/accounts", s.handleCreateAccounts)
 	mux.HandleFunc("DELETE /api/accounts", s.handleDeleteAccounts)
@@ -186,21 +183,27 @@ func (s *Server) bootstrap(ctx context.Context) error {
 	if err := s.store.CreateUser(ctx, admin); err != nil {
 		return err
 	}
-	if s.cfg.LegacyAdminKey != "" {
-		item := domain.APIKey{
-			ID:        auth.RandomID(12),
-			UserID:    admin.ID,
-			Name:      "Legacy admin key",
-			Role:      domain.RoleAdmin,
-			KeyHash:   auth.HashAPIKey(s.cfg.LegacyAdminKey),
-			Enabled:   true,
-			CreatedAt: now,
-		}
-		if err := s.store.CreateAPIKey(ctx, item); err != nil {
-			return err
-		}
+	if _, _, err := s.ensureUserAPIKey(ctx, admin, "Default API Key", false); err != nil {
+		return err
 	}
 	return nil
+}
+
+func (s *Server) sessionIdentityFromRequest(r *http.Request) (Identity, bool) {
+	header := r.Header.Get("Authorization")
+	raw, err := auth.ExtractBearer(header)
+	if err != nil {
+		return Identity{}, false
+	}
+	claims, ok := s.sessions.Verify(raw)
+	if !ok {
+		return Identity{}, false
+	}
+	user, err := s.store.GetUserByID(r.Context(), claims.SubjectID)
+	if err != nil || user.Status != domain.UserStatusActive {
+		return Identity{}, false
+	}
+	return Identity{ID: user.ID, Name: user.Name, Role: user.Role, AuthType: "session"}, true
 }
 
 func (s *Server) identityFromRequest(r *http.Request) (Identity, bool) {
@@ -215,15 +218,15 @@ func (s *Server) identityFromRequest(r *http.Request) (Identity, bool) {
 	if s.cfg.LegacyAdminKey != "" && raw == s.cfg.LegacyAdminKey {
 		return Identity{ID: "legacy-admin", Name: "Legacy admin", Role: domain.RoleAdmin, AuthType: "legacy"}, true
 	}
-	if claims, ok := s.sessions.Verify(raw); ok {
-		user, err := s.store.GetUserByID(r.Context(), claims.SubjectID)
-		if err != nil || user.Status != domain.UserStatusActive {
-			return Identity{}, false
-		}
-		return Identity{ID: user.ID, Name: user.Name, Role: user.Role, AuthType: "session"}, true
+	if identity, ok := s.sessionIdentityFromRequest(r); ok {
+		return identity, true
 	}
 	key, err := s.store.FindAPIKeyByHash(r.Context(), auth.HashAPIKey(raw))
 	if err != nil || !key.Enabled {
+		return Identity{}, false
+	}
+	user, err := s.store.GetUserByID(r.Context(), key.UserID)
+	if err != nil || user.Status != domain.UserStatusActive {
 		return Identity{}, false
 	}
 	go func() {
@@ -231,7 +234,7 @@ func (s *Server) identityFromRequest(r *http.Request) (Identity, bool) {
 		defer cancel()
 		_ = s.store.TouchAPIKey(ctx, key.ID, time.Now().UTC())
 	}()
-	return Identity{ID: key.UserID, KeyID: key.ID, Name: key.Name, Role: key.Role, AuthType: "api_key"}, true
+	return Identity{ID: user.ID, KeyID: key.ID, Name: user.Name, Role: user.Role, AuthType: "api_key"}, true
 }
 
 func (s *Server) requireIdentity(w http.ResponseWriter, r *http.Request) (Identity, bool) {
