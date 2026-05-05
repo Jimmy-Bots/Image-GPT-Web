@@ -2,17 +2,24 @@ import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
+  ArrowUp,
   Ban,
   CheckCircle2,
+  Clock3,
   Copy,
   ImageIcon,
+  ImagePlus,
   KeyRound,
+  LayoutDashboard,
   LoaderCircle,
   LogOut,
+  MessageSquarePlus,
   Play,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings,
+  Sparkles,
   Trash2,
   Upload,
   Users,
@@ -21,10 +28,10 @@ import {
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
 import type { Account, ApiKey, Identity, ImageResult, ImageTask, ModelItem, ReferenceImage, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
-import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatQuota, imageSrc, parseJSON, parseTaskData, quotaSummary, safeJSON, statusClass } from "./utils";
+import { classNames, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatQuota, imageSrc, parseJSON, parseTaskData, quotaSummary, safeJSON, statusClass } from "./utils";
 import "./styles.css";
 
-type Tab = "dashboard" | "accounts" | "workbench" | "tasks" | "images" | "playground" | "keys" | "users" | "settings" | "logs";
+type Tab = "dashboard" | "accounts" | "tasks" | "images" | "playground" | "keys" | "users" | "settings" | "logs";
 type WorkbenchItem = {
   id: string;
   status: "queued" | "running" | "success" | "error";
@@ -36,23 +43,35 @@ type WorkbenchItem = {
   error?: string;
 };
 
-const navItems: Array<{ id: Tab; label: string; admin?: boolean; icon: React.ElementType }> = [
-  { id: "dashboard", label: "总览", admin: true, icon: Activity },
-  { id: "accounts", label: "账号池", admin: true, icon: Users },
-  { id: "workbench", label: "图片工作台", icon: WandSparkles },
+type WorkbenchTurn = {
+  id: string;
+  prompt: string;
+  model: string;
+  size?: string;
+  count: number;
+  mode: "generate" | "edit";
+  refs: ReferenceImage[];
+  images: WorkbenchItem[];
+  status: "queued" | "running" | "success" | "error";
+  createdAt: string;
+  error?: string;
+};
+
+const navItems: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
+  { id: "dashboard", label: "总览", icon: Activity },
+  { id: "accounts", label: "账号池", icon: Users },
   { id: "tasks", label: "任务", icon: LoaderCircle },
-  { id: "images", label: "图片库", admin: true, icon: ImageIcon },
+  { id: "images", label: "图片库", icon: ImageIcon },
   { id: "playground", label: "Playground", icon: Play },
   { id: "keys", label: "API Keys", icon: KeyRound },
-  { id: "users", label: "用户", admin: true, icon: Users },
-  { id: "settings", label: "设置", admin: true, icon: Settings },
-  { id: "logs", label: "日志", admin: true, icon: Activity }
+  { id: "users", label: "用户", icon: Users },
+  { id: "settings", label: "设置", icon: Settings },
+  { id: "logs", label: "日志", icon: Activity }
 ];
 
 const pageTitle: Record<Tab, string> = {
   dashboard: "总览",
   accounts: "账号池",
-  workbench: "图片工作台",
   tasks: "任务",
   images: "图片库",
   playground: "Playground",
@@ -74,6 +93,7 @@ function App() {
   const [token, setToken] = useState(getStoredToken());
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
+  const [adminMode, setAdminMode] = useState(false);
   const [version, setVersion] = useState("-");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -114,18 +134,18 @@ function App() {
     const me = await api.me(currentToken);
     setIdentity(me.identity);
     setVersion("connected");
-    if (me.identity.role !== "admin" && (activeTab === "dashboard" || activeTab === "accounts" || activeTab === "users" || activeTab === "settings" || activeTab === "logs" || activeTab === "images")) {
-      setActiveTab("workbench");
-    }
+    if (me.identity.role !== "admin") setAdminMode(false);
     await refreshAll(currentToken, me.identity.role === "admin", me.identity.auth_type === "legacy");
   }
 
   async function refreshAll(currentToken = token, admin = isAdmin, legacy = legacyKeys) {
-    const common = [
-      api.models(currentToken).then((data) => setModels(data.data || [])),
-      api.tasks(currentToken).then((data) => setTasks(data.items || [])),
-      api.keys(currentToken, Boolean(legacy)).then((data) => setKeys(data.items || []))
-    ];
+    const common = admin
+      ? [
+          api.models(currentToken).then((data) => setModels(data.data || [])),
+          api.tasks(currentToken).then((data) => setTasks(data.items || [])),
+          api.keys(currentToken, Boolean(legacy)).then((data) => setKeys(data.items || []))
+        ]
+      : [];
     const adminLoads = admin
       ? [
           api.accounts(currentToken).then((data) => setAccounts(data.items || [])),
@@ -169,13 +189,35 @@ function App() {
     setToken("");
     setIdentity(null);
     setActiveTab("dashboard");
+    setAdminMode(false);
   }
 
   if (!token || !identity) {
     return <LoginView busy={busy === "login"} onLogin={(email, password) => runBusy("login", () => handleLogin(email, password))} />;
   }
 
-  const visibleNav = navItems.filter((item) => !item.admin || isAdmin);
+  if (!adminMode || !isAdmin) {
+    return (
+      <ImageHome
+        token={token}
+        identity={identity}
+        isAdmin={Boolean(isAdmin)}
+        accounts={accounts}
+        setTasks={setTasks}
+        setImages={setImages}
+        toast={toast}
+        logout={logout}
+        openAdmin={() => {
+          setActiveTab("dashboard");
+          setAdminMode(true);
+        }}
+        openLightbox={(src, title) => setLightbox({ src, title })}
+        toasts={toasts}
+        lightbox={lightbox}
+        closeLightbox={() => setLightbox(null)}
+      />
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -188,7 +230,7 @@ function App() {
           </div>
         </div>
         <nav className="nav-list">
-          {visibleNav.map((item) => {
+          {navItems.map((item) => {
             const Icon = item.icon;
             return (
               <button key={item.id} className={classNames("nav-item", activeTab === item.id && "active")} onClick={() => setActiveTab(item.id)}>
@@ -198,6 +240,7 @@ function App() {
             );
           })}
         </nav>
+        <button className="ghost full" onClick={() => setAdminMode(false)}><WandSparkles size={16} />图片工作台</button>
         <div className="identity-card">
           <strong>{identity.name || "User"}</strong>
           <span>{identity.role} · {identity.auth_type}</span>
@@ -222,7 +265,6 @@ function App() {
 
         {activeTab === "dashboard" && isAdmin && <Dashboard accounts={accounts} models={models} tasks={tasks} storageStatus={storageStatus} onReloadModels={() => runBusy("models", async () => setModels((await api.models(token)).data || []))} />}
         {activeTab === "accounts" && isAdmin && <AccountsPanel token={token} accounts={accounts} setAccounts={setAccounts} toast={toast} busy={busy} runBusy={runBusy} />}
-        {activeTab === "workbench" && <ImageWorkbench token={token} accounts={accounts} tasks={tasks} setTasks={setTasks} setImages={setImages} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
         {activeTab === "tasks" && <TasksPanel token={token} tasks={tasks} setTasks={setTasks} openLightbox={(src, title) => setLightbox({ src, title })} toast={toast} />}
         {activeTab === "images" && isAdmin && <ImagesPanel token={token} images={images} setImages={setImages} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
         {activeTab === "playground" && <Playground token={token} models={models} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
@@ -268,6 +310,67 @@ function LoginView({ busy, onLogin }: { busy: boolean; onLogin: (email: string, 
         <p className="hint">不填写 Email 时，密码框内容会作为 Bearer Key 校验。</p>
       </form>
     </main>
+  );
+}
+
+function ImageHome({
+  token,
+  identity,
+  isAdmin,
+  accounts,
+  setTasks,
+  setImages,
+  toast,
+  logout,
+  openAdmin,
+  openLightbox,
+  toasts,
+  lightbox,
+  closeLightbox
+}: {
+  token: string;
+  identity: Identity;
+  isAdmin: boolean;
+  accounts: Account[];
+  setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>;
+  setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>;
+  toast: (type: Toast["type"], message: string) => void;
+  logout: () => void;
+  openAdmin: () => void;
+  openLightbox: (src: string, title?: string) => void;
+  toasts: Toast[];
+  lightbox: { src: string; title?: string } | null;
+  closeLightbox: () => void;
+}) {
+  return (
+    <div className="home-shell">
+      <header className="home-header">
+        <div className="brand home-brand">
+          <div className="brand-mark">GI</div>
+          <div>
+            <strong>GPT Image Web</strong>
+            <span>{identity.name || "User"} · {identity.role}</span>
+          </div>
+        </div>
+        <div className="home-actions">
+          <span className="status-pill">online</span>
+          {isAdmin ? <button className="secondary" onClick={openAdmin}><LayoutDashboard size={16} />管理后台</button> : null}
+          <button className="ghost" onClick={logout}><LogOut size={16} />退出</button>
+        </div>
+      </header>
+
+      <ImageWorkbench token={token} accounts={accounts} canRefreshArchive={isAdmin} setTasks={setTasks} setImages={setImages} toast={toast} openLightbox={openLightbox} />
+
+      <div className="toast-stack">
+        {toasts.map((item) => <div key={item.id} className={classNames("toast", item.type)}>{item.message}</div>)}
+      </div>
+      {lightbox && (
+        <div className="lightbox" onClick={closeLightbox}>
+          <button className="lightbox-close" onClick={closeLightbox}><X size={20} /></button>
+          <img src={lightbox.src} alt={lightbox.title || "preview"} />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -412,16 +515,22 @@ function AccountsPanel({ token, accounts, setAccounts, toast, busy, runBusy }: {
   );
 }
 
-function ImageWorkbench({ token, accounts, tasks, setTasks, setImages, toast, openLightbox }: { token: string; accounts: Account[]; tasks: ImageTask[]; setTasks: (items: ImageTask[]) => void; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
+function ImageWorkbench({ token, accounts, canRefreshArchive, setTasks, setImages, toast, openLightbox }: { token: string; accounts: Account[]; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("gpt-image-2");
   const [size, setSize] = useState("");
   const [count, setCount] = useState(1);
   const [asyncMode, setAsyncMode] = useState(true);
   const [refs, setRefs] = useState<ReferenceImage[]>([]);
-  const [items, setItems] = useState<WorkbenchItem[]>([]);
+  const [turns, setTurns] = useState<WorkbenchTurn[]>([]);
+  const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const quota = accounts.length ? quotaSummary(accounts) : "可用";
+  const activeTaskCount = useMemo(() => turns.reduce((sum, turn) => sum + turn.images.filter((item) => item.status === "queued" || item.status === "running").length, 0), [turns]);
+  const activeTaskIds = useMemo(() => Array.from(new Set(turns.flatMap((turn) => turn.images.flatMap((item) => item.taskId && (item.status === "queued" || item.status === "running") ? [item.taskId] : [])))), [turns]);
+  const activeTaskKey = activeTaskIds.join(",");
+  const hasHistory = turns.length > 0;
 
   async function addFiles(files: File[]) {
     const next = await Promise.all(files.filter((file) => file.type.startsWith("image/")).map(async (file) => ({ id: createID("ref"), name: file.name, file, dataUrl: await fileToDataURL(file) })));
@@ -429,131 +538,425 @@ function ImageWorkbench({ token, accounts, tasks, setTasks, setImages, toast, op
   }
 
   useEffect(() => {
-    const activeIds = items.flatMap((item) => item.taskId && (item.status === "queued" || item.status === "running") ? [item.taskId] : []);
-    if (!activeIds.length) return;
-    const timer = window.setInterval(async () => {
+    if (!activeTaskKey) return;
+    const ids = activeTaskKey.split(",").filter(Boolean);
+    const poll = async () => {
       try {
-        const data = await api.tasks(token, activeIds);
-        setTasks(data.items);
-        setItems((current) => current.map((item) => {
-          if (!item.taskId) return item;
-          const task = data.items.find((candidate) => candidate.id === item.taskId);
-          if (!task) return item;
-          const result = parseTaskData(task.data)[0];
-          return {
-            ...item,
-            status: task.status === "success" ? "success" : task.status === "error" ? "error" : task.status,
-            image: result || item.image,
-            error: task.error || item.error
-          };
-        }));
-        if (data.items.some((task) => task.status === "success")) {
+        const data = await api.tasks(token, ids);
+        setTasks((current) => mergeImageTasks(current, data.items));
+        applyTaskUpdates(data.items);
+        if (canRefreshArchive && data.items.some((task) => task.status === "success")) {
           api.images(token).then((data) => setImages(data.items || [])).catch(() => {});
         }
       } catch {
         // Keep polling quiet; task rows show the last known state.
       }
-    }, 2500);
+    };
+    poll();
+    const timer = window.setInterval(poll, 2500);
     return () => window.clearInterval(timer);
-  }, [items, token]);
+  }, [activeTaskKey, token]);
+
+  function applyTaskUpdates(items: ImageTask[]) {
+    const taskMap = new Map(items.map((task) => [task.id, task]));
+    setTurns((current) => current.map((turn) => {
+      const images = turn.images.map((item) => {
+        if (!item.taskId) return item;
+        const task = taskMap.get(item.taskId);
+        if (!task) return item;
+        const result = parseTaskData(task.data)[0];
+        return {
+          ...item,
+          status: taskStatusToWorkbench(task.status),
+          image: result || item.image,
+          error: task.error || item.error
+        };
+      });
+      return { ...turn, images, status: deriveTurnStatus(images), error: images.find((item) => item.error)?.error };
+    }));
+  }
+
+  async function createTaskForImage(turn: WorkbenchTurn, item: WorkbenchItem) {
+    if (turn.mode === "edit") {
+      const form = new FormData();
+      form.set("client_task_id", item.id);
+      form.set("prompt", turn.prompt);
+      form.set("model", turn.model);
+      if (turn.size) form.set("size", turn.size);
+      turn.refs.forEach((ref) => form.append("image", ref.file, ref.name));
+      return api.createEditTask(token, form);
+    }
+    return api.createGenerationTask(token, { client_task_id: item.id, prompt: turn.prompt, model: turn.model, size: turn.size, n: 1 });
+  }
+
+  async function enqueueImages(turn: WorkbenchTurn, imageIds = turn.images.map((item) => item.id)) {
+    let failed = 0;
+    const submitted: ImageTask[] = [];
+    for (const imageId of imageIds) {
+      const item = turn.images.find((candidate) => candidate.id === imageId);
+      if (!item) continue;
+      try {
+        const task = await createTaskForImage(turn, item);
+        submitted.push(task);
+        setTurns((current) => current.map((row) => {
+          if (row.id !== turn.id) return row;
+          const images = row.images.map((image) => image.id === imageId
+            ? { ...image, taskId: task.id, status: taskStatusToWorkbench(task.status), image: parseTaskData(task.data)[0] || image.image, error: task.error }
+            : image);
+          return { ...row, images, status: deriveTurnStatus(images), error: images.find((image) => image.error)?.error };
+        }));
+      } catch (error) {
+        failed += 1;
+        const message = error instanceof Error ? error.message : "提交失败";
+        setTurns((current) => current.map((row) => {
+          if (row.id !== turn.id) return row;
+          const images = row.images.map((image) => image.id === imageId ? { ...image, status: "error" as const, error: message } : image);
+          return { ...row, images, status: deriveTurnStatus(images), error: message };
+        }));
+      }
+    }
+    if (submitted.length) {
+      setTasks((current) => mergeImageTasks(current, submitted));
+    }
+    if (failed) throw new Error(`${failed} 个任务提交失败`);
+  }
+
+  async function runSyncTurn(turn: WorkbenchTurn) {
+    try {
+      if (turn.mode === "edit") {
+        const form = new FormData();
+        form.set("prompt", turn.prompt);
+        form.set("model", turn.model);
+        form.set("response_format", "url");
+        form.set("n", String(turn.count));
+        if (turn.size) form.set("size", turn.size);
+        turn.refs.forEach((ref) => form.append("image", ref.file, ref.name));
+        const data = await request<{ data: ImageResult[] }>(token, "/v1/images/edits", { method: "POST", body: form });
+        finishSyncTurn(turn.id, turn, data.data || []);
+      } else {
+        const data = await request<{ data: ImageResult[] }>(token, "/v1/images/generations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: turn.prompt, model: turn.model, size: turn.size, n: turn.count, response_format: "url" }) });
+        finishSyncTurn(turn.id, turn, data.data || []);
+      }
+      if (canRefreshArchive) {
+        api.images(token).then((data) => setImages(data.items || [])).catch(() => {});
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "生成失败";
+      setTurns((current) => current.map((row) => row.id === turn.id ? {
+        ...row,
+        status: "error",
+        error: message,
+        images: row.images.map((image) => ({ ...image, status: "error", error: message }))
+      } : row));
+      throw error;
+    }
+  }
+
+  function finishSyncTurn(turnId: string, source: WorkbenchTurn, images: ImageResult[]) {
+    const nextImages = Array.from({ length: Math.max(1, images.length || source.count) }, (_, index) => ({
+      id: createID("img"),
+      status: images[index] ? "success" as const : "error" as const,
+      prompt: source.prompt,
+      model: source.model,
+      size: source.size,
+      image: images[index],
+      error: images[index] ? undefined : "未返回图片"
+    }));
+    setTurns((current) => current.map((turn) => turn.id === turnId ? { ...turn, images: nextImages, status: deriveTurnStatus(nextImages), error: nextImages.find((item) => item.error)?.error } : turn));
+  }
 
   async function submit() {
     const text = prompt.trim();
     if (!text) return;
     setBusy(true);
     try {
-      const baseItems: WorkbenchItem[] = Array.from({ length: Math.max(1, Math.min(4, count)) }, () => ({ id: createID("img"), status: "queued", prompt: text, model, size }));
-      setItems((current) => [...baseItems, ...current]);
+      const countValue = Math.max(1, Math.min(4, count || 1));
+      const mode = refs.length ? "edit" : "generate";
+      const images: WorkbenchItem[] = Array.from({ length: countValue }, () => ({ id: createID("img"), status: "queued", prompt: text, model, size }));
+      const turn: WorkbenchTurn = {
+        id: createID("turn"),
+        prompt: text,
+        model,
+        size,
+        count: countValue,
+        mode,
+        refs: mode === "edit" ? refs : [],
+        images,
+        status: "queued",
+        createdAt: new Date().toISOString()
+      };
+      setTurns((current) => [turn, ...current]);
+      setActiveTurnId(turn.id);
+      setPrompt("");
+      setRefs([]);
       if (asyncMode) {
-        if (refs.length) {
-          for (const item of baseItems) {
-            const form = new FormData();
-            form.set("client_task_id", item.id);
-            form.set("prompt", text);
-            form.set("model", model);
-            if (size) form.set("size", size);
-            refs.forEach((ref) => form.append("image", ref.file, ref.name));
-            const task = await api.createEditTask(token, form);
-            item.taskId = task.id;
-          }
-        } else {
-          for (const item of baseItems) {
-            const task = await api.createGenerationTask(token, { client_task_id: item.id, prompt: text, model, size, n: 1 });
-            item.taskId = task.id;
-          }
-        }
-        setItems((current) => current.map((row) => baseItems.find((item) => item.id === row.id) || row));
-        toast("success", `已提交 ${baseItems.length} 个任务`);
+        await enqueueImages(turn);
+        toast("success", `已提交 ${countValue} 个任务`);
       } else {
-        if (refs.length) {
-          const form = new FormData();
-          form.set("prompt", text);
-          form.set("model", model);
-          form.set("response_format", "url");
-          form.set("n", String(count));
-          if (size) form.set("size", size);
-          refs.forEach((ref) => form.append("image", ref.file, ref.name));
-          const data = await request<{ data: ImageResult[] }>(token, "/v1/images/edits", { method: "POST", body: form });
-          const nextItems: WorkbenchItem[] = data.data.map((image, index) => ({ ...(baseItems[index] || baseItems[0]), id: createID("img"), status: "success", image }));
-          setItems((current) => nextItems.concat(current.filter((row) => !baseItems.some((item) => item.id === row.id))));
-        } else {
-          const data = await request<{ data: ImageResult[] }>(token, "/v1/images/generations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: text, model, size, n: count, response_format: "url" }) });
-          const nextItems: WorkbenchItem[] = data.data.map((image) => ({ id: createID("img"), status: "success", prompt: text, model, size, image }));
-          setItems((current) => nextItems.concat(current.filter((row) => !baseItems.some((item) => item.id === row.id))));
-        }
-        api.images(token).then((data) => setImages(data.items || [])).catch(() => {});
+        await runSyncTurn(turn);
+        toast("success", "图片已生成");
       }
     } catch (error) {
-      setItems((current) => current.map((item) => item.status === "queued" ? { ...item, status: "error", error: error instanceof Error ? error.message : "生成失败" } : item));
-      throw error;
+      toast("error", error instanceof Error ? error.message : "生成失败");
     } finally {
       setBusy(false);
     }
   }
 
+  async function retryImage(turnId: string, imageId: string) {
+    const source = turns.find((turn) => turn.id === turnId);
+    const item = source?.images.find((image) => image.id === imageId);
+    if (!source || !item) return;
+    setTurns((current) => current.map((turn) => {
+      if (turn.id !== turnId) return turn;
+      const images = turn.images.map((image) => image.id === imageId ? { ...image, status: "queued" as const, taskId: undefined, image: undefined, error: undefined } : image);
+      return { ...turn, images, status: deriveTurnStatus(images), error: undefined };
+    }));
+    try {
+      await enqueueImages({ ...source, images: source.images.map((image) => image.id === imageId ? { ...image, status: "queued", taskId: undefined, image: undefined, error: undefined } : image) }, [imageId]);
+      toast("success", "已重新提交");
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "重新提交失败");
+    }
+  }
+
+  async function regenerateTurn(turn: WorkbenchTurn) {
+    const images = Array.from({ length: turn.count }, () => ({ id: createID("img"), status: "queued" as const, prompt: turn.prompt, model: turn.model, size: turn.size }));
+    const nextTurn = { ...turn, id: createID("turn"), images, status: "queued" as const, createdAt: new Date().toISOString(), error: undefined };
+    setTurns((current) => [nextTurn, ...current]);
+    setActiveTurnId(nextTurn.id);
+    try {
+      await enqueueImages(nextTurn);
+      toast("success", "已重新生成");
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "重新生成失败");
+    }
+  }
+
+  function reuseTurn(turn: WorkbenchTurn) {
+    setPrompt(turn.prompt);
+    setModel(turn.model);
+    setSize(turn.size || "");
+    setCount(turn.count);
+    setRefs(turn.refs);
+    setActiveTurnId(turn.id);
+  }
+
+  async function useAsReference(item: WorkbenchItem) {
+    try {
+      const ref = await buildReferenceFromResult(item);
+      setRefs((current) => [...current, ref].slice(0, 8));
+      toast("success", "已加入参考图");
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "无法加入参考图");
+    }
+  }
+
+  function scrollToTurn(id: string) {
+    setActiveTurnId(id);
+    requestAnimationFrame(() => document.getElementById(`turn-${id}`)?.scrollIntoView({ block: "start", behavior: "smooth" }));
+  }
+
   return (
-    <div className="image-workbench">
-      <section className="panel composer">
-        <PanelHead title="图片工作台" subtitle="文生图、参考图编辑、异步任务和本地结果预览" action={<span className="pill">额度 {quotaSummary(accounts)}</span>} />
-        <input ref={fileRef} className="hidden" type="file" accept="image/*" multiple onChange={(event) => addFiles(Array.from(event.target.files || []))} />
-        <div className="reference-strip">
-          {refs.map((ref) => <button key={ref.id} className="reference-thumb" onClick={() => openLightbox(ref.dataUrl, ref.name)}><img src={ref.dataUrl} alt={ref.name} /><span onClick={(event) => { event.stopPropagation(); setRefs((items) => items.filter((item) => item.id !== ref.id)); }}><X size={12} /></span></button>)}
+    <div className="creator-page">
+      <aside className="creator-rail">
+        <div className="rail-actions">
+          <button onClick={() => { setActiveTurnId(null); setPrompt(""); setRefs([]); }}><MessageSquarePlus size={16} />新建</button>
+          <IconButton title="清空历史" disabled={!turns.length} onClick={() => confirm("清空当前页面的图片记录？") && setTurns([])}><Trash2 size={15} /></IconButton>
         </div>
-        <textarea className="prompt-box" value={prompt} onChange={(event) => setPrompt(event.target.value)} onPaste={(event) => {
-          const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
-          if (files.length) {
-            event.preventDefault();
-            addFiles(files);
-          }
-        }} placeholder={refs.length ? "描述你希望如何修改参考图" : "输入你想要生成的画面，也可直接粘贴图片"} />
-        <div className="composer-controls">
-          <button className="secondary" onClick={() => fileRef.current?.click()}><Upload size={16} />上传参考图</button>
-          <label><span>模型</span><input value={model} onChange={(event) => setModel(event.target.value)} /></label>
-          <label><span>比例</span><select value={size} onChange={(event) => setSize(event.target.value)}><option value="">自动</option><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></label>
-          <label><span>张数</span><input type="number" min={1} max={4} value={count} onChange={(event) => setCount(Number(event.target.value))} /></label>
-          <label className="inline"><input type="checkbox" checked={asyncMode} onChange={(event) => setAsyncMode(event.target.checked)} /><span>异步任务</span></label>
-          <button disabled={busy || !prompt.trim()} onClick={submit}>{busy ? <LoaderCircle className="spin" size={16} /> : <WandSparkles size={16} />}{refs.length ? "编辑" : "生成"}</button>
+        <div className="history-list">
+          {!hasHistory ? <div className="history-empty">暂无图片记录</div> : turns.map((turn) => (
+            <button key={turn.id} className={classNames("history-item", activeTurnId === turn.id && "active")} onClick={() => scrollToTurn(turn.id)}>
+              <strong>{turn.prompt}</strong>
+              <span>{turn.count} 张 · {turnModeLabel(turn.mode)} · {fmtDate(turn.createdAt)}</span>
+              <Badge value={turn.status} />
+            </button>
+          ))}
         </div>
-      </section>
-      <section className="panel results-panel">
-        <PanelHead title="结果" subtitle={`${items.length} 个结果/任务`} action={<><button className="secondary small" onClick={() => setItems([])}>清空</button><button className="secondary small" onClick={() => api.tasks(token).then((data) => setTasks(data.items || []))}>同步任务</button></>} />
-        <div className={classNames("result-grid", items.length === 0 && "empty")}>
-          {items.length === 0 ? "暂无结果" : items.map((item) => <ResultCard key={item.id} item={item} openLightbox={openLightbox} />)}
+      </aside>
+
+      <main className="creator-main">
+        <div className={classNames("creation-feed", !hasHistory && "empty")}>
+          {!hasHistory ? (
+            <div className="workbench-empty">
+              <Sparkles size={28} />
+              <h1>Turn ideas into images</h1>
+              <p>灵感、参考图与结果会在这里汇合。</p>
+            </div>
+          ) : turns.map((turn, turnIndex) => (
+            <section key={turn.id} id={`turn-${turn.id}`} className={classNames("creator-turn", activeTurnId === turn.id && "active")}>
+              <div className="prompt-row">
+                <div className="prompt-bubble">
+                  <div className="turn-meta"><span>第 {turns.length - turnIndex} 轮</span><span>{turnModeLabel(turn.mode)}</span><span>{turnStatusLabel(turn.status)}</span><span>{fmtDate(turn.createdAt)}</span></div>
+                  <p>{turn.prompt}</p>
+                  <div className="turn-actions">
+                    <button className="ghost small" onClick={() => reuseTurn(turn)}>复用配置</button>
+                    <IconButton title="删除本轮" onClick={() => setTurns((current) => current.filter((item) => item.id !== turn.id))}><Trash2 size={14} /></IconButton>
+                  </div>
+                </div>
+              </div>
+
+              <div className="result-flow">
+                {turn.refs.length ? (
+                  <div className="turn-ref-strip">
+                    {turn.refs.map((ref) => <button key={ref.id} onClick={() => openLightbox(ref.dataUrl, ref.name)}><img src={ref.dataUrl} alt={ref.name} /></button>)}
+                  </div>
+                ) : null}
+                <div className="turn-summary"><span>{turn.count} 张</span><span>{turn.model}</span>{turn.size ? <span>{turn.size}</span> : null}<Badge value={turn.status} /></div>
+                <div className="creation-grid">
+                  {turn.images.map((item, index) => (
+                    <ResultCard
+                      key={item.id}
+                      item={item}
+                      index={index}
+                      size={turn.size}
+                      openLightbox={openLightbox}
+                      onUseAsReference={() => useAsReference(item)}
+                      onRetry={() => retryImage(turn.id, item.id)}
+                      onCopy={() => {
+                        const src = item.image ? imageSrc(item.image) : "";
+                        if (!src || src.startsWith("data:")) return;
+                        copyText(src.startsWith("http") ? src : `${location.origin}${src}`).then(() => toast("success", "已复制链接"));
+                      }}
+                    />
+                  ))}
+                </div>
+                {turn.error ? <p className="turn-error">{turn.error}</p> : null}
+                <div className="turn-result-actions">
+                  <button className="ghost small" onClick={() => regenerateTurn(turn)}><RotateCcw size={14} />全部重新生成</button>
+                </div>
+              </div>
+            </section>
+          ))}
         </div>
-      </section>
+
+        <section className="creator-composer">
+          <input ref={fileRef} className="hidden" type="file" accept="image/*" multiple onChange={(event) => { addFiles(Array.from(event.target.files || [])); event.currentTarget.value = ""; }} />
+          {refs.length ? (
+            <div className="reference-strip">
+              {refs.map((ref) => <button key={ref.id} className="reference-thumb" onClick={() => openLightbox(ref.dataUrl, ref.name)}><img src={ref.dataUrl} alt={ref.name} /><span onClick={(event) => { event.stopPropagation(); setRefs((items) => items.filter((item) => item.id !== ref.id)); }}><X size={12} /></span></button>)}
+            </div>
+          ) : null}
+          <div className="composer-surface">
+            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onPaste={(event) => {
+              const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+              if (files.length) {
+                event.preventDefault();
+                addFiles(files);
+              }
+            }} onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                submit();
+              }
+            }} placeholder={refs.length ? "描述你希望如何修改参考图" : "输入你想要生成的画面，也可直接粘贴图片"} />
+            <div className="composer-footer">
+              <div className="composer-controls">
+                <button className="composer-pill" onClick={() => fileRef.current?.click()}><ImagePlus size={16} />{refs.length ? "添加参考图" : "上传"}</button>
+                <span className="composer-pill passive">额度 {quota}</span>
+                {activeTaskCount > 0 ? <span className="composer-pill running"><LoaderCircle className="spin" size={14} />{activeTaskCount} 处理中</span> : null}
+                <label className="composer-field"><span>模型</span><input value={model} onChange={(event) => setModel(event.target.value)} /></label>
+                <label className="composer-field small-field"><span>比例</span><select value={size} onChange={(event) => setSize(event.target.value)}><option value="">自动</option><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></label>
+                <label className="composer-field count-field"><span>张数</span><input type="number" min={1} max={4} value={count} onChange={(event) => setCount(Math.max(1, Math.min(4, Number(event.target.value) || 1)))} /></label>
+                <div className="mode-toggle">
+                  <button className={classNames(asyncMode && "active")} onClick={() => setAsyncMode(true)}>异步</button>
+                  <button className={classNames(!asyncMode && "active")} onClick={() => setAsyncMode(false)}>同步</button>
+                </div>
+              </div>
+              <button className="send-button" disabled={busy || !prompt.trim()} onClick={submit} aria-label={refs.length ? "编辑图片" : "生成图片"}>{busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={17} />}</button>
+            </div>
+          </div>
+        </section>
+      </main>
     </div>
   );
 }
 
-function ResultCard({ item, openLightbox }: { item: WorkbenchItem; openLightbox: (src: string, title?: string) => void }) {
+function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry, onCopy }: { item: WorkbenchItem; index: number; size?: string; openLightbox: (src: string, title?: string) => void; onUseAsReference: () => void; onRetry: () => void; onCopy: () => void }) {
   const src = item.image ? imageSrc(item.image) : "";
   return (
-    <article className="result-card">
-      {src ? <button onClick={() => openLightbox(src, item.prompt)}><img src={src} alt={item.prompt} /></button> : <div className="result-placeholder">{item.status === "error" ? <X size={22} /> : <LoaderCircle className="spin" size={22} />}</div>}
-      <div><Badge value={item.status} /><span>{item.model}</span>{item.size ? <span>{item.size}</span> : null}</div>
+    <article className={classNames("creation-image", sizeAspectClass(size), item.status === "error" && "error")}>
+      {src ? (
+        <button className="image-preview" onClick={() => openLightbox(src, item.prompt)}><img src={src} alt={item.prompt} loading="lazy" /></button>
+      ) : (
+        <div className="result-placeholder">
+          {item.status === "error" ? <X size={22} /> : item.status === "queued" ? <Clock3 size={22} /> : <LoaderCircle className="spin" size={22} />}
+          <span>{turnStatusLabel(item.status)}</span>
+        </div>
+      )}
+      <div className="image-card-footer">
+        <span>结果 {index + 1}</span>
+        <Badge value={item.status} />
+      </div>
+      {src ? <div className="image-card-actions"><button className="ghost small" onClick={onUseAsReference}><Sparkles size={13} />加入编辑</button>{!src.startsWith("data:") ? <IconButton title="复制链接" onClick={onCopy}><Copy size={13} /></IconButton> : null}</div> : null}
+      {item.status === "error" ? <button className="ghost small retry-button" onClick={onRetry}><RotateCcw size={13} />重新生成</button> : null}
       {item.error ? <p className="error-text">{item.error}</p> : null}
     </article>
   );
+}
+
+function deriveTurnStatus(images: WorkbenchItem[]): WorkbenchTurn["status"] {
+  if (!images.length) return "queued";
+  if (images.every((item) => item.status === "success")) return "success";
+  if (images.some((item) => item.status === "running")) return "running";
+  if (images.some((item) => item.status === "queued")) return "queued";
+  return "error";
+}
+
+function taskStatusToWorkbench(status: ImageTask["status"]): WorkbenchItem["status"] {
+  if (status === "success" || status === "error" || status === "running") return status;
+  return "queued";
+}
+
+function turnModeLabel(mode: WorkbenchTurn["mode"]) {
+  return mode === "edit" ? "编辑图" : "文生图";
+}
+
+function turnStatusLabel(status: WorkbenchTurn["status"] | WorkbenchItem["status"]) {
+  if (status === "queued") return "排队中";
+  if (status === "running") return "处理中";
+  if (status === "success") return "已完成";
+  return "失败";
+}
+
+function sizeAspectClass(size?: string) {
+  if (size === "16:9") return "wide";
+  if (size === "9:16") return "tall";
+  if (size === "4:3") return "landscape";
+  if (size === "3:4") return "portrait";
+  return "square";
+}
+
+function dataURLToFile(dataUrl: string, name: string) {
+  const [header, body = ""] = dataUrl.split(",");
+  const mime = /data:(.*?);base64/.exec(header)?.[1] || "image/png";
+  const binary = atob(body);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new File([bytes], name, { type: mime });
+}
+
+async function buildReferenceFromResult(item: WorkbenchItem): Promise<ReferenceImage> {
+  if (!item.image) throw new Error("没有可用图片");
+  const src = imageSrc(item.image);
+  if (!src) throw new Error("没有可用图片");
+  const name = `result-${item.id}.png`;
+  if (src.startsWith("data:")) {
+    const file = dataURLToFile(src, name);
+    return { id: createID("ref"), name, file, dataUrl: src };
+  }
+  const res = await fetch(src, { credentials: "same-origin" });
+  if (!res.ok) throw new Error("读取结果图失败");
+  const blob = await res.blob();
+  const file = new File([blob], name, { type: blob.type || "image/png" });
+  return { id: createID("ref"), name, file, dataUrl: await fileToDataURL(file) };
+}
+
+function mergeImageTasks(current: ImageTask[], updates: ImageTask[]) {
+  if (!updates.length) return current;
+  const map = new Map(current.map((task) => [task.id, task]));
+  updates.forEach((task) => map.set(task.id, task));
+  return Array.from(map.values()).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 }
 
 function TasksPanel({ token, tasks, setTasks, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: (items: ImageTask[]) => void; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
