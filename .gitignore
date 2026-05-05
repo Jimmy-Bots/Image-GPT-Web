@@ -9,6 +9,7 @@ test
 bin/
 dist/
 coverage.out
+/server
 
 # Go
 *.test

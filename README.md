@@ -42,6 +42,14 @@ go run ./cmd/server
 
 Default address: `:3000`.
 
+Docker:
+
+```bash
+docker compose up --build
+```
+
+The compose file mounts `./data` into the container and serves the management UI on `http://localhost:3000/`.
+
 Useful environment variables:
 
 - `CHATGPT2API_AUTH_KEY`: legacy admin bearer key and bootstrap admin API key.
