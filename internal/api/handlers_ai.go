@@ -62,16 +62,30 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		log.Printf("image_generation debug prompt_chars=%d prompt_preview=%q", utf8.RuneCountInString(req.Prompt), truncateForLog(req.Prompt, 120))
 	}
 	result, err := s.upstream.GenerateImage(r.Context(), req)
+	duration := time.Since(start).Milliseconds()
 	if err != nil {
-		log.Printf("image_generation failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, time.Since(start).Milliseconds(), err)
-		s.logCall(r, identity, "/v1/images/generations", req.Model, "failed", err.Error())
+		log.Printf("image_generation failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, duration, err)
+		s.logCall(r, identity, "/v1/images/generations", req.Model, "failed", err.Error(), map[string]any{
+			"duration_ms":      duration,
+			"requested_format": requestedFormat,
+			"size":             req.Size,
+			"n":                req.N,
+		})
 		s.writeUpstreamError(w, err)
 		return
 	}
 	saved := s.persistImageResults(r, result)
 	shapeImageResponseForClient(result, requestedFormat)
-	log.Printf("image_generation success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, imageResultCount(result), saved, time.Since(start).Milliseconds())
-	s.logCall(r, identity, "/v1/images/generations", req.Model, "success", "")
+	count := imageResultCount(result)
+	log.Printf("image_generation success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, count, saved, duration)
+	s.logCall(r, identity, "/v1/images/generations", req.Model, "success", "", map[string]any{
+		"duration_ms":      duration,
+		"requested_format": requestedFormat,
+		"size":             req.Size,
+		"n":                req.N,
+		"items":            count,
+		"archived":         saved,
+	})
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -96,16 +110,32 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		log.Printf("image_edit debug prompt_chars=%d prompt_preview=%q", utf8.RuneCountInString(req.Prompt), truncateForLog(req.Prompt, 120))
 	}
 	result, err := s.upstream.EditImage(r.Context(), req)
+	duration := time.Since(start).Milliseconds()
 	if err != nil {
-		log.Printf("image_edit failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, time.Since(start).Milliseconds(), err)
-		s.logCall(r, identity, "/v1/images/edits", req.Model, "failed", err.Error())
+		log.Printf("image_edit failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, duration, err)
+		s.logCall(r, identity, "/v1/images/edits", req.Model, "failed", err.Error(), map[string]any{
+			"duration_ms":      duration,
+			"requested_format": requestedFormat,
+			"size":             req.Size,
+			"n":                req.N,
+			"input_images":     len(req.Images),
+		})
 		s.writeUpstreamError(w, err)
 		return
 	}
 	saved := s.persistImageResults(r, result)
 	shapeImageResponseForClient(result, requestedFormat)
-	log.Printf("image_edit success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, imageResultCount(result), saved, time.Since(start).Milliseconds())
-	s.logCall(r, identity, "/v1/images/edits", req.Model, "success", "")
+	count := imageResultCount(result)
+	log.Printf("image_edit success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, count, saved, duration)
+	s.logCall(r, identity, "/v1/images/edits", req.Model, "success", "", map[string]any{
+		"duration_ms":      duration,
+		"requested_format": requestedFormat,
+		"size":             req.Size,
+		"n":                req.N,
+		"input_images":     len(req.Images),
+		"items":            count,
+		"archived":         saved,
+	})
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -176,21 +206,24 @@ func (s *Server) handleJSONOrStreamUpstream(
 		return
 	}
 	if !boolFromAny(req["stream"]) {
+		start := time.Now()
 		result, err := jsonHandler(r.Context(), req)
+		duration := time.Since(start).Milliseconds()
 		if err != nil {
-			s.logCall(r, identity, endpoint, model, "failed", err.Error())
+			s.logCall(r, identity, endpoint, model, "failed", err.Error(), map[string]any{"duration_ms": duration})
 			s.writeUpstreamError(w, err)
 			return
 		}
-		s.logCall(r, identity, endpoint, model, "success", "")
+		s.logCall(r, identity, endpoint, model, "success", "", map[string]any{"duration_ms": duration})
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
+	start := time.Now()
 	if err := s.streamJSONEvents(w, r, req, streamHandler, namedEvents); err != nil {
-		s.logCall(r, identity, endpoint, model, "failed", err.Error())
+		s.logCall(r, identity, endpoint, model, "failed", err.Error(), map[string]any{"duration_ms": time.Since(start).Milliseconds(), "stream": true})
 		return
 	}
-	s.logCall(r, identity, endpoint, model, "success", "")
+	s.logCall(r, identity, endpoint, model, "success", "", map[string]any{"duration_ms": time.Since(start).Milliseconds(), "stream": true})
 }
 
 func (s *Server) checkContentPolicy(w http.ResponseWriter, r *http.Request, identity Identity, endpoint string, model string, text string) bool {
@@ -493,7 +526,7 @@ func aiReviewConfig(settings map[string]any) aiReviewSettings {
 	}
 }
 
-func (s *Server) logCall(r *http.Request, identity Identity, endpoint string, model string, status string, callErr string) {
+func (s *Server) logCall(r *http.Request, identity Identity, endpoint string, model string, status string, callErr string, extra ...map[string]any) {
 	detail := map[string]any{
 		"subject_id": identity.ID,
 		"key_id":     identity.KeyID,
@@ -505,6 +538,11 @@ func (s *Server) logCall(r *http.Request, identity Identity, endpoint string, mo
 	}
 	if callErr != "" {
 		detail["error"] = callErr
+	}
+	for _, fields := range extra {
+		for key, value := range fields {
+			detail[key] = value
+		}
 	}
 	payload, _ := json.Marshal(detail)
 	_ = s.store.AddLog(r.Context(), domain.SystemLog{
