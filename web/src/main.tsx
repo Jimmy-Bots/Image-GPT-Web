@@ -35,10 +35,12 @@ import "./styles.css";
 type Tab = "dashboard" | "accounts" | "register" | "activity" | "images" | "playground" | "users" | "settings";
 type WorkbenchItem = {
   id: string;
+  phase?: "submitting" | "waiting_slot" | "task";
   status: "queued" | "running" | "success" | "error";
   prompt: string;
   model: string;
   size?: string;
+  startedAt?: string;
   taskId?: string;
   image?: ImageResult;
   error?: string;
@@ -563,13 +565,11 @@ function Dashboard({ accountSummary, models, tasks, taskTotal, storageStatus, on
   return (
     <div className="stack">
       <div className="metrics">
-        <Metric label="账号总数" value={totalAccounts} />
-        <Metric label="正常账号" value={normal} tone="ok" />
+        <Metric label="账号 / 正常" value={`${totalAccounts}/${normal}`} tone="ok" />
         <Metric label="可用额度" value={quotaLabelFromSummary(accountSummary)} />
         <Metric label="图片并发" value={`${activeRequests}/${totalConcurrency || 0}`} />
         <Metric label="任务总数" value={taskTotal} />
-        <Metric label="图片成功" value={success} tone="ok" />
-        <Metric label="失败" value={fail} tone="err" />
+        <Metric label="成功 / 失败" value={`${success}/${fail}`} />
       </div>
       <div className="dashboard-grid">
         <section className="panel">
@@ -941,7 +941,9 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
         const result = parseTaskData(task.data)[0];
         return {
           ...item,
+          phase: task.phase === "waiting_slot" ? "waiting_slot" : task.phase === "processing" ? "task" : task.phase === "finished" ? item.phase : item.phase,
           status: taskStatusToWorkbench(task.status),
+          startedAt: item.startedAt || task.created_at || turn.createdAt,
           image: result || item.image,
           error: extractWorkbenchTaskError(task, item.error)
         };
@@ -976,7 +978,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
         setTurns((current) => current.map((row) => {
           if (row.id !== turn.id) return row;
           const images = row.images.map((image) => image.id === imageId
-            ? { ...image, taskId: task.id, status: taskStatusToWorkbench(task.status), image: parseTaskData(task.data)[0] || image.image, error: task.error }
+            ? { ...image, phase: task.phase === "waiting_slot" ? "waiting_slot" : task.phase === "processing" ? "task" : image.phase, taskId: task.id, status: taskStatusToWorkbench(task.status), startedAt: image.startedAt || task.created_at || turn.createdAt, image: parseTaskData(task.data)[0] || image.image, error: task.error }
             : image);
           return { ...row, images, status: deriveTurnStatus(images), error: images.find((image) => image.error)?.error };
         }));
@@ -985,7 +987,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
         const message = describeWorkbenchError(error);
         setTurns((current) => current.map((row) => {
           if (row.id !== turn.id) return row;
-          const images = row.images.map((image) => image.id === imageId ? { ...image, status: "error" as const, error: message } : image);
+          const images = row.images.map((image) => image.id === imageId ? { ...image, status: "error" as const, startedAt: image.startedAt || turn.createdAt, error: message } : image);
           return { ...row, images, status: deriveTurnStatus(images), error: message };
         }));
       }
@@ -1049,7 +1051,8 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
       const countValue = Math.max(1, Math.min(maxCount, count || 1));
       const sizeValue = normalizeWorkbenchSize(size);
       const mode = refs.length ? "edit" : "generate";
-      const images: WorkbenchItem[] = Array.from({ length: countValue }, () => ({ id: createID("img"), status: "queued", prompt: text, model, size: sizeValue }));
+      const startedAt = new Date().toISOString();
+      const images: WorkbenchItem[] = Array.from({ length: countValue }, () => ({ id: createID("img"), phase: "submitting", status: "queued", prompt: text, model, size: sizeValue, startedAt }));
       const turn: WorkbenchTurn = {
         id: createID("turn"),
         prompt: text,
@@ -1060,7 +1063,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
         refs: mode === "edit" ? refs : [],
         images,
         status: "queued",
-        createdAt: new Date().toISOString()
+        createdAt: startedAt
       };
       setTurns((current) => [turn, ...current]);
       setActiveTurnId(turn.id);
@@ -1089,7 +1092,8 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
     if (!source || !item) return;
     const retryId = createID("img");
     const retrySize = normalizeWorkbenchSize(source.size);
-    const retryItem: WorkbenchItem = { ...item, id: retryId, status: "queued", taskId: undefined, image: undefined, error: undefined, size: retrySize };
+    const retryStartedAt = new Date().toISOString();
+    const retryItem: WorkbenchItem = { ...item, id: retryId, phase: "submitting", status: "queued", taskId: undefined, image: undefined, error: undefined, size: retrySize, startedAt: retryStartedAt };
     const retryTurn: WorkbenchTurn = {
       ...source,
       size: retrySize,
@@ -1112,8 +1116,9 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
 
   async function regenerateTurn(turn: WorkbenchTurn) {
     const turnSize = normalizeWorkbenchSize(turn.size);
-    const images = Array.from({ length: turn.count }, () => ({ id: createID("img"), status: "queued" as const, prompt: turn.prompt, model: turn.model, size: turnSize }));
-    const nextTurn = { ...turn, id: createID("turn"), size: turnSize, images, status: "queued" as const, createdAt: new Date().toISOString(), error: undefined };
+    const regenerateStartedAt = new Date().toISOString();
+    const images = Array.from({ length: turn.count }, () => ({ id: createID("img"), phase: "submitting" as const, status: "queued" as const, prompt: turn.prompt, model: turn.model, size: turnSize, startedAt: regenerateStartedAt }));
+    const nextTurn = { ...turn, id: createID("turn"), size: turnSize, images, status: "queued" as const, createdAt: regenerateStartedAt, error: undefined };
     setTurns((current) => [nextTurn, ...current]);
     setActiveTurnId(nextTurn.id);
     try {
@@ -1275,6 +1280,8 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
 
 function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry, onCopy, onDownload }: { item: WorkbenchItem; index: number; size?: string; openLightbox: (src: string, title?: string) => void; onUseAsReference: () => void; onRetry: () => void; onCopy: () => void; onDownload: () => void }) {
   const src = item.image ? imageSrc(item.image) : "";
+  const loadingLabel = workbenchLoadingLabel(item, index);
+  const waitingHint = workbenchWaitingHint(item);
   return (
     <article className={classNames("creation-image", sizeAspectClass(size), item.status === "error" && "error")}>
       {src ? (
@@ -1282,7 +1289,8 @@ function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry
       ) : (
         <div className="result-placeholder">
           {item.status === "error" ? <X size={22} /> : item.status === "queued" ? <Clock3 size={22} /> : <LoaderCircle className="spin" size={22} />}
-          <span>{turnStatusLabel(item.status)}</span>
+          <span>{item.status === "error" ? turnStatusLabel(item.status) : loadingLabel}</span>
+          {waitingHint ? <small>{waitingHint}</small> : null}
         </div>
       )}
       <div className="image-card-footer">
@@ -1318,6 +1326,44 @@ function turnStatusLabel(status: WorkbenchTurn["status"] | WorkbenchItem["status
   if (status === "running") return "处理中";
   if (status === "success") return "已完成";
   return "失败";
+}
+
+function workbenchLoadingLabel(item: WorkbenchItem, index: number) {
+  if (item.phase === "submitting") {
+    return "提交任务中…";
+  }
+  if (item.phase === "waiting_slot") {
+    return "任务已提交，正在等待可用并发";
+  }
+  const steps = item.status === "queued"
+    ? [
+      "正在为你整理画面意图",
+      "当前请求较多，正在排队进入绘制",
+      "正在等待可用绘图额度"
+    ]
+    : [
+      "正在分析画面需求",
+      "正在组织构图与光影",
+      "正在绘制草图轮廓",
+      "正在细化材质与颜色",
+      "正在整理最终画面"
+    ];
+  const started = Date.parse(item.startedAt || "");
+  if (!Number.isFinite(started)) {
+    return steps[index % steps.length];
+  }
+  const elapsed = Math.max(0, Date.now() - started);
+  const stepIndex = Math.min(steps.length - 1, Math.floor(elapsed / 3500));
+  return steps[stepIndex];
+}
+
+function workbenchWaitingHint(item: WorkbenchItem) {
+  if (item.phase !== "waiting_slot" || item.status !== "queued") return "";
+  const started = Date.parse(item.startedAt || "");
+  if (!Number.isFinite(started)) return "";
+  const elapsed = Date.now() - started;
+  if (elapsed < 12000) return "";
+  return "当前高峰，正在等待空闲并发，请耐心等待。";
 }
 
 function sizeAspectClass(size?: string) {
