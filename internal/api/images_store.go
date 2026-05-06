@@ -25,6 +25,7 @@ type storedImageMeta struct {
 	Prompt        string    `json:"prompt,omitempty"`
 	RevisedPrompt string    `json:"revised_prompt,omitempty"`
 	ArchivedAt    time.Time `json:"archived_at,omitempty"`
+	OwnerID       string    `json:"owner_id,omitempty"`
 }
 
 func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +112,9 @@ func (s *Server) listStoredImages(r *http.Request, query string, sortMode string
 			return nil
 		}
 		meta := readImageMeta(path)
+		if strings.TrimSpace(meta.OwnerID) == "" {
+			return nil
+		}
 		if query != "" {
 			haystack := strings.ToLower(strings.Join([]string{
 				entry.Name(),
@@ -138,6 +142,7 @@ func (s *Server) listStoredImages(r *http.Request, query string, sortMode string
 			"prompt":         meta.Prompt,
 			"revised_prompt": meta.RevisedPrompt,
 			"display_prompt": displayPrompt,
+			"owner_id":       meta.OwnerID,
 		})
 		return nil
 	})
@@ -165,25 +170,25 @@ func (s *Server) listStoredImages(r *http.Request, query string, sortMode string
 	return items, nil
 }
 
-func (s *Server) persistImageResults(r *http.Request, result map[string]any, prompt string) int {
-	saved := persistImageResultItems(s.cfg.ImagesDir, publicBaseURL(r), result, prompt)
+func (s *Server) persistImageResults(r *http.Request, result map[string]any, prompt string, ownerID string) int {
+	saved := persistImageResultItems(s.cfg.ImagesDir, publicBaseURL(r), result, prompt, ownerID)
 	if saved == 0 && s.cfg.DebugLogging() {
 		log.Printf("image_archive saved=0 path=%s items=%d", r.URL.Path, imageResultCount(result))
 	}
 	return saved
 }
 
-func persistImageResultItems(imagesDir string, baseURL string, result map[string]any, prompt string) int {
+func persistImageResultItems(imagesDir string, baseURL string, result map[string]any, prompt string, ownerID string) int {
 	saved := 0
 	forEachImageResultItem(result, func(item map[string]any) {
-		if persistImageItem(imagesDir, baseURL, item, prompt) {
+		if persistImageItem(imagesDir, baseURL, item, prompt, ownerID) {
 			saved++
 		}
 	})
 	return saved
 }
 
-func persistImageItem(root string, baseURL string, item map[string]any, prompt string) bool {
+func persistImageItem(root string, baseURL string, item map[string]any, prompt string, ownerID string) bool {
 	b64 := strings.TrimSpace(stringFromAny(item["b64_json"], ""))
 	if b64 == "" {
 		return false
@@ -215,6 +220,7 @@ func persistImageItem(root string, baseURL string, item map[string]any, prompt s
 		Prompt:        strings.TrimSpace(prompt),
 		RevisedPrompt: strings.TrimSpace(stringFromAny(item["revised_prompt"], "")),
 		ArchivedAt:    now,
+		OwnerID:       strings.TrimSpace(ownerID),
 	})
 	log.Printf("image_archive saved path=%s bytes=%d url_configured=%t", rel, len(data), baseURL != "")
 	return true

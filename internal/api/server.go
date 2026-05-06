@@ -19,6 +19,8 @@ import (
 	"gpt-image-web/internal/storage"
 )
 
+const sessionCookieName = "gpt_image_web_session"
+
 type Server struct {
 	cfg      config.Config
 	store    *storage.Store
@@ -168,6 +170,15 @@ func (s *Server) handleWebAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleImageAsset(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.sessionIdentityFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing session")
+		return
+	}
+	if identity.Role == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing session")
+		return
+	}
 	rel := strings.TrimPrefix(r.URL.Path, "/images/")
 	path, ok := safeJoin(s.cfg.ImagesDir, rel)
 	if !ok {
@@ -176,6 +187,16 @@ func (s *Server) handleImageAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		http.NotFound(w, r)
+		return
+	}
+	meta := readImageMeta(path)
+	ownerID := strings.TrimSpace(meta.OwnerID)
+	if ownerID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if identity.Role != domain.RoleAdmin && identity.ID != ownerID {
+		writeError(w, http.StatusForbidden, "forbidden", "image access denied")
 		return
 	}
 	http.ServeFile(w, r, path)
@@ -228,11 +249,9 @@ func (s *Server) bootstrap(ctx context.Context) error {
 }
 
 func (s *Server) sessionIdentityFromRequest(r *http.Request) (Identity, bool) {
-	header := r.Header.Get("Authorization")
-	if header == "" {
-		if raw := strings.TrimSpace(r.URL.Query().Get("access_token")); raw != "" {
-			header = "Bearer " + raw
-		}
+	header := ""
+	if cookie, err := r.Cookie(sessionCookieName); err == nil && strings.TrimSpace(cookie.Value) != "" {
+		header = "Bearer " + strings.TrimSpace(cookie.Value)
 	}
 	raw, err := auth.ExtractBearer(header)
 	if err != nil {
@@ -254,17 +273,9 @@ func (s *Server) identityFromRequest(r *http.Request) (Identity, bool) {
 	if header == "" && r.Header.Get("x-api-key") != "" {
 		header = "Bearer " + r.Header.Get("x-api-key")
 	}
-	if header == "" {
-		if raw := strings.TrimSpace(r.URL.Query().Get("access_token")); raw != "" {
-			header = "Bearer " + raw
-		}
-	}
 	raw, err := auth.ExtractBearer(header)
 	if err != nil {
 		return Identity{}, false
-	}
-	if s.cfg.LegacyAdminKey != "" && raw == s.cfg.LegacyAdminKey {
-		return Identity{ID: "legacy-admin", Name: "Legacy admin", Role: domain.RoleAdmin, AuthType: "legacy"}, true
 	}
 	if identity, ok := s.sessionIdentityFromRequest(r); ok {
 		return identity, true

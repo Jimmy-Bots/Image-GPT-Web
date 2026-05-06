@@ -27,7 +27,6 @@ type Config struct {
 	MaxRequestBodyBytes             int64
 	LoginRateLimitMax               int
 	LoginRateLimitWindowSec         int
-	LegacyAdminKey                  string
 	SessionSecret                   string
 	SessionTTLHours                 int
 	AdminEmail                      string
@@ -76,8 +75,7 @@ func Load() (Config, error) {
 		MaxRequestBodyBytes:             int64(envInt("CHATGPT2API_MAX_REQUEST_BODY_MB", 80, 1)) << 20,
 		LoginRateLimitMax:               envInt("CHATGPT2API_LOGIN_RATE_LIMIT_MAX", 8, 1),
 		LoginRateLimitWindowSec:         envInt("CHATGPT2API_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300, 1),
-		LegacyAdminKey:                  strings.TrimSpace(os.Getenv("CHATGPT2API_AUTH_KEY")),
-		SessionSecret:                   strings.TrimSpace(os.Getenv("CHATGPT2API_SESSION_SECRET")),
+			SessionSecret:                   strings.TrimSpace(os.Getenv("CHATGPT2API_SESSION_SECRET")),
 		SessionTTLHours:                 envInt("CHATGPT2API_SESSION_TTL_HOURS", 24*14, 1),
 		AdminEmail:                      envString("CHATGPT2API_ADMIN_EMAIL", "admin@example.com"),
 		AdminPassword:                   strings.TrimSpace(os.Getenv("CHATGPT2API_ADMIN_PASSWORD")),
@@ -109,11 +107,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("create backups dir: %w", err)
 	}
 	if cfg.SessionSecret == "" {
-		if cfg.LegacyAdminKey != "" {
-			cfg.SessionSecret = cfg.LegacyAdminKey
-		} else {
-			cfg.SessionSecret = randomSecret()
-		}
+		cfg.SessionSecret = randomSecret()
 	}
 	return cfg, nil
 }

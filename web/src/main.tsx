@@ -27,9 +27,9 @@ import {
   WandSparkles,
   X
 } from "lucide-react";
-import { api, authHeaders, getStoredToken, request, setStoredToken, withTokenQuery } from "./api";
+import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
 import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
-import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass } from "./utils";
+import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass, storedImageURL } from "./utils";
 import "./styles.css";
 
 type Tab = "dashboard" | "accounts" | "register" | "activity" | "images" | "playground" | "users" | "settings";
@@ -1454,7 +1454,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
 
   async function useAsReference(item: WorkbenchItem) {
     try {
-      const ref = await buildReferenceFromResult(item);
+      const ref = await buildReferenceFromResult(item, token);
       setRefs((current) => [...current, ref].slice(0, 8));
       toast("success", "已加入参考图");
     } catch (error) {
@@ -1529,12 +1529,12 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
                       onUseAsReference={() => useAsReference(item)}
                       onRetry={() => retryImage(turn.id, item.id)}
                       onCopy={() => {
-                        const src = item.image ? imageSrc(item.image) : "";
+                        const src = item.image ? imageSrc(item.image, token) : "";
                         if (!src || src.startsWith("data:")) return;
                         copyText(src.startsWith("http") ? src : `${location.origin}${src}`).then(() => toast("success", "已复制链接"));
                       }}
                       onDownload={() => {
-                        const src = item.image ? imageSrc(item.image) : "";
+                        const src = item.image ? imageSrc(item.image, token) : "";
                         if (!src) return;
                         downloadWorkbenchImage(src, `result-${turn.id}-${index + 1}.png`);
                       }}
@@ -1757,9 +1757,9 @@ function saveWorkbenchState(key: string, state: StoredWorkbenchState) {
   }
 }
 
-async function buildReferenceFromResult(item: WorkbenchItem): Promise<ReferenceImage> {
+async function buildReferenceFromResult(item: WorkbenchItem, token?: string): Promise<ReferenceImage> {
   if (!item.image) throw new Error("没有可用图片");
-  const src = imageSrc(item.image);
+  const src = imageSrc(item.image, token);
   if (!src) throw new Error("没有可用图片");
   const name = `result-${item.id}.png`;
   if (src.startsWith("data:")) {
@@ -1913,7 +1913,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
     try {
       const resolved = await ensureTaskDetail(task);
       const first = parseTaskData(resolved.data)[0];
-      const src = first ? imageSrc(first) : "";
+      const src = first ? imageSrc(first, token) : "";
       if (!src) {
         toast("info", "该任务暂无可预览图片");
         return;
@@ -1945,7 +1945,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
       </div>
       <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
         const first = parseTaskData(task.data)[0];
-        const src = first ? imageSrc(first) : "";
+        const src = first ? imageSrc(first, token) : "";
         const canPreview = Boolean(src) || task.status === "success";
         return (
           <tr key={task.id}>
@@ -1965,13 +1965,13 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
       })}</tbody></table></ScrollableTable>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
       <DetailModal title={detailTask ? `任务详情 · ${detailTask.id}` : "任务详情"} open={Boolean(detailTaskID)} onClose={() => setDetailTaskID(null)}>
-        {loadingDetail === detailTaskID || !detailTask ? <div className="detail-panel detail-panel-plain">加载详情中...</div> : <TaskDetail task={detailTask} openLightbox={openLightbox} />}
+        {loadingDetail === detailTaskID || !detailTask ? <div className="detail-panel detail-panel-plain">加载详情中...</div> : <TaskDetail token={token} task={detailTask} openLightbox={openLightbox} />}
       </DetailModal>
     </>
   );
 }
 
-function TaskDetail({ task, openLightbox }: { task: ImageTask; openLightbox: (src: string, title?: string) => void }) {
+function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageTask; openLightbox: (src: string, title?: string) => void }) {
   const results = parseTaskData(task.data);
   return (
     <div className="detail-panel">
@@ -1988,7 +1988,7 @@ function TaskDetail({ task, openLightbox }: { task: ImageTask; openLightbox: (sr
       </div>
       {task.prompt ? <div className="detail-prompt"><span>提示词</span><p>{task.prompt}</p></div> : null}
       {task.error ? <p className="detail-error">{task.error}</p> : null}
-      {results.length ? <div className="detail-images">{results.map((item, index) => { const src = imageSrc(item); return src ? <button key={index} onClick={() => openLightbox(src, task.id)}><img src={src} alt={`task ${index + 1}`} /></button> : null; })}</div> : null}
+      {results.length ? <div className="detail-images">{results.map((item, index) => { const src = imageSrc(item, token); return src ? <button key={index} onClick={() => openLightbox(src, task.id)}><img src={src} alt={`task ${index + 1}`} /></button> : null; })}</div> : null}
       <pre className="detail-json">{safeJSON({ ...task, data: results })}</pre>
     </div>
   );
@@ -2285,20 +2285,21 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
         <button className="ghost small" disabled={!selected.length} onClick={remove}>删除选中</button>
       </div>
       <div className="image-groups">{groupedItems.map((group) => <section key={group.date} className="image-group"><div className="image-group-head"><span>{group.date}</span><small>{group.items.length} 张</small></div><div className="image-grid">{group.items.map((item) => {
-        const copyURL = item.url.startsWith("http") ? item.url : `${location.origin}${item.url}`;
+        const assetURL = storedImageURL(item, token);
         const prompt = item.display_prompt || item.prompt || item.revised_prompt || item.name;
-        return <article key={item.path} className="image-item"><div className="image-item-head"><label><input type="checkbox" checked={selected.includes(item.path)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /><span title={prompt}>{prompt}</span></label><div className="image-item-actions"><IconButton title="复制链接" onClick={() => copyText(copyURL).then(() => toast("success", "已复制链接"))}><Copy size={14} /></IconButton><button className="ghost small" onClick={() => setDetailPath(item.path)}>详情</button></div></div><button className="image-item-preview" onClick={() => openLightbox(item.url, prompt)}><img src={item.url} alt={prompt} loading="lazy" /></button></article>;
+        return <article key={item.path} className="image-item"><div className="image-item-head"><label><input type="checkbox" checked={selected.includes(item.path)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /><span title={prompt}>{prompt}</span></label><div className="image-item-actions"><IconButton title="复制路径" onClick={() => copyText(item.path).then(() => toast("success", "已复制图片路径"))}><Copy size={14} /></IconButton><button className="ghost small" onClick={() => setDetailPath(item.path)}>详情</button></div></div><button className="image-item-preview" onClick={() => openLightbox(assetURL, prompt)}><img src={assetURL} alt={prompt} loading="lazy" /></button></article>;
       })}</div></section>)}</div>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
       <DetailModal title={detailImage ? `图片详情 · ${detailImage.display_prompt || detailImage.prompt || detailImage.revised_prompt || detailImage.name}` : "图片详情"} open={Boolean(detailPath)} onClose={() => setDetailPath(null)}>
-        {detailImage ? <ImageDetail image={detailImage} openLightbox={openLightbox} /> : <div className="detail-panel detail-panel-plain">图片详情不存在</div>}
+        {detailImage ? <ImageDetail token={token} image={detailImage} openLightbox={openLightbox} /> : <div className="detail-panel detail-panel-plain">图片详情不存在</div>}
       </DetailModal>
     </section>
   );
 }
 
-function ImageDetail({ image, openLightbox }: { image: StoredImage; openLightbox: (src: string, title?: string) => void }) {
+function ImageDetail({ token, image, openLightbox }: { token: string; image: StoredImage; openLightbox: (src: string, title?: string) => void }) {
   const prompt = image.display_prompt || image.prompt || image.revised_prompt || image.name;
+  const src = storedImageURL(image, token);
   return (
     <div className="detail-panel">
       <div className="detail-grid">
@@ -2307,8 +2308,8 @@ function ImageDetail({ image, openLightbox }: { image: StoredImage; openLightbox
         <DetailItem label="大小" value={fmtBytes(image.size)} />
         <DetailItem label="路径" value={image.path} code />
       </div>
-      <button className="detail-image-hero" onClick={() => openLightbox(image.url, prompt)}>
-        <img src={image.url} alt={prompt} loading="lazy" />
+      <button className="detail-image-hero" onClick={() => openLightbox(src, prompt)}>
+        <img src={src} alt={prompt} loading="lazy" />
       </button>
       {image.prompt ? <div className="detail-prompt"><span>原始提示词</span><p>{image.prompt}</p></div> : null}
       {image.revised_prompt && image.revised_prompt !== image.prompt ? <div className="detail-prompt"><span>修订提示词</span><p>{image.revised_prompt}</p></div> : null}
@@ -2378,7 +2379,7 @@ function Playground({ token, models, toast, openLightbox }: { token: string; mod
       </section>
       <section className="panel">
         <PanelHead title="响应" subtitle={meta} action={<button className="secondary small" onClick={() => copyText(output).then(() => toast("success", "已复制响应"))}>复制</button>} />
-        {images.length ? <div className="play-image-preview">{images.map((image, index) => { const src = imageSrc(image); return src ? <button key={index} onClick={() => openLightbox(src)}><img src={src} alt={`result ${index + 1}`} /></button> : null; })}</div> : null}
+        {images.length ? <div className="play-image-preview">{images.map((image, index) => { const src = imageSrc(image, token); return src ? <button key={index} onClick={() => openLightbox(src)}><img src={src} alt={`result ${index + 1}`} /></button> : null; })}</div> : null}
         <pre className="output">{output || "等待运行"}</pre>
       </section>
     </div>
@@ -2730,9 +2731,40 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
       setDeletingBackupKey("");
     }
   }
-  function downloadBackup(key: string) {
-    const endpoint = withTokenQuery("/api/backup/download", token, { key });
-    window.open(endpoint, "_blank", "noopener,noreferrer");
+  async function downloadBackup(key: string) {
+    if (!key) return;
+    setDeletingBackupKey(`download:${key}`);
+    try {
+      const res = await fetch(`/api/backup/download?key=${encodeURIComponent(key)}`, {
+        headers: authHeaders(token),
+        credentials: "same-origin"
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        let message = "下载备份失败";
+        if (text) {
+          try {
+            const data = JSON.parse(text) as { error?: { message?: string } };
+            message = data.error?.message || message;
+          } catch {
+            message = text;
+          }
+        }
+        throw new Error(message);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const match = /filename="?([^"]+)"?/.exec(res.headers.get("Content-Disposition") || "");
+      link.href = url;
+      link.download = match?.[1] || backupDisplayName(key);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDeletingBackupKey("");
+    }
   }
   function backupDisplayName(key: string) {
     const raw = String(key || "").split("/").pop() || key || "-";

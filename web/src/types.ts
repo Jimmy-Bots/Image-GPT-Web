@@ -5,7 +5,7 @@ export type Identity = {
   key_id?: string;
   name: string;
   role: Role;
-  auth_type: "legacy" | "session" | "api_key";
+  auth_type: "session" | "api_key";
 };
 
 export type ModelPolicy = {
