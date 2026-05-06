@@ -90,6 +90,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token_refs: tokenRefs })
     }),
+  refreshDueAccounts: (token: string) =>
+    request<{ selected: number; refreshed: number; errors: Array<{ token_ref?: string; error?: string }> }>(token, "/api/accounts/refresh-due", {
+      method: "POST"
+    }),
   updateAccount: (token: string, tokenRef: string, body: { status?: string; type?: string; quota?: number; password?: string }) =>
     request<{ item: Account }>(token, "/api/accounts/update", {
       method: "POST",

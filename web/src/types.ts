@@ -190,6 +190,7 @@ export type AccountRefreshStatus = {
   interval_minutes: number;
   concurrency: number;
   normal_batch_size: number;
+  due_count?: number;
   next_run_at?: string;
   last_started_at?: string;
   last_finished_at?: string;

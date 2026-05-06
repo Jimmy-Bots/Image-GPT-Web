@@ -91,6 +91,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/accounts", s.handleDeleteAccounts)
 	mux.HandleFunc("POST /api/accounts/update", s.handleUpdateAccount)
 	mux.HandleFunc("POST /api/accounts/refresh", s.handleRefreshAccounts)
+	mux.HandleFunc("POST /api/accounts/refresh-due", s.handleRefreshDueAccounts)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /api/register/state", s.handleGetRegisterState)
