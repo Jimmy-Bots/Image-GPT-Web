@@ -232,3 +232,31 @@ export type AccountRefreshStatus = {
   last_failed: number;
   last_error?: string;
 };
+
+export type BackupArtifact = {
+  key: string;
+  size_bytes: number;
+  sha256: string;
+};
+
+export type BackupRemoteItem = {
+  key: string;
+  size_bytes: number;
+  last_modified?: string;
+};
+
+export type BackupState = {
+  running: boolean;
+  enabled: boolean;
+  schedule_hour: number;
+  schedule_minute: number;
+  keep_latest: number;
+  next_run_at?: string;
+  last_started_at?: string;
+  last_finished_at?: string;
+  last_duration_ms?: number;
+  last_status?: string;
+  last_error?: string;
+  last_trigger?: string;
+  last_artifact?: BackupArtifact | null;
+};

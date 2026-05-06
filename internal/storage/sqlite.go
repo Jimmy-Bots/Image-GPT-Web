@@ -50,6 +50,16 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
+func (s *Store) BackupDatabase(ctx context.Context, destPath string) error {
+	if strings.TrimSpace(destPath) == "" {
+		return fmt.Errorf("destination path is required")
+	}
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, destPath); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) configure(ctx context.Context) error {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
@@ -1300,6 +1310,22 @@ func defaultSettings() map[string]any {
 		"auto_remove_rate_limited_accounts": false,
 		"log_levels":                        []any{},
 		"ai_review":                         map[string]any{"enabled": false, "base_url": "", "api_key": "", "model": "", "prompt": ""},
+		"backup": map[string]any{
+			"enabled":            false,
+			"schedule_hour":      24,
+			"schedule_minute":    0,
+			"keep_latest":        7,
+			"encrypt":            true,
+			"passphrase":         "",
+			"r2_account_id":      "",
+			"r2_access_key_id":   "",
+			"r2_secret_access_key": "",
+			"r2_bucket":          "",
+			"r2_prefix":          "gpt-image-web",
+			"include_env":        true,
+			"include_compose":    true,
+			"include_version":    true,
+		},
 		"register": map[string]any{
 			"proxy":                  "",
 			"mode":                   "total",

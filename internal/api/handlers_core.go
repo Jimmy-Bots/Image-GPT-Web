@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -318,7 +319,107 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
+	if s.backup != nil {
+		s.backup.RefreshSchedule()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"config": saved})
+}
+
+func (s *Server) handleGetBackupState(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if s.backup == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"state": backupState{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"state": s.backup.Status(r.Context())})
+}
+
+func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if s.backup == nil {
+		writeError(w, http.StatusServiceUnavailable, "backup_unavailable", "backup manager is not available")
+		return
+	}
+	artifact, err := s.backup.Run(r.Context(), "manual")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "backup_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"state":    s.backup.Status(r.Context()),
+		"artifact": artifact,
+	})
+}
+
+func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if s.backup == nil {
+		writeError(w, http.StatusServiceUnavailable, "backup_unavailable", "backup manager is not available")
+		return
+	}
+	items, err := s.backup.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "backup_list_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if s.backup == nil {
+		writeError(w, http.StatusServiceUnavailable, "backup_unavailable", "backup manager is not available")
+		return
+	}
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Key) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "backup key is required")
+		return
+	}
+	if err := s.backup.Delete(r.Context(), req.Key); err != nil {
+		writeError(w, http.StatusBadRequest, "backup_delete_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if s.backup == nil {
+		writeError(w, http.StatusServiceUnavailable, "backup_unavailable", "backup manager is not available")
+		return
+	}
+	key := strings.TrimSpace(r.URL.Query().Get("key"))
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "backup key is required")
+		return
+	}
+	payload, filename, err := s.backup.Download(r.Context(), key)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "backup_download_failed", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload)
 }
 
 func (s *Server) handleStorageInfo(w http.ResponseWriter, r *http.Request) {

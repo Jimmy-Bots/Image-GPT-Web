@@ -27,8 +27,8 @@ import {
   WandSparkles,
   X
 } from "lucide-react";
-import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
-import type { Account, AccountListSummary, AccountRefreshStatus, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
+import { api, authHeaders, getStoredToken, request, setStoredToken, withTokenQuery } from "./api";
+import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
 import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass } from "./utils";
 import "./styles.css";
 
@@ -1844,7 +1844,7 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
     <>
       <div className="filters filters-card activity-filters">
         <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索日志内容、接口、模型" />
-        <ControlField label="类型"><select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="account">账号</option><option value="register">注册</option></select></ControlField>
+        <ControlField label="类型"><select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="account">账号</option><option value="register">注册</option><option value="backup">备份</option></select></ControlField>
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
         <div className="filter-actions"><button className="secondary" onClick={() => load().catch((error) => toast("error", error.message))}>刷新日志</button><button className="danger" disabled={!selected.length} onClick={() => clear().catch((error) => toast("error", error.message))}>清理选中</button></div>
       </div>
@@ -2432,12 +2432,86 @@ function UserRow({ token, user, reload, toast, showKey, selected, onSelect }: { 
 
 function SettingsPanel({ token, settings, setSettings, toast }: { token: string; settings: SettingsType; setSettings: (settings: SettingsType) => void; toast: (type: Toast["type"], message: string) => void }) {
   const [json, setJson] = useState(safeJSON(settings));
+  const [backupState, setBackupState] = useState<BackupState | null>(null);
+  const [backupItems, setBackupItems] = useState<BackupRemoteItem[]>([]);
+  const [backupBusy, setBackupBusy] = useState<"" | "run" | "reload" | "list">("");
+  const [deletingBackupKey, setDeletingBackupKey] = useState("");
+  const backupTableRef = useRef<HTMLDivElement | null>(null);
+  useHorizontalWheelScroll(backupTableRef);
   useEffect(() => setJson(safeJSON(settings)), [settings]);
   const aiReview = settings.ai_review && typeof settings.ai_review === "object" ? settings.ai_review as Record<string, unknown> : {};
   const allowedPublicModels = Array.isArray(settings.allowed_public_models) ? settings.allowed_public_models.map((item) => String(item)) : [];
+  const backup = settings.backup && typeof settings.backup === "object" ? settings.backup as Record<string, unknown> : {};
   function updateField(key: string, value: unknown) { setSettings({ ...settings, [key]: value }); }
+  function updateBackupField(key: string, value: unknown) { updateField("backup", { ...backup, [key]: value }); }
   async function save(next = settings) { const data = await api.saveSettings(token, next); setSettings(data.config || {}); toast("success", "设置已保存"); }
-  return <div className="settings-layout"><section className="panel"><PanelHead title="常用设置" subtitle="保存后会同步写入配置表" action={<button onClick={() => save().catch((error) => toast("error", error.message))}>保存</button>} /><div className="settings-form"><label><span>Proxy</span><input value={String(settings.proxy || "")} onChange={(event) => updateField("proxy", event.target.value)} /></label><label><span>Base URL</span><input value={String(settings.base_url || "")} onChange={(event) => updateField("base_url", event.target.value)} /></label><label><span>图片工作台固定模型</span><input value={String(settings.image_workbench_model || "gpt-image-2")} onChange={(event) => updateField("image_workbench_model", event.target.value)} placeholder="gpt-image-2" /></label><label><span>图片单次张数上限</span><input type="number" min={1} value={Number(settings.image_max_count || 4)} onChange={(event) => updateField("image_max_count", Number(event.target.value))} /></label><label className="wide"><span>公开允许模型，每行一个</span><textarea value={allowedPublicModels.join("\n")} onChange={(event) => updateField("allowed_public_models", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} placeholder={"gpt-image-2\ngpt-5\nauto"} /></label><label><span>账号自动刷新间隔（分钟）</span><input type="number" min={1} value={Number(settings.refresh_account_interval_minute || 5)} onChange={(event) => updateField("refresh_account_interval_minute", Number(event.target.value))} /></label><label><span>账号刷新并发（自动刷新/手动刷新共用）</span><input type="number" min={1} value={Number(settings.refresh_account_concurrency || 4)} onChange={(event) => updateField("refresh_account_concurrency", Number(event.target.value))} /></label><label><span>正常账号轮转批大小</span><input type="number" min={1} value={Number(settings.refresh_account_normal_batch_size || 8)} onChange={(event) => updateField("refresh_account_normal_batch_size", Number(event.target.value))} /></label><label><span>单账号默认图片并发</span><input type="number" min={1} value={Number(settings.image_account_concurrency || 1)} onChange={(event) => updateField("image_account_concurrency", Number(event.target.value))} /></label><label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label><label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label><label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label><label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label><label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label></div></section><section className="panel"><PanelHead title="原始 JSON" subtitle="高级设置可以直接编辑" action={<button className="secondary" onClick={() => { const parsed = parseJSON(json) as SettingsType; save(parsed).catch((error) => toast("error", error.message)); }}>保存 JSON</button>} /><textarea className="json-editor settings-json" value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} /></section></div>;
+  useEffect(() => {
+    let cancelled = false;
+    api.backupState(token).then((data) => {
+      if (!cancelled) setBackupState(data.state || null);
+    }).catch(() => {});
+    api.listBackups(token).then((data) => {
+      if (!cancelled) setBackupItems(data.items || []);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+  async function reloadBackupState() {
+    setBackupBusy("reload");
+    try {
+      const data = await api.backupState(token);
+      setBackupState(data.state || null);
+    } finally {
+      setBackupBusy("");
+    }
+  }
+  async function reloadBackups() {
+    setBackupBusy("list");
+    try {
+      const data = await api.listBackups(token);
+      setBackupItems(data.items || []);
+    } finally {
+      setBackupBusy("");
+    }
+  }
+  async function runBackupNow() {
+    setBackupBusy("run");
+    try {
+      const data = await api.runBackup(token);
+      setBackupState(data.state || null);
+      const listed = await api.listBackups(token);
+      setBackupItems(listed.items || []);
+      toast("success", data.artifact?.key ? `备份已完成：${data.artifact.key}` : "备份已完成");
+    } finally {
+      setBackupBusy("");
+    }
+  }
+  async function removeBackup(key: string) {
+    if (!key || !confirm(`删除远端备份？\n${key}`)) return;
+    setDeletingBackupKey(key);
+    try {
+      await api.deleteBackup(token, key);
+      setBackupItems((current) => current.filter((item) => item.key !== key));
+      toast("success", "远端备份已删除");
+    } finally {
+      setDeletingBackupKey("");
+    }
+  }
+  function downloadBackup(key: string) {
+    const endpoint = withTokenQuery("/api/backup/download", token, { key });
+    window.open(endpoint, "_blank", "noopener,noreferrer");
+  }
+  function backupDisplayName(key: string) {
+    const raw = String(key || "").split("/").pop() || key || "-";
+    return raw.replace(/\.enc$/i, "");
+  }
+  function backupPrefixLabel(key: string) {
+    const value = String(key || "");
+    const index = value.lastIndexOf("/");
+    return index > 0 ? value.slice(0, index) : "root";
+  }
+  return <div className="settings-layout"><section className="panel"><PanelHead title="常用设置" subtitle="保存后会同步写入配置表" action={<button onClick={() => save().catch((error) => toast("error", error.message))}>保存配置</button>} /><div className="settings-form"><label><span>Proxy</span><input value={String(settings.proxy || "")} onChange={(event) => updateField("proxy", event.target.value)} /></label><label><span>Base URL</span><input value={String(settings.base_url || "")} onChange={(event) => updateField("base_url", event.target.value)} /></label><label><span>图片工作台固定模型</span><input value={String(settings.image_workbench_model || "gpt-image-2")} onChange={(event) => updateField("image_workbench_model", event.target.value)} placeholder="gpt-image-2" /></label><label><span>图片单次张数上限</span><input type="number" min={1} value={Number(settings.image_max_count || 4)} onChange={(event) => updateField("image_max_count", Number(event.target.value))} /></label><label className="wide"><span>公开允许模型，每行一个</span><textarea value={allowedPublicModels.join("\n")} onChange={(event) => updateField("allowed_public_models", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} placeholder={"gpt-image-2\ngpt-5\nauto"} /></label><label><span>账号自动刷新间隔（分钟）</span><input type="number" min={1} value={Number(settings.refresh_account_interval_minute || 5)} onChange={(event) => updateField("refresh_account_interval_minute", Number(event.target.value))} /></label><label><span>账号刷新并发（自动刷新/手动刷新共用）</span><input type="number" min={1} value={Number(settings.refresh_account_concurrency || 4)} onChange={(event) => updateField("refresh_account_concurrency", Number(event.target.value))} /></label><label><span>正常账号轮转批大小</span><input type="number" min={1} value={Number(settings.refresh_account_normal_batch_size || 8)} onChange={(event) => updateField("refresh_account_normal_batch_size", Number(event.target.value))} /></label><label><span>单账号默认图片并发</span><input type="number" min={1} value={Number(settings.image_account_concurrency || 1)} onChange={(event) => updateField("image_account_concurrency", Number(event.target.value))} /></label><label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label><label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label><label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label><label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label><label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label></div></section><section className="panel"><PanelHead title="备份" subtitle="按间隔自动备份数据库和关键配置并上传到 Cloudflare R2" action={<div className="actions"><button onClick={() => save().catch((error) => toast("error", error.message))}>保存配置</button><button className="secondary" disabled={backupBusy === "reload" || backupBusy === "list"} onClick={() => reloadBackupState().catch((error) => toast("error", error.message))}>{backupBusy === "reload" ? "刷新中" : "刷新状态"}</button><button className="secondary" disabled={backupBusy === "reload" || backupBusy === "list"} onClick={() => reloadBackups().catch((error) => toast("error", error.message))}>{backupBusy === "list" ? "列表刷新中" : "刷新列表"}</button><button disabled={backupBusy === "run"} onClick={() => runBackupNow().catch((error) => toast("error", error.message))}>{backupBusy === "run" ? "备份中" : "立即备份"}</button></div>} /><div className="settings-form"><label className="inline"><input type="checkbox" checked={Boolean(backup.enabled)} onChange={(event) => updateBackupField("enabled", event.target.checked)} /><span>启用自动备份</span></label><label className="inline"><input type="checkbox" checked={Boolean(backup.encrypt ?? true)} onChange={(event) => updateBackupField("encrypt", event.target.checked)} /><span>启用加密</span></label><label><span>备份间隔小时</span><input type="number" min={0} max={720} value={Number(backup.schedule_hour ?? 24)} onChange={(event) => updateBackupField("schedule_hour", Number(event.target.value))} /></label><label><span>备份间隔分钟</span><input type="number" min={0} max={59} value={Number(backup.schedule_minute ?? 0)} onChange={(event) => updateBackupField("schedule_minute", Number(event.target.value))} /></label><label><span>轮替保留份数</span><input type="number" min={1} value={Number(backup.keep_latest ?? 7)} onChange={(event) => updateBackupField("keep_latest", Number(event.target.value))} /></label><label><span>R2 Prefix</span><input value={String(backup.r2_prefix || "gpt-image-web")} onChange={(event) => updateBackupField("r2_prefix", event.target.value)} placeholder="gpt-image-web" /></label><label><span>R2 Account ID</span><input value={String(backup.r2_account_id || "")} onChange={(event) => updateBackupField("r2_account_id", event.target.value)} /></label><label><span>R2 Access Key ID</span><input value={String(backup.r2_access_key_id || "")} onChange={(event) => updateBackupField("r2_access_key_id", event.target.value)} /></label><label><span>R2 Secret Access Key</span><input type="password" value={String(backup.r2_secret_access_key || "")} onChange={(event) => updateBackupField("r2_secret_access_key", event.target.value)} /></label><label><span>R2 Bucket</span><input value={String(backup.r2_bucket || "")} onChange={(event) => updateBackupField("r2_bucket", event.target.value)} /></label><label className="wide"><span>备份加密口令</span><input type="password" value={String(backup.passphrase || "")} onChange={(event) => updateBackupField("passphrase", event.target.value)} placeholder="用于 AES-256-GCM 加密备份包" /></label><label className="inline"><input type="checkbox" checked={Boolean(backup.include_env ?? true)} onChange={(event) => updateBackupField("include_env", event.target.checked)} /><span>包含 .env</span></label><label className="inline"><input type="checkbox" checked={Boolean(backup.include_compose ?? true)} onChange={(event) => updateBackupField("include_compose", event.target.checked)} /><span>包含 docker-compose.yml</span></label><label className="inline"><input type="checkbox" checked={Boolean(backup.include_version ?? true)} onChange={(event) => updateBackupField("include_version", event.target.checked)} /><span>包含 VERSION</span></label></div><div className="detail-panel detail-panel-plain"><div className="detail-grid detail-grid-two"><DetailItem label="状态" value={backupState?.last_status || (backupState?.enabled ? "Idle" : "Disabled")} /><DetailItem label="下次执行" value={fmtDate(backupState?.next_run_at)} /><DetailItem label="当前间隔" value={`${Number(backupState?.schedule_hour || 0)} 小时 ${Number(backupState?.schedule_minute || 0)} 分钟`} /><DetailItem label="最近开始" value={fmtDate(backupState?.last_started_at)} /><DetailItem label="最近结束" value={fmtDate(backupState?.last_finished_at)} /><DetailItem label="耗时" value={formatDuration(backupState?.last_duration_ms)} /><DetailItem label="触发方式" value={String(backupState?.last_trigger || "-")} /><DetailItem label="最近对象" value={String(backupState?.last_artifact?.key || "-")} /><DetailItem label="最近大小" value={backupState?.last_artifact?.size_bytes ? fmtBytes(backupState.last_artifact.size_bytes) : "-"} /></div><p className="backup-note">`0 小时 1 分钟` 表示每 1 分钟自动备份一次；最小间隔为 1 分钟。</p>{backupState?.last_error ? <p className="detail-error">{backupState.last_error}</p> : null}</div><div className="detail-panel detail-panel-plain"><div className="backup-list-head"><div className="backup-list-title"><strong>最近远端备份</strong><span>{backupItems.length ? `${backupItems.length} 项` : "暂无远端备份"}</span></div><span className="chip">下载时自动返回解密后的 tar.gz</span></div><ScrollableTable tableRef={backupTableRef} className="data-table-wrap" height="medium"><table className="activity-table backup-table"><thead><tr><th>备份文件</th><th>最近修改</th><th>大小</th><th></th></tr></thead><tbody>{backupItems.length ? backupItems.map((item) => <tr key={item.key}><td><div className="backup-key-cell" title={item.key}><strong>{backupDisplayName(item.key)}</strong><small>{backupPrefixLabel(item.key)}</small></div></td><td>{fmtDate(item.last_modified)}</td><td>{item.size_bytes ? fmtBytes(item.size_bytes) : "-"}</td><td><div className="row-actions"><IconButton title="下载解密后的压缩包" onClick={() => downloadBackup(item.key)}><Download size={15} /></IconButton><button className="ghost small danger-text" disabled={deletingBackupKey === item.key} onClick={() => removeBackup(item.key).catch((error) => toast("error", error.message))}>{deletingBackupKey === item.key ? "删除中" : "删除"}</button></div></td></tr>) : <tr><td colSpan={4} className="table-empty">{backupBusy === "list" ? "远端备份加载中..." : "暂无远端备份"}</td></tr>}</tbody></table></ScrollableTable></div></section><section className="panel"><PanelHead title="原始 JSON" subtitle="高级设置可以直接编辑" action={<button className="secondary" onClick={() => { const parsed = parseJSON(json) as SettingsType; save(parsed).catch((error) => toast("error", error.message)); }}>保存 JSON</button>} /><textarea className="json-editor settings-json" value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} /></section></div>;
 }
 
 function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { token: string; registerRuntime: RegisterRuntime | null; setRegisterRuntime: React.Dispatch<React.SetStateAction<RegisterRuntime | null>>; toast: (type: Toast["type"], message: string) => void }) {

@@ -1,4 +1,4 @@
-import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, Settings, StoredImage, SystemLog, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, BackupArtifact, BackupRemoteItem, BackupState, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, Settings, StoredImage, SystemLog, User } from "./types";
 
 const storageKey = "gpt_image_web_token";
 
@@ -27,6 +27,17 @@ export function authHeaders(token: string, extra: HeadersInit = {}) {
   const headers = new Headers(extra);
   if (token) headers.set("Authorization", `Bearer ${token}`);
   return headers;
+}
+
+export function withTokenQuery(path: string, token: string, params: Record<string, string | number | boolean | undefined | null> = {}) {
+  const search = new URLSearchParams();
+  if (token) search.set("access_token", token);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return query ? `${path}?${query}` : path;
 }
 
 export async function request<T>(token: string, path: string, options: RequestInit = {}): Promise<T> {
@@ -234,6 +245,19 @@ export const api = {
   runRegisterOnce: (token: string) =>
     request<RegisterRuntime>(token, "/api/register/run-once", {
       method: "POST"
+    }),
+  backupState: (token: string) => request<{ state: BackupState }>(token, "/api/backup/state"),
+  runBackup: (token: string) =>
+    request<{ state: BackupState; artifact?: BackupArtifact | null }>(token, "/api/backup/run", {
+      method: "POST"
+    }),
+  listBackups: (token: string) =>
+    request<{ items: BackupRemoteItem[] }>(token, "/api/backup/items"),
+  deleteBackup: (token: string, key: string) =>
+    request<{ ok: boolean }>(token, "/api/backup/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key })
     }),
   storage: (token: string) => request<{ backend: { type: string; path: string }; health: { status: string } }>(token, "/api/storage/info"),
   logs: (token: string, type = "", ids: string[] = [], params: { page?: number; pageSize?: number; query?: string } = {}) =>
