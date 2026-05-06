@@ -55,9 +55,9 @@ export function classNames(...values: Array<string | false | undefined | null>) 
 
 export function statusClass(status?: string | boolean) {
   const value = String(status ?? "");
-  if (/正常|active|true|success|healthy/.test(value)) return "ok";
-  if (/限流|queued|running|warning|unknown/.test(value)) return "warn";
-  if (/异常|禁用|disabled|false|error|deleted|unhealthy/.test(value)) return "err";
+  if (/正常|active|true|success|healthy|enabled/i.test(value)) return "ok";
+  if (/限流|queued|running|warning|unknown/i.test(value)) return "warn";
+  if (/异常|禁用|disabled|false|error|deleted|unhealthy|offline/i.test(value)) return "err";
   return "";
 }
 

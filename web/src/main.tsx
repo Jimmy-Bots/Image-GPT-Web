@@ -92,8 +92,55 @@ const pageTitle: Record<Tab, string> = {
   settings: "设置"
 };
 
+function formatBadgeValue(value: string | boolean | number | undefined) {
+  const raw = String(value ?? "-");
+  switch (raw) {
+    case "true":
+      return "Enabled";
+    case "false":
+      return "Disabled";
+    case "healthy":
+      return "Healthy";
+    case "offline":
+      return "Offline";
+    case "active":
+      return "Active";
+    case "disabled":
+      return "Disabled";
+    case "admin":
+      return "Admin";
+    case "user":
+      return "User";
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running";
+    case "success":
+      return "Success";
+    case "error":
+      return "Error";
+    case "deleted":
+      return "Deleted";
+    case "warning":
+      return "Warning";
+    case "unknown":
+      return "Unknown";
+    default:
+      return raw;
+  }
+}
+
 function Badge({ value }: { value: string | boolean | number | undefined }) {
-  return <span className={classNames("badge", statusClass(String(value ?? "")))}>{String(value ?? "-")}</span>;
+  return <span className={classNames("badge", statusClass(String(value ?? "")))}>{formatBadgeValue(value)}</span>;
+}
+
+function HealthStatusBadge({ status, className }: { status: "healthy" | "offline"; className?: string }) {
+  return (
+    <span className={classNames("status-pill", "status-with-dot", status === "offline" && "offline", className)}>
+      <span className="status-dot" />
+      {formatBadgeValue(status)}
+    </span>
+  );
 }
 
 function quotaLabelFromSummary(summary: AccountListSummary | null) {
@@ -187,6 +234,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [adminMode, setAdminMode] = useState(false);
   const [version, setVersion] = useState("-");
+  const [healthBadge, setHealthBadge] = useState<"healthy" | "offline">("offline");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountSummary, setAccountSummary] = useState<AccountListSummary | null>(null);
   const [users, setUsers] = useState<User[]>([]);
@@ -229,7 +277,7 @@ function App() {
     setIdentity(me.identity);
     setCurrentUser(me.user || null);
     setModelPolicy(me.model_policy || {});
-    setVersion("connected");
+    setHealthBadge("healthy");
     if (me.identity.role !== "admin") setAdminMode(false);
     await refreshAll(currentToken, me.identity.role === "admin");
   }
@@ -285,12 +333,37 @@ function App() {
   }, [settings]);
 
   useEffect(() => {
-    if (!token) return;
+    let cancelled = false;
+    const pollHealth = () => {
+      api.health().then((data) => {
+        if (cancelled) return;
+        setHealthBadge(data.ok ? "healthy" : "offline");
+        if (!token && data.version) {
+          setVersion(data.version || "-");
+        }
+      }).catch(() => {
+        if (!cancelled) setHealthBadge("offline");
+      });
+    };
+    pollHealth();
+    const timer = window.setInterval(pollHealth, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) {
+      api.version("").then((data) => setVersion(data.version || "-")).catch(() => {});
+      return;
+    }
     bootstrap(token).catch(() => {
       setStoredToken("");
       setToken("");
       setIdentity(null);
       setCurrentUser(null);
+      setHealthBadge("offline");
     });
   }, []);
 
@@ -355,7 +428,7 @@ function App() {
   }
 
   if (!token || !identity) {
-    return <LoginView busy={busy === "login"} error={loginError} onLogin={submitLogin} />;
+    return <LoginView busy={busy === "login"} error={loginError} version={version} healthBadge={healthBadge} onLogin={submitLogin} />;
   }
 
   if (!adminMode || !isAdmin) {
@@ -365,6 +438,7 @@ function App() {
           identity={identity}
           user={currentUser}
           version={version}
+          healthBadge={healthBadge}
           modelPolicy={modelPolicy}
           isAdmin={Boolean(isAdmin)}
           quotaLabel={quotaLabelFromUser(currentUser)}
@@ -422,7 +496,7 @@ function App() {
             <h1>{pageTitle[activeTab]}</h1>
           </div>
           <div className="top-actions">
-            <span className="status-pill">online</span>
+            <HealthStatusBadge status={healthBadge} />
             <button className="secondary" disabled={busy === "refresh"} onClick={() => runBusy("refresh", () => refreshAll())}>
               {busy === "refresh" ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
               刷新
@@ -453,10 +527,11 @@ function App() {
   );
 }
 
-function LoginView({ busy, error, onLogin }: { busy: boolean; error: string; onLogin: (email: string, password: string) => void }) {
+function LoginView({ busy, error, version, healthBadge, onLogin }: { busy: boolean; error: string; version: string; healthBadge: "healthy" | "offline"; onLogin: (email: string, password: string) => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [localError, setLocalError] = useState("");
+  const [agreementChecked, setAgreementChecked] = useState(false);
   function submit(event: FormEvent) {
     event.preventDefault();
     setLocalError("");
@@ -464,23 +539,36 @@ function LoginView({ busy, error, onLogin }: { busy: boolean; error: string; onL
       setLocalError("请输入邮箱和密码");
       return;
     }
+    if (!agreementChecked) {
+      setLocalError("请先阅读并确认使用说明");
+      return;
+    }
     onLogin(email, password);
   }
   return (
     <main className="login-view">
       <form className="login-panel" onSubmit={submit}>
+        <HealthStatusBadge status={healthBadge} className="login-status-badge" />
         <div className="brand login-brand">
           <div className="brand-mark">GI</div>
           <div>
             <strong>GPT Image Web</strong>
-            <span>账号池、图片任务与兼容 API 管理台</span>
+            <span>{version && version !== "-" ? `v${version}` : "继续登录"}</span>
           </div>
         </div>
-        <label><span>Email</span><input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" placeholder="admin@example.com" /></label>
-        <label><span>Password</span><input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="账户密码" /></label>
+        <label><span>Email</span><input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" placeholder="cc98@zju.edu.cn" /></label>
+        <label><span>Password</span><input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="********" placeholder="账户密码" /></label>
+        <div className="login-notice">
+          <p>为完成功能实现，服务端可能会暂存你的部分账户信息、请求内容、任务日志和图片结果，并在用户使用结束后按系统策略删除。</p>
+          <p>这些数据不会被用于非法用途，如果你介意相关暂存，请不要继续使用。</p>
+          <p>本系统仅提供工具能力，用户应确保其输入、生成内容和使用行为合法合规；因违法违规使用产生的责任由用户本人承担。</p>
+          <label className="login-agreement">
+            <input type="checkbox" checked={agreementChecked} onChange={(event) => setAgreementChecked(event.target.checked)} />
+            <span>我已阅读并同意上述说明，知悉数据与使用责任边界。</span>
+          </label>
+        </div>
         {localError || error ? <p className="form-error">{localError || error}</p> : null}
         <button disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : null}登录</button>
-        <p className="hint">管理后台创建用户后，会自动生成该用户唯一 API Key；网页登录只使用邮箱密码。</p>
       </form>
     </main>
   );
@@ -491,6 +579,7 @@ function ImageHome({
   identity,
   user,
   version,
+  healthBadge,
   modelPolicy,
   isAdmin,
   quotaLabel,
@@ -510,6 +599,7 @@ function ImageHome({
   identity: Identity;
   user: User | null;
   version: string;
+  healthBadge: "healthy" | "offline";
   modelPolicy: ModelPolicy;
   isAdmin: boolean;
   quotaLabel: string;
@@ -525,6 +615,7 @@ function ImageHome({
   lightbox: { src: string; title?: string } | null;
   closeLightbox: () => void;
 }) {
+  const identityMeta = [identity.name || "User", identity.role, version && version !== "-" ? version : ""].filter(Boolean).join(" · ");
   return (
     <div className="home-shell">
       <header className="home-header">
@@ -532,11 +623,11 @@ function ImageHome({
           <div className="brand-mark">GI</div>
           <div>
             <strong>GPT Image Web</strong>
-            <span>{identity.name || "User"} · {identity.role} · {version}</span>
+            <span>{identityMeta}</span>
           </div>
         </div>
         <div className="home-actions">
-          <span className="status-pill">online</span>
+          <HealthStatusBadge status={healthBadge} />
           {isAdmin ? <button className="secondary compact" onClick={openAdmin}><LayoutDashboard size={15} />管理后台</button> : null}
           <button className="ghost compact" onClick={logout}><LogOut size={15} />退出</button>
         </div>
@@ -2158,8 +2249,8 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
         <div className="toolbar-actions"><span className="chip">{total} 用户</span></div>
       </div>
       <div className="filters filters-card activity-filters">
-        <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">active</option><option value="disabled">disabled</option></select></ControlField>
-        <ControlField label="角色"><select value={role} onChange={(event) => setRole(event.target.value)}><option value="">全部角色</option><option value="user">user</option><option value="admin">admin</option></select></ControlField>
+        <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">Active</option><option value="disabled">Disabled</option></select></ControlField>
+        <ControlField label="角色"><select value={role} onChange={(event) => setRole(event.target.value)}><option value="">全部角色</option><option value="user">User</option><option value="admin">Admin</option></select></ControlField>
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
         <div className="filter-actions"><button className="secondary" onClick={() => reload().catch((error) => toast("error", error.message))}>刷新用户</button></div>
       </div>
@@ -2177,7 +2268,7 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
       {newKey ? <div className="notice"><span>新 API Key 只显示一次：</span><code>{newKey}</code><IconButton title="复制" onClick={() => copyText(newKey).then(() => toast("success", "已复制"))}><Copy size={14} /></IconButton><IconButton title="隐藏" onClick={() => setNewKey("")}><EyeOff size={14} /></IconButton></div> : null}
       <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="large"><table className="users-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => {
         setSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...users.map((item) => item.id)])) : prev.filter((id) => !users.some((item) => item.id === id)));
-      }} aria-label="选择当前用户" /></th><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>可用额度</th><th>额度明细</th><th>API Key</th><th>Last login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} selected={selectedSet.has(user.id)} onSelect={(checked) => setSelected((prev) => checked ? [...prev, user.id] : prev.filter((id) => id !== user.id))} />)}</tbody></table></ScrollableTable>
+      }} aria-label="选择当前用户" /></th><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>可用额度</th><th>额度明细</th><th>API Key</th><th>Last Login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} selected={selectedSet.has(user.id)} onSelect={(checked) => setSelected((prev) => checked ? [...prev, user.id] : prev.filter((id) => id !== user.id))} />)}</tbody></table></ScrollableTable>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
       <DetailModal title="创建用户" open={createOpen} onClose={() => setCreateOpen(false)}>
         <div className="detail-panel">
@@ -2313,15 +2404,15 @@ function UserRow({ token, user, reload, toast, showKey, selected, onSelect }: { 
       <td>{editing ? <input className="cell-input" value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} /> : user.email}</td>
       <td>{editing ? <input className="cell-input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /> : (user.name || "-")}</td>
       <td>{editing ? <select className="cell-input" value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value as User["role"] })}><option>user</option><option>admin</option></select> : <Badge value={user.role} />}</td>
-      <td>{editing ? <select className="cell-input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as User["status"] })}><option value="active">active</option><option value="disabled">disabled</option></select> : <Badge value={user.status} />}</td>
+      <td>{editing ? <select className="cell-input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as User["status"] })}><option value="active">Active</option><option value="disabled">Disabled</option></select> : <Badge value={user.status} />}</td>
       <td>{user.quota_unlimited ? "∞" : compact(user.available_quota || 0)}</td>
       <td>{editing ? <div className="quota-edit-inline"><select className="cell-input" value={draft.role === "admin" || draft.quotaUnlimited ? "true" : "false"} onChange={(event) => setDraft({ ...draft, quotaUnlimited: event.target.value === "true" })} disabled={draft.role === "admin"}><option value="false">有限</option><option value="true">无限</option></select><input className="cell-input" type="number" min={0} value={draft.permanentQuota} onChange={(event) => setDraft({ ...draft, permanentQuota: event.target.value })} disabled={draft.role === "admin" || draft.quotaUnlimited} placeholder="永久" /><input className="cell-input" type="number" min={0} value={draft.temporaryQuota} onChange={(event) => setDraft({ ...draft, temporaryQuota: event.target.value })} disabled={draft.role === "admin" || draft.quotaUnlimited} placeholder="临时额度" /></div> : <><strong>{formatUserQuotaBreakdown(user)}</strong><small>{user.daily_temporary_quota ? `每天自动发放 ${user.daily_temporary_quota}` : (user.temporary_quota > 0 ? "当日额度" : "无临时额度")}</small></>}</td>
-      <td><Badge value={user.api_key?.enabled ?? false} /><small>{user.api_key ? `${user.api_key.name} · ${fmtDate(user.api_key.last_used_at)}` : "missing"}</small></td>
+      <td><Badge value={user.api_key?.enabled ?? false} /><small>{user.api_key ? `${user.api_key.name} · ${fmtDate(user.api_key.last_used_at)}` : "Missing"}</small></td>
       <td>{fmtDate(user.last_login_at)}</td>
       <td className="users-actions-cell"><div className="row-actions">
         {editing ? (
           <>
-            <input className="cell-input password-cell" type="password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} placeholder="new password" />
+            <input className="cell-input password-cell" type="password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} placeholder="New Password" />
             <button className="secondary small" disabled={saving} onClick={save}>{saving ? "保存中" : "保存"}</button>
             <button className="ghost small" disabled={saving} onClick={() => setEditing(false)}>取消</button>
           </>
@@ -2520,7 +2611,7 @@ function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { 
   }
   const registerRunning = Boolean(registerRuntime?.running);
   const registerBusyNow = registerBusy !== "";
-  return <div className="stack"><div className="register-layout"><section className="panel"><PanelHead title="注册配置" subtitle="inbucket 邮箱、并发和目标模式" action={<><span className={classNames("chip", draftDirty && "warn")}>{draftDirty ? "未保存" : "已保存"}</span><button className="secondary small" disabled={registerBusyNow} onClick={() => reloadRegister().catch((error) => toast("error", error.message))}>{registerBusy === "reload" ? "刷新中" : "刷新"}</button><button className="secondary small" disabled={registerBusyNow || registerRunning} onClick={() => saveRegister().catch((error) => toast("error", error.message))}>{registerBusy === "save" ? "保存中" : "保存配置"}</button></>} /><div className="settings-form register-form"><label><span>Inbucket API Base</span><input value={draft.apiBase} onChange={(event) => updateDraft({ apiBase: event.target.value })} placeholder="http://127.0.0.1:9000" /></label><label><span>Register Proxy</span><input value={draft.proxy} onChange={(event) => updateDraft({ proxy: event.target.value })} placeholder="留空则继承全局 Proxy" /></label><label><span>模式</span><select value={draft.mode} onChange={(event) => updateDraft({ mode: event.target.value })}><option value="total">total</option><option value="quota">quota</option><option value="available">available</option></select></label><label><span>线程数</span><input type="number" value={draft.threads} onChange={(event) => updateDraft({ threads: Number(event.target.value) })} /></label><label><span>Total</span><input type="number" value={draft.total} onChange={(event) => updateDraft({ total: Number(event.target.value) })} /></label><label><span>Check Interval 秒</span><input type="number" value={draft.checkIntervalSeconds} onChange={(event) => updateDraft({ checkIntervalSeconds: Number(event.target.value) })} /></label><label><span>Target Quota</span><input type="number" value={draft.targetQuota} onChange={(event) => updateDraft({ targetQuota: Number(event.target.value) })} /></label><label><span>Target Available</span><input type="number" value={draft.targetAvailable} onChange={(event) => updateDraft({ targetAvailable: Number(event.target.value) })} /></label><label className="inline"><input type="checkbox" checked={draft.randomSubdomain} onChange={(event) => updateDraft({ randomSubdomain: event.target.checked })} /><span>随机子域名</span></label><label className="wide"><span>Inbucket Domains，每行一个</span><textarea value={draft.domains} onChange={(event) => updateDraft({ domains: event.target.value })} /></label></div></section><section className="panel"><PanelHead title="运行状态" subtitle="单次注册和批量注册控制" action={<div className="register-toolbar"><span className={classNames("badge", registerRuntime?.running ? "warn" : "ok")}>{registerRuntime?.running ? "running" : "idle"}</span></div>} /><div className="detail-grid register-stats"><DetailItem label="Success" value={String(Number(registerRuntime?.state?.stats?.success || 0))} /><DetailItem label="Fail" value={String(Number(registerRuntime?.state?.stats?.fail || 0))} /><DetailItem label="Done" value={String(Number(registerRuntime?.state?.stats?.done || 0))} /><DetailItem label="Running" value={String(Number(registerRuntime?.state?.stats?.running || 0))} /><DetailItem label="Success Rate" value={`${Number(registerRuntime?.state?.stats?.success_rate || 0).toFixed(1)}%`} /><DetailItem label="Quota" value={String(Number(registerRuntime?.state?.stats?.current_quota || 0))} /><DetailItem label="Available" value={String(Number(registerRuntime?.state?.stats?.current_available || 0))} /><DetailItem label="Elapsed" value={formatRegisterSeconds(registerRuntime?.state?.stats?.elapsed_seconds)} /><DetailItem label="Avg / success" value={formatRegisterSeconds(registerRuntime?.state?.stats?.avg_seconds)} /><DetailItem label="Started" value={fmtDate(registerRuntime?.state?.stats?.started_at)} /><DetailItem label="Updated" value={fmtDate(registerRuntime?.state?.stats?.updated_at)} /></div>{registerRuntime?.last_error ? <p className="detail-error">{registerRuntime.last_error}</p> : null}{registerRuntime?.last_result?.email ? <p className="register-last">last success: {registerRuntime.last_result.email} · {fmtDate(registerRuntime.last_result.created_at)}</p> : null}<div className="register-actions"><button disabled={registerBusyNow || registerRunning} onClick={() => runRegisterOnce().catch((error) => toast("error", error.message))}>{registerBusy === "run-once" ? "执行中" : "单次注册"}</button><button className="secondary" disabled={registerBusyNow || registerRunning} onClick={() => startRegister().catch((error) => toast("error", error.message))}>{registerBusy === "start" ? "启动中" : "启动批量"}</button><button className="secondary-danger" disabled={registerBusyNow || !registerRunning} onClick={() => stopRegister().catch((error) => toast("error", error.message))}>{registerBusy === "stop" ? "停止中" : "停止批量"}</button></div></section></div><section className="panel"><PanelHead title="注册流水日志" subtitle="像终端输出一样实时追踪注册每一步进度" action={<div className="register-toolbar"><span className={classNames("chip", !registerLogStickBottom && "warn")}>{registerLogStickBottom ? "自动跟随" : "查看历史中"}</span><button className="secondary small" onClick={() => refreshRegisterLogs().catch((error) => toast("error", error.message))}>{registerLogsLoading ? "刷新中" : "刷新日志"}</button></div>} /><div ref={logViewportRef} className="terminal-log" onScroll={handleRegisterLogScroll}>{registerLogs.length ? registerLogs.map((log) => {
+  return <div className="stack"><div className="register-layout"><section className="panel"><PanelHead title="注册配置" subtitle="inbucket 邮箱、并发和目标模式" action={<><span className={classNames("chip", draftDirty && "warn")}>{draftDirty ? "未保存" : "已保存"}</span><button className="secondary small" disabled={registerBusyNow} onClick={() => reloadRegister().catch((error) => toast("error", error.message))}>{registerBusy === "reload" ? "刷新中" : "刷新"}</button><button className="secondary small" disabled={registerBusyNow || registerRunning} onClick={() => saveRegister().catch((error) => toast("error", error.message))}>{registerBusy === "save" ? "保存中" : "保存配置"}</button></>} /><div className="settings-form register-form"><label><span>Inbucket API Base</span><input value={draft.apiBase} onChange={(event) => updateDraft({ apiBase: event.target.value })} placeholder="http://127.0.0.1:9000" /></label><label><span>Register Proxy</span><input value={draft.proxy} onChange={(event) => updateDraft({ proxy: event.target.value })} placeholder="留空则继承全局 Proxy" /></label><label><span>模式</span><select value={draft.mode} onChange={(event) => updateDraft({ mode: event.target.value })}><option value="total">total</option><option value="quota">quota</option><option value="available">available</option></select></label><label><span>线程数</span><input type="number" value={draft.threads} onChange={(event) => updateDraft({ threads: Number(event.target.value) })} /></label><label><span>Total</span><input type="number" value={draft.total} onChange={(event) => updateDraft({ total: Number(event.target.value) })} /></label><label><span>Check Interval 秒</span><input type="number" value={draft.checkIntervalSeconds} onChange={(event) => updateDraft({ checkIntervalSeconds: Number(event.target.value) })} /></label><label><span>Target Quota</span><input type="number" value={draft.targetQuota} onChange={(event) => updateDraft({ targetQuota: Number(event.target.value) })} /></label><label><span>Target Available</span><input type="number" value={draft.targetAvailable} onChange={(event) => updateDraft({ targetAvailable: Number(event.target.value) })} /></label><label className="inline"><input type="checkbox" checked={draft.randomSubdomain} onChange={(event) => updateDraft({ randomSubdomain: event.target.checked })} /><span>随机子域名</span></label><label className="wide"><span>Inbucket Domains，每行一个</span><textarea value={draft.domains} onChange={(event) => updateDraft({ domains: event.target.value })} /></label></div></section><section className="panel"><PanelHead title="运行状态" subtitle="单次注册和批量注册控制" action={<div className="register-toolbar"><span className={classNames("badge", registerRuntime?.running ? "warn" : "ok")}>{registerRuntime?.running ? "Running" : "Idle"}</span></div>} /><div className="detail-grid register-stats"><DetailItem label="Success" value={String(Number(registerRuntime?.state?.stats?.success || 0))} /><DetailItem label="Fail" value={String(Number(registerRuntime?.state?.stats?.fail || 0))} /><DetailItem label="Done" value={String(Number(registerRuntime?.state?.stats?.done || 0))} /><DetailItem label="Running" value={String(Number(registerRuntime?.state?.stats?.running || 0))} /><DetailItem label="Success Rate" value={`${Number(registerRuntime?.state?.stats?.success_rate || 0).toFixed(1)}%`} /><DetailItem label="Quota" value={String(Number(registerRuntime?.state?.stats?.current_quota || 0))} /><DetailItem label="Available" value={String(Number(registerRuntime?.state?.stats?.current_available || 0))} /><DetailItem label="Elapsed" value={formatRegisterSeconds(registerRuntime?.state?.stats?.elapsed_seconds)} /><DetailItem label="Avg / Success" value={formatRegisterSeconds(registerRuntime?.state?.stats?.avg_seconds)} /><DetailItem label="Started" value={fmtDate(registerRuntime?.state?.stats?.started_at)} /><DetailItem label="Updated" value={fmtDate(registerRuntime?.state?.stats?.updated_at)} /></div>{registerRuntime?.last_error ? <p className="detail-error">{registerRuntime.last_error}</p> : null}{registerRuntime?.last_result?.email ? <p className="register-last">Last Success: {registerRuntime.last_result.email} · {fmtDate(registerRuntime.last_result.created_at)}</p> : null}<div className="register-actions"><button disabled={registerBusyNow || registerRunning} onClick={() => runRegisterOnce().catch((error) => toast("error", error.message))}>{registerBusy === "run-once" ? "执行中" : "单次注册"}</button><button className="secondary" disabled={registerBusyNow || registerRunning} onClick={() => startRegister().catch((error) => toast("error", error.message))}>{registerBusy === "start" ? "启动中" : "启动批量"}</button><button className="secondary-danger" disabled={registerBusyNow || !registerRunning} onClick={() => stopRegister().catch((error) => toast("error", error.message))}>{registerBusy === "stop" ? "停止中" : "停止批量"}</button></div></section></div><section className="panel"><PanelHead title="注册流水日志" subtitle="像终端输出一样实时追踪注册每一步进度" action={<div className="register-toolbar"><span className={classNames("chip", !registerLogStickBottom && "warn")}>{registerLogStickBottom ? "自动跟随" : "查看历史中"}</span><button className="secondary small" onClick={() => refreshRegisterLogs().catch((error) => toast("error", error.message))}>{registerLogsLoading ? "刷新中" : "刷新日志"}</button></div>} /><div ref={logViewportRef} className="terminal-log" onScroll={handleRegisterLogScroll}>{registerLogs.length ? registerLogs.map((log) => {
     const detail = logDetail(log);
     const level = typeof detail.level === "string" ? detail.level : "";
     const lineClass = classNames("terminal-log-line", Boolean(detail.error) && "err", level === "warn" && "warn");
