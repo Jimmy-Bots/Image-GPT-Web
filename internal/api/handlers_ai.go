@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -301,103 +299,6 @@ func (s *Server) handleJSONOrStreamUpstream(
 	s.logCall(r, identity, endpoint, model, "success", "", map[string]any{"duration_ms": time.Since(start).Milliseconds(), "stream": true})
 }
 
-func (s *Server) checkContentPolicy(w http.ResponseWriter, r *http.Request, identity Identity, endpoint string, model string, text string) bool {
-	settings, err := s.store.GetSettings(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
-		return false
-	}
-	if blocked := firstSensitiveWord(text, settings); blocked != "" {
-		errText := "sensitive word rejected"
-		s.logCall(r, identity, endpoint, model, "failed", errText)
-		writeError(w, http.StatusBadRequest, "content_rejected", "request contains sensitive word")
-		return false
-	}
-	if review := aiReviewConfig(settings); review.Enabled {
-		if err := s.reviewContent(r.Context(), review, text); err != nil {
-			s.logCall(r, identity, endpoint, model, "failed", err.Error())
-			writeError(w, http.StatusBadRequest, "content_rejected", err.Error())
-			return false
-		}
-	}
-	return true
-}
-
-type aiReviewSettings struct {
-	Enabled bool
-	BaseURL string
-	APIKey  string
-	Model   string
-	Prompt  string
-}
-
-func (s *Server) reviewContent(ctx context.Context, settings aiReviewSettings, text string) error {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
-	}
-	if settings.BaseURL == "" || settings.APIKey == "" || settings.Model == "" {
-		return fmt.Errorf("ai review config is incomplete")
-	}
-	client := &http.Client{Timeout: 60 * time.Second}
-	if s.cfg.ProxyURL != "" {
-		proxyURL, err := url.Parse(s.cfg.ProxyURL)
-		if err != nil {
-			return fmt.Errorf("invalid proxy url: %w", err)
-		}
-		client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
-	}
-	prompt := settings.Prompt
-	if prompt == "" {
-		prompt = "判断用户请求是否允许。只回答 ALLOW 或 REJECT。"
-	}
-	payload := map[string]any{
-		"model":       settings.Model,
-		"temperature": 0,
-		"messages": []map[string]string{{
-			"role":    "user",
-			"content": prompt + "\n\n用户请求:\n" + text + "\n\n只回答 ALLOW 或 REJECT。",
-		}},
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(settings.BaseURL, "/")+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+settings.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("ai review failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("ai review failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(payload)))
-	}
-	var data map[string]any
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&data); err != nil {
-		return fmt.Errorf("ai review failed: %w", err)
-	}
-	answer := strings.TrimSpace(strings.ToLower(reviewAnswer(data)))
-	if answer == "" {
-		return fmt.Errorf("ai review returned empty result")
-	}
-	if strings.HasPrefix(answer, "allow") ||
-		strings.HasPrefix(answer, "pass") ||
-		strings.HasPrefix(answer, "true") ||
-		strings.HasPrefix(answer, "yes") ||
-		strings.HasPrefix(answer, "通过") ||
-		strings.HasPrefix(answer, "允许") ||
-		strings.HasPrefix(answer, "安全") {
-		return nil
-	}
-	return fmt.Errorf("ai review rejected request")
-}
-
 func (s *Server) streamJSONEvents(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -557,47 +458,6 @@ func textFromAny(value any) string {
 		return strings.Join(parts, "\n")
 	default:
 		return ""
-	}
-}
-
-func reviewAnswer(data map[string]any) string {
-	choices, _ := data["choices"].([]any)
-	if len(choices) == 0 {
-		return ""
-	}
-	choice, _ := choices[0].(map[string]any)
-	message, _ := choice["message"].(map[string]any)
-	if content := stringFromAny(message["content"], ""); content != "" {
-		return content
-	}
-	return stringFromAny(choice["text"], "")
-}
-
-func firstSensitiveWord(text string, settings map[string]any) string {
-	words, ok := settings["sensitive_words"].([]any)
-	if !ok {
-		return ""
-	}
-	for _, raw := range words {
-		word := strings.TrimSpace(fmt.Sprint(raw))
-		if word != "" && strings.Contains(text, word) {
-			return word
-		}
-	}
-	return ""
-}
-
-func aiReviewConfig(settings map[string]any) aiReviewSettings {
-	raw, ok := settings["ai_review"].(map[string]any)
-	if !ok {
-		return aiReviewSettings{}
-	}
-	return aiReviewSettings{
-		Enabled: boolFromAny(raw["enabled"]),
-		BaseURL: strings.TrimSpace(stringFromAny(raw["base_url"], "")),
-		APIKey:  strings.TrimSpace(stringFromAny(raw["api_key"], "")),
-		Model:   strings.TrimSpace(stringFromAny(raw["model"], "")),
-		Prompt:  strings.TrimSpace(stringFromAny(raw["prompt"], "")),
 	}
 }
 
