@@ -155,7 +155,7 @@ func (m *registerManager) RunOnce(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	result, err := registrar.Register(ctx)
+	result, err := registrar.Register(register.WithThread(ctx, 1))
 	if err != nil {
 		m.mu.Lock()
 		m.lastErr = err.Error()
@@ -321,13 +321,22 @@ func (m *registerManager) logBatchResult(ctx context.Context, state register.Bat
 }
 
 func (m *registerManager) addLog(ctx context.Context, level string, summary string, detail map[string]any) {
-	_ = ctx
+	entryDetail := cloneAnyMap(detail)
+	if entryDetail == nil {
+		entryDetail = map[string]any{}
+	}
+	if thread := register.ThreadFromContext(ctx); thread > 0 && entryDetail["thread"] == nil {
+		entryDetail["thread"] = thread
+	}
+	if jobID := register.JobIDFromContext(ctx); jobID != "" && entryDetail["job_id"] == nil {
+		entryDetail["job_id"] = jobID
+	}
 	entry := registerLogEntry{
 		ID:      randomLogID(),
 		Time:    time.Now().UTC(),
 		Type:    "register",
 		Summary: summary,
-		Detail:  cloneAnyMap(detail),
+		Detail:  entryDetail,
 	}
 	if entry.Detail == nil {
 		entry.Detail = map[string]any{}

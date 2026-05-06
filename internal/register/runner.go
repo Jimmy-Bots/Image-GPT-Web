@@ -35,6 +35,7 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 	cfg = cfg.withDefaults()
 	startedAt := r.now()
 	jobID := randomID(newDefaultRandomSource(), 6)
+	batchCtx := WithJobID(ctx, jobID)
 	state := BatchState{
 		Config:  cfg,
 		Enabled: true,
@@ -45,15 +46,15 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 			UpdatedAt: &startedAt,
 		},
 	}
-	r.logger.Printf(ctx, "info", "[batch:%s] start mode=%s total=%d threads=%d quota=%d available=%d", jobID, cfg.Mode, cfg.Total, cfg.Threads, cfg.TargetQuota, cfg.TargetAvailable)
-	metrics, err := r.poolMetrics(ctx)
+	r.logger.Printf(batchCtx, "info", "batch start mode=%s total=%d threads=%d quota=%d available=%d", cfg.Mode, cfg.Total, cfg.Threads, cfg.TargetQuota, cfg.TargetAvailable)
+	metrics, err := r.poolMetrics(batchCtx)
 	if err != nil {
-		r.logger.Printf(ctx, "error", "[batch:%s] pool metrics failed: %v", jobID, err)
+		r.logger.Printf(batchCtx, "error", "pool metrics failed: %v", err)
 		return state, err
 	}
 	state.Stats.CurrentQuota = metrics.CurrentQuota
 	state.Stats.CurrentAvailable = metrics.CurrentAvailable
-	r.logger.Printf(ctx, "info", "[batch:%s] pool metrics quota=%d available=%d", jobID, metrics.CurrentQuota, metrics.CurrentAvailable)
+	r.logger.Printf(batchCtx, "info", "pool metrics quota=%d available=%d", metrics.CurrentQuota, metrics.CurrentAvailable)
 
 	type jobResult struct {
 		ok  bool
@@ -61,61 +62,100 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 	}
 
 	results := make(chan jobResult, cfg.Threads)
-	sem := make(chan struct{}, cfg.Threads)
+	slots := make(chan int, cfg.Threads)
+	for i := 1; i <= cfg.Threads; i++ {
+		slots <- i
+	}
 	var wg sync.WaitGroup
 	submitted := 0
 
-	tryLaunch := func() bool {
-		if state.Config.Mode == RegisterModeTotal && submitted >= state.Config.Total {
-			r.logger.Printf(ctx, "info", "[batch:%s] launch stop: submitted=%d reached total=%d", jobID, submitted, state.Config.Total)
-			return false
+	type launchStatus int
+
+	const (
+		launchStatusLaunched launchStatus = iota
+		launchStatusHold
+		launchStatusStop
+	)
+
+	tryLaunch := func() (launchStatus, error) {
+		if state.Config.Mode == RegisterModeTotal {
+			if state.Stats.Success >= state.Config.Total {
+				r.logger.Printf(batchCtx, "info", "target reached success=%d total=%d", state.Stats.Success, state.Config.Total)
+				return launchStatusStop, nil
+			}
+			if state.Stats.Success+state.Stats.Running >= state.Config.Total {
+				return launchStatusHold, nil
+			}
 		}
-		reached, err := r.targetReached(ctx, state.Config, submitted)
+		reached, err := r.targetReached(batchCtx, &state)
 		if err != nil {
-			r.logger.Printf(ctx, "error", "[batch:%s] target check failed: %v", jobID, err)
-			results <- jobResult{ok: false, err: err}
-			return false
+			r.logger.Printf(batchCtx, "error", "target check failed: %v", err)
+			return launchStatusStop, err
 		}
 		if reached {
-			r.logger.Printf(ctx, "info", "[batch:%s] target reached, stop launching more jobs", jobID)
-			return false
+			r.logger.Printf(batchCtx, "info", "target reached, stop launching more jobs")
+			return launchStatusStop, nil
 		}
 		submitted++
-		sem <- struct{}{}
+		threadID := <-slots
 		wg.Add(1)
 		state.Stats.Running++
-		r.logger.Printf(ctx, "info", "[batch:%s] launch worker submitted=%d running=%d", jobID, submitted, state.Stats.Running)
-		go func(index int) {
+		workerCtx := WithThread(batchCtx, threadID)
+		r.logger.Printf(workerCtx, "info", "launch attempt=%d running=%d", submitted, state.Stats.Running)
+		go func(slotID int, attempt int) {
 			defer wg.Done()
-			defer func() { <-sem }()
-			r.logger.Printf(ctx, "info", "[batch:%s] worker-%d start", jobID, index)
-			_, err := r.registrar.Register(ctx)
+			defer func() { slots <- slotID }()
+			workerCtx := WithThread(batchCtx, slotID)
+			r.logger.Printf(workerCtx, "info", "start attempt=%d", attempt)
+			_, err := r.registrar.Register(workerCtx)
 			if err != nil {
-				r.logger.Printf(ctx, "error", "[batch:%s] worker-%d failed: %v", jobID, index, err)
+				r.logger.Printf(workerCtx, "error", "failed attempt=%d: %v", attempt, err)
 			} else {
-				r.logger.Printf(ctx, "info", "[batch:%s] worker-%d success", jobID, index)
+				r.logger.Printf(workerCtx, "info", "success attempt=%d", attempt)
 			}
 			results <- jobResult{ok: err == nil, err: err}
-		}(submitted)
-		return true
+		}(threadID, submitted)
+		return launchStatusLaunched, nil
 	}
 
-	for state.Stats.Running < cfg.Threads && tryLaunch() {
+	fillWorkers := func() (bool, error) {
+		for state.Stats.Running < cfg.Threads {
+			status, err := tryLaunch()
+			if err != nil {
+				return true, err
+			}
+			switch status {
+			case launchStatusLaunched:
+				continue
+			case launchStatusStop:
+				return true, nil
+			default:
+				return false, nil
+			}
+		}
+		return false, nil
 	}
 
-	doneLaunching := false
+	doneLaunching, err := fillWorkers()
+	if err != nil {
+		return r.finishState(state, false), err
+	}
 	for state.Stats.Running > 0 || !doneLaunching {
 		if state.Stats.Running == 0 && doneLaunching {
 			break
 		}
 		if state.Stats.Running == 0 && !doneLaunching {
 			select {
-			case <-ctx.Done():
-				r.logger.Printf(ctx, "warn", "[batch:%s] canceled while idle", jobID)
-				return r.finishState(state, false), ctx.Err()
+			case <-batchCtx.Done():
+				r.logger.Printf(batchCtx, "warn", "canceled while idle")
+				return r.finishState(state, false), batchCtx.Err()
 			case <-time.After(cfg.CheckInterval):
-				r.logger.Printf(ctx, "info", "[batch:%s] tick interval=%s waiting for next launch", jobID, cfg.CheckInterval)
-				if !tryLaunch() {
+				r.logger.Printf(batchCtx, "info", "tick interval=%s waiting for next launch", cfg.CheckInterval)
+				stopped, err := fillWorkers()
+				if err != nil {
+					return r.finishState(state, false), err
+				}
+				if stopped {
 					doneLaunching = true
 				}
 			}
@@ -123,10 +163,10 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 		}
 
 		select {
-		case <-ctx.Done():
+		case <-batchCtx.Done():
 			wg.Wait()
-			r.logger.Printf(ctx, "warn", "[batch:%s] canceled while workers running", jobID)
-			return r.finishState(state, false), ctx.Err()
+			r.logger.Printf(batchCtx, "warn", "canceled while workers running")
+			return r.finishState(state, false), batchCtx.Err()
 		case result := <-results:
 			state.Stats.Running--
 			state.Stats.Done++
@@ -136,33 +176,36 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 				state.Stats.Fail++
 			}
 			state = r.bumpStats(state)
-			r.logger.Printf(ctx, "info", "[batch:%s] progress done=%d success=%d fail=%d running=%d rate=%s", jobID, state.Stats.Done, state.Stats.Success, state.Stats.Fail, state.Stats.Running, formatRunnerPercent(state.Stats.SuccessRate))
-			for state.Stats.Running < cfg.Threads {
-				if !tryLaunch() {
-					doneLaunching = true
-					break
-				}
+			r.logger.Printf(batchCtx, "info", "progress done=%d success=%d fail=%d running=%d rate=%s", state.Stats.Done, state.Stats.Success, state.Stats.Fail, state.Stats.Running, formatRunnerPercent(state.Stats.SuccessRate))
+			stopped, err := fillWorkers()
+			if err != nil {
+				return r.finishState(state, false), err
+			}
+			if stopped {
+				doneLaunching = true
 			}
 		}
 	}
 
 	wg.Wait()
-	r.logger.Printf(ctx, "info", "[batch:%s] completed done=%d success=%d fail=%d elapsed=%.1fs", jobID, state.Stats.Done, state.Stats.Success, state.Stats.Fail, state.Stats.ElapsedSeconds)
+	r.logger.Printf(batchCtx, "info", "completed done=%d success=%d fail=%d elapsed=%.1fs", state.Stats.Done, state.Stats.Success, state.Stats.Fail, state.Stats.ElapsedSeconds)
 	return r.finishState(state, true), nil
 }
 
-func (r *Runner) targetReached(ctx context.Context, cfg BatchConfig, submitted int) (bool, error) {
+func (r *Runner) targetReached(ctx context.Context, state *BatchState) (bool, error) {
 	metrics, err := r.poolMetrics(ctx)
 	if err != nil {
 		return false, err
 	}
-	switch cfg.Mode {
+	state.Stats.CurrentQuota = metrics.CurrentQuota
+	state.Stats.CurrentAvailable = metrics.CurrentAvailable
+	switch state.Config.Mode {
 	case RegisterModeQuota:
-		return metrics.CurrentQuota >= cfg.TargetQuota, nil
+		return metrics.CurrentQuota >= state.Config.TargetQuota, nil
 	case RegisterModeAvailable:
-		return metrics.CurrentAvailable >= cfg.TargetAvailable, nil
+		return metrics.CurrentAvailable >= state.Config.TargetAvailable, nil
 	default:
-		return submitted >= cfg.Total, nil
+		return state.Stats.Success >= state.Config.Total, nil
 	}
 }
 
