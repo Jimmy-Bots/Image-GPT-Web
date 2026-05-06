@@ -194,6 +194,12 @@ func (m *registerManager) runBatch(ctx context.Context, cfg register.BatchConfig
 		m.finishBatch(register.BatchState{Config: cfg}, err)
 		return
 	}
+	runner.WithStateHook(func(state register.BatchState) {
+		m.mu.Lock()
+		m.state = state.Clone()
+		m.state.Enabled = m.running
+		m.mu.Unlock()
+	})
 	state, err := runner.Run(ctx, cfg)
 	m.finishBatch(state, err)
 }

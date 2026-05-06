@@ -192,8 +192,10 @@ func (r *Registrar) loginAndExchangeTokens(ctx context.Context, state flowState,
 	if !shouldRetryFreshLogin(err) {
 		return tokenBundle{}, err
 	}
+	reason := classifyFreshLoginRetryReason(err)
 	r.logRegistration(ctx, "warn", "login session invalid, retry with fresh session", map[string]any{
 		"email": email,
+		"reason": reason,
 		"error": err.Error(),
 	})
 	client, newErr := r.httpFactory.New(r.cfg)
@@ -211,12 +213,14 @@ func (r *Registrar) loginAndExchangeTokens(ctx context.Context, state flowState,
 	}
 	r.logRegistration(ctx, "info", "retry exchange platform tokens", map[string]any{
 		"email": email,
+		"reason": reason,
 		"retry": 1,
 	})
 	tokens, err = freshState.loginAndExchangeTokens(ctx, email, password, mailbox, r.mail)
 	if err != nil {
 		r.logRegistration(ctx, "error", "retry exchange platform tokens failed", map[string]any{
 			"email": email,
+			"reason": reason,
 			"retry": 1,
 			"error": err.Error(),
 		})
@@ -224,6 +228,7 @@ func (r *Registrar) loginAndExchangeTokens(ctx context.Context, state flowState,
 	}
 	r.logRegistration(ctx, "info", "retry exchange platform tokens succeeded", map[string]any{
 		"email": email,
+		"reason": reason,
 		"retry": 1,
 	})
 	return tokens, nil
@@ -760,6 +765,37 @@ func shouldRetryFreshLogin(err error) bool {
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(text, "invalid session") ||
 		strings.Contains(text, "invalid_state") ||
+		strings.Contains(text, "missing workspace id") ||
+		strings.Contains(text, "missing orgs in workspace selection") ||
+		strings.Contains(text, "missing org id") ||
+		strings.Contains(text, "missing oauth callback after consent") ||
 		strings.Contains(text, "password_verify_http_409") ||
 		strings.Contains(text, "password_verify_http_401")
+}
+
+func classifyFreshLoginRetryReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(text, "missing workspace id"):
+		return "missing_workspace_id"
+	case strings.Contains(text, "missing orgs in workspace selection"):
+		return "missing_workspace_orgs"
+	case strings.Contains(text, "missing org id"):
+		return "missing_org_id"
+	case strings.Contains(text, "missing oauth callback after consent"):
+		return "missing_oauth_callback_after_consent"
+	case strings.Contains(text, "invalid_state"):
+		return "invalid_state"
+	case strings.Contains(text, "invalid session"):
+		return "invalid_session"
+	case strings.Contains(text, "password_verify_http_409"):
+		return "password_verify_http_409"
+	case strings.Contains(text, "password_verify_http_401"):
+		return "password_verify_http_401"
+	default:
+		return "fresh_session_retry"
+	}
 }
