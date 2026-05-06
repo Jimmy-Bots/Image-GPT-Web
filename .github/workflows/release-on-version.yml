@@ -68,8 +68,121 @@ jobs:
           echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
           echo "ghcr_image=ghcr.io/${owner_repo}" >> "$GITHUB_OUTPUT"
 
-  release:
+  build:
     needs: detect
+    if: ${{ needs.detect.outputs.changed == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+      REGISTRY_NAMESPACE: ${{ secrets.REGISTRY_NAMESPACE }}
+      REGISTRY_IMAGE_NAME: ${{ secrets.REGISTRY_IMAGE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: registry-flags
+        name: Resolve registry flags
+        run: |
+          set -euo pipefail
+          dockerhub_enabled=false
+          custom_registry_enabled=false
+
+          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+            dockerhub_enabled=true
+          fi
+
+          if [[ -n "${REGISTRY_HOST}" && -n "${REGISTRY_USERNAME}" && -n "${REGISTRY_PASSWORD}" ]]; then
+            custom_registry_enabled=true
+          fi
+
+          echo "dockerhub_enabled=${dockerhub_enabled}" >> "$GITHUB_OUTPUT"
+          echo "custom_registry_enabled=${custom_registry_enabled}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: ${{ steps.registry-flags.outputs.dockerhub_enabled == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Log in to custom OCI registry
+        if: ${{ steps.registry-flags.outputs.custom_registry_enabled == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_HOST }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ env.REGISTRY_PASSWORD }}
+
+      - id: image-meta
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          IMAGE_NAME: ${{ needs.detect.outputs.image_name }}
+          GHCR_IMAGE: ${{ needs.detect.outputs.ghcr_image }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+
+          image_name="${REGISTRY_IMAGE_NAME:-${IMAGE_NAME}}"
+          tags=(
+            "${GHCR_IMAGE}:${VERSION}-${ARCH}"
+            "${GHCR_IMAGE}:latest-${ARCH}"
+          )
+
+          if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
+            tags+=(
+              "docker.io/${DOCKERHUB_USERNAME}/${image_name}:${VERSION}-${ARCH}"
+              "docker.io/${DOCKERHUB_USERNAME}/${image_name}:latest-${ARCH}"
+            )
+          fi
+
+          if [[ -n "${REGISTRY_HOST}" && -n "${REGISTRY_NAMESPACE}" ]]; then
+            tags+=(
+              "${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:${VERSION}-${ARCH}"
+              "${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:latest-${ARCH}"
+            )
+          fi
+
+          {
+            echo "tags<<EOF"
+            printf '%s\n' "${tags[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push native image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ${{ steps.image-meta.outputs.tags }}
+          provenance: false
+          sbom: false
+
+  release:
+    needs: [detect, build]
     if: ${{ needs.detect.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
     env:
@@ -102,9 +215,6 @@ jobs:
 
           echo "dockerhub_enabled=${dockerhub_enabled}" >> "$GITHUB_OUTPUT"
           echo "custom_registry_enabled=${custom_registry_enabled}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -141,20 +251,14 @@ jobs:
           set -euo pipefail
 
           image_name="${REGISTRY_IMAGE_NAME:-${IMAGE_NAME}}"
-          tags=(
-            "${GHCR_IMAGE}:${VERSION}"
-            "${GHCR_IMAGE}:latest"
-          )
+          targets=("${GHCR_IMAGE}")
           images=(
             "${GHCR_IMAGE}:${VERSION}"
             "${GHCR_IMAGE}:latest"
           )
 
           if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
-            tags+=(
-              "docker.io/${DOCKERHUB_USERNAME}/${image_name}:${VERSION}"
-              "docker.io/${DOCKERHUB_USERNAME}/${image_name}:latest"
-            )
+            targets+=("docker.io/${DOCKERHUB_USERNAME}/${image_name}")
             images+=(
               "docker.io/${DOCKERHUB_USERNAME}/${image_name}:${VERSION}"
               "docker.io/${DOCKERHUB_USERNAME}/${image_name}:latest"
@@ -162,10 +266,7 @@ jobs:
           fi
 
           if [[ -n "${REGISTRY_HOST}" && -n "${REGISTRY_NAMESPACE}" ]]; then
-            tags+=(
-              "${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:${VERSION}"
-              "${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:latest"
-            )
+            targets+=("${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}")
             images+=(
               "${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:${VERSION}"
               "${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:latest"
@@ -173,8 +274,8 @@ jobs:
           fi
 
           {
-            echo "tags<<EOF"
-            printf '%s\n' "${tags[@]}"
+            echo "targets<<EOF"
+            printf '%s\n' "${targets[@]}"
             echo "EOF"
             echo "images<<EOF"
             printf '%s\n' "${images[@]}"
@@ -202,24 +303,31 @@ jobs:
           git tag -a "${TAG}" "${GITHUB_SHA}" -m "Release ${TAG}"
           git push origin "${TAG}"
 
-      - id: build
-        name: Build and push multi-arch image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.image-meta.outputs.tags }}
-          provenance: false
-          sbom: false
+      - name: Create multi-arch manifests
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          TARGETS: ${{ steps.image-meta.outputs.targets }}
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r target; do
+            [[ -z "${target}" ]] && continue
+            docker buildx imagetools create \
+              -t "${target}:${VERSION}" \
+              "${target}:${VERSION}-amd64" \
+              "${target}:${VERSION}-arm64"
+            docker buildx imagetools create \
+              -t "${target}:latest" \
+              "${target}:latest-amd64" \
+              "${target}:latest-arm64"
+          done <<< "${TARGETS}"
 
       - name: Create release bundle
         env:
           VERSION: ${{ needs.detect.outputs.version }}
           TAG: ${{ needs.detect.outputs.tag }}
           IMAGE_LIST: ${{ steps.image-meta.outputs.images }}
-          DIGEST: ${{ steps.build.outputs.digest }}
+          PRIMARY_IMAGE: ${{ needs.detect.outputs.ghcr_image }}:${{ needs.detect.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist/release
@@ -241,7 +349,7 @@ jobs:
             "version": "${VERSION}",
             "tag": "${TAG}",
             "commit": "${GITHUB_SHA}",
-            "image_digest": "${DIGEST}",
+            "primary_image": "${PRIMARY_IMAGE}",
             "images_file": "images.txt"
           }
           EOF
@@ -253,7 +361,7 @@ jobs:
           ${IMAGE_LIST}
           \`\`\`
 
-          Digest: \`${DIGEST}\`
+          Primary image: \`${PRIMARY_IMAGE}\`
           EOF
 
           (

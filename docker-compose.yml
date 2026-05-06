@@ -1,6 +1,6 @@
 services:
   app:
-    image: gpt-image-web:local
+    image: ghcr.io/jimmy-bots/image-gpt-web:latest 
     container_name: gpt-image-web
     restart: unless-stopped
     ports:
