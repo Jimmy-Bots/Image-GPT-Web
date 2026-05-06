@@ -25,13 +25,13 @@ type accountRefreshRequest struct {
 }
 
 type accountUpdateRequest struct {
-	AccessToken string  `json:"access_token"`
-	TokenRef    string  `json:"token_ref"`
-	Type        *string `json:"type"`
-	Status      *string `json:"status"`
-	Quota       *int    `json:"quota"`
-	Password    *string `json:"password"`
-	MaxConcurrency *int `json:"max_concurrency"`
+	AccessToken    string  `json:"access_token"`
+	TokenRef       string  `json:"token_ref"`
+	Type           *string `json:"type"`
+	Status         *string `json:"status"`
+	Quota          *int    `json:"quota"`
+	Password       *string `json:"password"`
+	MaxConcurrency *int    `json:"max_concurrency"`
 }
 
 type logsDeleteRequest struct {
@@ -247,6 +247,13 @@ func (s *Server) handleRefreshAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	refreshed, errorsList := s.upstream.RefreshAccounts(r.Context(), tokens)
+	s.addLog(r, "account", "手动刷新账号", map[string]any{
+		"mode":         "manual",
+		"selected":     len(tokens),
+		"refreshed":    refreshed,
+		"failed":       len(errorsList),
+		"failed_items": refreshErrorSummaries(errorsList),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"refreshed": refreshed, "errors": publicRefreshErrors(errorsList)})
 }
 
@@ -270,6 +277,14 @@ func (s *Server) handleRefreshDueAccounts(w http.ResponseWriter, r *http.Request
 	}
 	tokens := dueRefreshTokens(accounts, intervalMinutes, time.Now())
 	refreshed, errorsList := s.upstream.RefreshAccounts(r.Context(), tokens)
+	s.addLog(r, "account", "手动刷新待刷新账号", map[string]any{
+		"mode":             "manual_due",
+		"interval_minutes": intervalMinutes,
+		"selected":         len(tokens),
+		"refreshed":        refreshed,
+		"failed":           len(errorsList),
+		"failed_items":     refreshErrorSummaries(errorsList),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"selected":  len(tokens),
 		"refreshed": refreshed,
@@ -372,8 +387,12 @@ func (s *Server) handleDeleteLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addLog(r *http.Request, logType string, summary string, detail map[string]any) {
+	s.addLogContext(r.Context(), logType, summary, detail)
+}
+
+func (s *Server) addLogContext(ctx context.Context, logType string, summary string, detail map[string]any) {
 	payload, _ := json.Marshal(detail)
-	_ = s.store.AddLog(r.Context(), domain.SystemLog{
+	_ = s.store.AddLog(ctx, domain.SystemLog{
 		ID:      randomLogID(),
 		Time:    time.Now().UTC(),
 		Type:    logType,
@@ -487,6 +506,23 @@ func publicRefreshErrors(items []map[string]string) []map[string]string {
 			next[key] = value
 		}
 		out = append(out, next)
+	}
+	return out
+}
+
+func refreshErrorSummaries(items []map[string]string) []map[string]string {
+	out := make([]map[string]string, 0, len(items))
+	for _, item := range publicRefreshErrors(items) {
+		next := map[string]string{}
+		if ref := strings.TrimSpace(item["token_ref"]); ref != "" {
+			next["token_ref"] = ref
+		}
+		if errText := strings.TrimSpace(item["error"]); errText != "" {
+			next["error"] = errText
+		}
+		if len(next) > 0 {
+			out = append(out, next)
+		}
 	}
 	return out
 }

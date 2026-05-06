@@ -61,7 +61,19 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	if s.cfg.DebugLogging() {
 		log.Printf("image_generation debug prompt_chars=%d prompt_preview=%q", utf8.RuneCountInString(req.Prompt), truncateForLog(req.Prompt, 120))
 	}
-	result, err := s.upstream.GenerateImage(r.Context(), req)
+	ctx := withStructuredLog(r.Context(), s.addLogContext, "call", map[string]any{
+		"subject_id":       identity.ID,
+		"key_id":           identity.KeyID,
+		"name":             identity.Name,
+		"role":             identity.Role,
+		"endpoint":         "/v1/images/generations",
+		"model":            req.Model,
+		"size":             req.Size,
+		"n":                req.N,
+		"requested_format": requestedFormat,
+		"log_kind":         "image_attempt",
+	})
+	result, err := s.upstream.GenerateImage(ctx, req)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
 		log.Printf("image_generation failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, duration, err)
@@ -109,7 +121,20 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.DebugLogging() {
 		log.Printf("image_edit debug prompt_chars=%d prompt_preview=%q", utf8.RuneCountInString(req.Prompt), truncateForLog(req.Prompt, 120))
 	}
-	result, err := s.upstream.EditImage(r.Context(), req)
+	ctx := withStructuredLog(r.Context(), s.addLogContext, "call", map[string]any{
+		"subject_id":       identity.ID,
+		"key_id":           identity.KeyID,
+		"name":             identity.Name,
+		"role":             identity.Role,
+		"endpoint":         "/v1/images/edits",
+		"model":            req.Model,
+		"size":             req.Size,
+		"n":                req.N,
+		"input_images":     len(req.Images),
+		"requested_format": requestedFormat,
+		"log_kind":         "image_attempt",
+	})
+	result, err := s.upstream.EditImage(ctx, req)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
 		log.Printf("image_edit failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, duration, err)
