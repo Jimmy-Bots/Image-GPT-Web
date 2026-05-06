@@ -32,6 +32,7 @@ func (s *Server) checkContentPolicy(w http.ResponseWriter, r *http.Request, iden
 		s.logCall(r, identity, endpoint, model, "failed", errText, map[string]any{
 			"matched_rule": blocked,
 			"content_gate": "sensitive_words",
+			"error_code":   "content_rejected",
 		})
 		writeError(w, http.StatusBadRequest, "content_rejected", "request contains sensitive word")
 		return false
@@ -40,6 +41,7 @@ func (s *Server) checkContentPolicy(w http.ResponseWriter, r *http.Request, iden
 		if err := s.reviewContent(r.Context(), review, text); err != nil {
 			s.logCall(r, identity, endpoint, model, "failed", err.Error(), map[string]any{
 				"content_gate": "external_review",
+				"error_code":   "content_rejected",
 			})
 			writeError(w, http.StatusBadRequest, "content_rejected", err.Error())
 			return false

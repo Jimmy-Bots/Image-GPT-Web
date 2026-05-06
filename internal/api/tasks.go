@@ -36,6 +36,9 @@ type TaskQueue struct {
 
 type taskJob struct {
 	OwnerID string
+	OwnerName string
+	OwnerRole domain.Role
+	OwnerAuthType string
 	TaskID  string
 	Mode    string
 	Receipt domain.UserQuotaReceipt
@@ -99,11 +102,14 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		attemptCtx := withStructuredLog(ctx, q.addLogContext, "task", map[string]any{
 			"task_id":   job.TaskID,
 			"owner_id":  job.OwnerID,
+			"name":      job.OwnerName,
+			"role":      job.OwnerRole,
+			"auth_type": job.OwnerAuthType,
 			"mode":      job.Mode,
 			"model":     imageTaskModel(job),
 			"size":      imageTaskSize(job),
-			"log_kind":  "image_attempt",
-			"queue_try": attempt,
+			"requested_count": imageTaskCount(job),
+			"log_kind":  "image_request",
 		})
 		if job.Mode == "edit" {
 			result, err = q.upstream.EditImage(attemptCtx, job.Edit)
@@ -114,6 +120,13 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 			break
 		}
 		if attempt < maxImageTaskAttempts {
+			appendStructuredLogAttempt(attemptCtx, map[string]any{
+				"status":    "attempt_failed",
+				"mode":      job.Mode,
+				"attempt":   attempt,
+				"error":     err.Error(),
+				"queue_try": attempt,
+			})
 			log.Printf("image_task retry id=%s owner=%s mode=%s attempt=%d err=%v", job.TaskID, job.OwnerID, job.Mode, attempt+1, err)
 			time.Sleep(time.Duration(attempt) * time.Second)
 		}
@@ -125,11 +138,19 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		q.addLogContext(context.Background(), "task", "图片任务失败", map[string]any{
 			"task_id":      job.TaskID,
 			"owner_id":     job.OwnerID,
+			"name":         job.OwnerName,
+			"role":         job.OwnerRole,
+			"auth_type":    job.OwnerAuthType,
 			"mode":         job.Mode,
+			"model":        imageTaskModel(job),
+			"size":         imageTaskSize(job),
 			"status":       taskError,
+			"requested_count": imageTaskCount(job),
 			"quota_used":   0,
+			"quota_reserved": job.Receipt.Total,
 			"quota_refund": job.Receipt.Total,
 			"error":        err.Error(),
+			"attempts":     logAttempts(ctx),
 		})
 		log.Printf("image_task failed id=%s owner=%s mode=%s err=%v", job.TaskID, job.OwnerID, job.Mode, err)
 		_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskError, jsonData([]any{}), err.Error())
@@ -148,12 +169,20 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	q.addLogContext(context.Background(), "task", "图片任务成功", map[string]any{
 		"task_id":      job.TaskID,
 		"owner_id":     job.OwnerID,
+		"name":         job.OwnerName,
+		"role":         job.OwnerRole,
+		"auth_type":    job.OwnerAuthType,
 		"mode":         job.Mode,
+		"model":        imageTaskModel(job),
+		"size":         imageTaskSize(job),
 		"status":       taskSuccess,
+		"requested_count": imageTaskCount(job),
 		"items":        count,
 		"archived":     saved,
+		"quota_reserved": job.Receipt.Total,
 		"quota_used":   count,
 		"quota_refund": maxInt(0, job.Receipt.Total-count),
+		"attempts":     logAttempts(ctx),
 	})
 	log.Printf("image_task success id=%s owner=%s mode=%s items=%d archived=%d base_url_configured=%t", job.TaskID, job.OwnerID, job.Mode, count, saved, q.baseURL != "")
 	data := result["data"]
@@ -183,6 +212,13 @@ func imageTaskSize(job taskJob) string {
 		return job.Edit.Size
 	}
 	return job.Gen.Size
+}
+
+func imageTaskCount(job taskJob) int {
+	if job.Mode == "edit" {
+		return job.Edit.N
+	}
+	return job.Gen.N
 }
 
 type imageTaskCreateRequest struct {
@@ -277,6 +313,21 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 	requestedCount := clampImageTaskCountWithLimit(req.N, s.imageMaxCount(r.Context()))
 	_, receipt, err := s.reserveImageQuota(r.Context(), identity, requestedCount)
 	if err != nil {
+		s.addLogContext(r.Context(), "task", "图片任务提交失败", map[string]any{
+			"owner_id":        identity.ID,
+			"name":            identity.Name,
+			"role":            identity.Role,
+			"auth_type":       identity.AuthType,
+			"mode":            "generate",
+			"model":           req.Model,
+			"size":            req.Size,
+			"requested_count": requestedCount,
+			"status":          "failed",
+			"quota_used":      0,
+			"quota_reserved":  0,
+			"error":           "insufficient quota",
+			"error_code":      "quota_exceeded",
+		})
 		writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
 		return
 	}
@@ -308,6 +359,9 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 	}
 	err = s.tasks.Submit(taskJob{
 		OwnerID: identity.ID,
+		OwnerName: identity.Name,
+		OwnerRole: identity.Role,
+		OwnerAuthType: identity.AuthType,
 		TaskID:  taskID,
 		Mode:    "generate",
 		Receipt: receipt,
@@ -322,12 +376,32 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		s.refundImageQuota(r.Context(), identity, receipt)
 		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, jsonData([]any{}), err.Error())
+		s.addLogContext(r.Context(), "task", "图片任务提交失败", map[string]any{
+			"task_id":         taskID,
+			"owner_id":        identity.ID,
+			"name":            identity.Name,
+			"role":            identity.Role,
+			"auth_type":       identity.AuthType,
+			"mode":            "generate",
+			"model":           req.Model,
+			"size":            req.Size,
+			"requested_count": requestedCount,
+			"status":          "failed",
+			"quota_used":      0,
+			"quota_reserved":  receipt.Total,
+			"quota_refund":    receipt.Total,
+			"error":           err.Error(),
+			"error_code":      "task_queue_full",
+		})
 		writeError(w, http.StatusServiceUnavailable, "task_queue_full", err.Error())
 		return
 	}
 	s.addLogContext(r.Context(), "task", "图片任务已提交", map[string]any{
 		"task_id":         taskID,
 		"owner_id":        identity.ID,
+		"name":            identity.Name,
+		"role":            identity.Role,
+		"auth_type":       identity.AuthType,
 		"mode":            "generate",
 		"model":           req.Model,
 		"size":            req.Size,
@@ -364,6 +438,21 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 	}
 	_, receipt, err := s.reserveImageQuota(r.Context(), identity, req.N)
 	if err != nil {
+		s.addLogContext(r.Context(), "task", "图片任务提交失败", map[string]any{
+			"owner_id":        identity.ID,
+			"name":            identity.Name,
+			"role":            identity.Role,
+			"auth_type":       identity.AuthType,
+			"mode":            "edit",
+			"model":           req.Model,
+			"size":            req.Size,
+			"requested_count": req.N,
+			"status":          "failed",
+			"quota_used":      0,
+			"quota_reserved":  0,
+			"error":           "insufficient quota",
+			"error_code":      "quota_exceeded",
+		})
 		writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
 		return
 	}
@@ -386,15 +475,35 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "task_create_failed", err.Error())
 		return
 	}
-	if err := s.tasks.Submit(taskJob{OwnerID: identity.ID, TaskID: taskID, Mode: "edit", Receipt: receipt, Edit: req}); err != nil {
+	if err := s.tasks.Submit(taskJob{OwnerID: identity.ID, OwnerName: identity.Name, OwnerRole: identity.Role, OwnerAuthType: identity.AuthType, TaskID: taskID, Mode: "edit", Receipt: receipt, Edit: req}); err != nil {
 		s.refundImageQuota(r.Context(), identity, receipt)
 		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, jsonData([]any{}), err.Error())
+		s.addLogContext(r.Context(), "task", "图片任务提交失败", map[string]any{
+			"task_id":         taskID,
+			"owner_id":        identity.ID,
+			"name":            identity.Name,
+			"role":            identity.Role,
+			"auth_type":       identity.AuthType,
+			"mode":            "edit",
+			"model":           req.Model,
+			"size":            req.Size,
+			"requested_count": req.N,
+			"status":          "failed",
+			"quota_used":      0,
+			"quota_reserved":  receipt.Total,
+			"quota_refund":    receipt.Total,
+			"error":           err.Error(),
+			"error_code":      "task_queue_full",
+		})
 		writeError(w, http.StatusServiceUnavailable, "task_queue_full", err.Error())
 		return
 	}
 	s.addLogContext(r.Context(), "task", "图片任务已提交", map[string]any{
 		"task_id":         taskID,
 		"owner_id":        identity.ID,
+		"name":            identity.Name,
+		"role":            identity.Role,
+		"auth_type":       identity.AuthType,
 		"mode":            "edit",
 		"model":           req.Model,
 		"size":            req.Size,

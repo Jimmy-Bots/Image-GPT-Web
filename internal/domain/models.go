@@ -31,6 +31,7 @@ type User struct {
 	PermanentQuota     int        `json:"permanent_quota"`
 	TemporaryQuota     int        `json:"temporary_quota"`
 	TemporaryQuotaDate string     `json:"temporary_quota_date,omitempty"`
+	DailyTemporaryQuota int       `json:"daily_temporary_quota"`
 	AvailableQuota     int        `json:"available_quota"`
 	APIKey             *APIKey    `json:"api_key,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
