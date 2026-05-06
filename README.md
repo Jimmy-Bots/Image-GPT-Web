@@ -92,6 +92,52 @@ Useful environment variables:
 - `CHATGPT2API_REGISTER_TARGET_AVAILABLE`: target account count for `available` mode.
 - `CHATGPT2API_REGISTER_CHECK_INTERVAL_SECONDS`: polling interval for target-based batch mode.
 
+## Release Automation
+
+The repository includes `.github/workflows/release-on-version.yml`.
+
+Behavior:
+
+- Trigger: push to the repository default branch.
+- Gate: only runs a release when the `VERSION` file changed in that push.
+- Actions:
+  - builds and pushes a multi-arch image (`linux/amd64`, `linux/arm64`)
+  - creates and pushes a git tag in the form `v<VERSION>`
+  - creates or updates the matching GitHub Release
+  - uploads versioned release bundles and checksums
+
+Default image target:
+
+- `ghcr.io/<owner>/<repo>:<VERSION>`
+- `ghcr.io/<owner>/<repo>:latest`
+
+Optional registry targets:
+
+- Docker Hub:
+  - set `DOCKERHUB_USERNAME`
+  - set `DOCKERHUB_TOKEN`
+- Custom OCI registry:
+  - set `REGISTRY_HOST`
+  - set `REGISTRY_USERNAME`
+  - set `REGISTRY_PASSWORD`
+  - set `REGISTRY_NAMESPACE`
+  - optional `REGISTRY_IMAGE_NAME`
+
+Release assets:
+
+- `gpt-image-web-<VERSION>-source.tar.gz`
+- `gpt-image-web-<VERSION>-deploy.tar.gz`
+- `gpt-image-web-<VERSION>-checksums.txt`
+- `release-metadata.json`
+- `images.txt`
+
+Recommended workflow:
+
+1. Update `VERSION`.
+2. Commit the change.
+3. Push to the default branch.
+4. Wait for the workflow to publish images, tag the commit, and create the release.
+
 ## Main Endpoints
 
 - `POST /auth/login`: login with `email/password`, or validate an existing session token.

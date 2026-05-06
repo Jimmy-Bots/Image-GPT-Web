@@ -1,0 +1,263 @@
+name: Release On Version Change
+
+on:
+  push:
+    branches:
+      - "**"
+
+concurrency:
+  group: release-on-version-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+      version: ${{ steps.detect.outputs.version }}
+      tag: ${{ steps.detect.outputs.tag }}
+      image_name: ${{ steps.detect.outputs.image_name }}
+      ghcr_image: ${{ steps.detect.outputs.ghcr_image }}
+      default_branch_only: ${{ steps.detect.outputs.default_branch_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: detect
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${REF_NAME}" != "${DEFAULT_BRANCH}" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "default_branch_only=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ ! -f VERSION ]]; then
+            echo "VERSION file not found" >&2
+            exit 1
+          fi
+
+          version="$(tr -d '\r' < VERSION | head -n 1 | xargs)"
+          if [[ -z "${version}" ]]; then
+            echo "VERSION is empty" >&2
+            exit 1
+          fi
+
+          image_name="${REPOSITORY##*/}"
+          owner_repo="$(echo "${REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+
+          changed=false
+          if [[ "${BEFORE_SHA}" =~ ^0+$ ]]; then
+            if git rev-parse HEAD^ >/dev/null 2>&1; then
+              if ! git diff --quiet HEAD^ HEAD -- VERSION; then
+                changed=true
+              fi
+            else
+              changed=true
+            fi
+          else
+            if ! git diff --quiet "${BEFORE_SHA}" "${GITHUB_SHA}" -- VERSION; then
+              changed=true
+            fi
+          fi
+
+          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
+          echo "ghcr_image=ghcr.io/${owner_repo}" >> "$GITHUB_OUTPUT"
+          echo "default_branch_only=false" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: detect
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to custom OCI registry
+        if: ${{ secrets.REGISTRY_HOST != '' && secrets.REGISTRY_USERNAME != '' && secrets.REGISTRY_PASSWORD != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.REGISTRY_HOST }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - id: image-meta
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          IMAGE_NAME: ${{ needs.detect.outputs.image_name }}
+          GHCR_IMAGE: ${{ needs.detect.outputs.ghcr_image }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
+          REGISTRY_NAMESPACE: ${{ secrets.REGISTRY_NAMESPACE }}
+          REGISTRY_IMAGE_NAME: ${{ secrets.REGISTRY_IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+
+          image_name="${REGISTRY_IMAGE_NAME:-${IMAGE_NAME}}"
+          tags="${GHCR_IMAGE}:${VERSION}
+${GHCR_IMAGE}:latest"
+          images="${GHCR_IMAGE}:${VERSION}
+${GHCR_IMAGE}:latest"
+
+          if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
+            tags="${tags}
+docker.io/${DOCKERHUB_USERNAME}/${image_name}:${VERSION}
+docker.io/${DOCKERHUB_USERNAME}/${image_name}:latest"
+            images="${images}
+docker.io/${DOCKERHUB_USERNAME}/${image_name}:${VERSION}
+docker.io/${DOCKERHUB_USERNAME}/${image_name}:latest"
+          fi
+
+          if [[ -n "${REGISTRY_HOST}" && -n "${REGISTRY_NAMESPACE}" ]]; then
+            tags="${tags}
+${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:${VERSION}
+${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:latest"
+            images="${images}
+${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:${VERSION}
+${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:latest"
+          fi
+
+          {
+            echo "tags<<EOF"
+            echo "${tags}"
+            echo "EOF"
+            echo "images<<EOF"
+            echo "${images}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Ensure release tag exists on this commit
+        env:
+          TAG: ${{ needs.detect.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+            existing_sha="$(git rev-list -n 1 "${TAG}")"
+            if [[ "${existing_sha}" != "${GITHUB_SHA}" ]]; then
+              echo "Tag ${TAG} already exists on ${existing_sha}, not ${GITHUB_SHA}" >&2
+              exit 1
+            fi
+            echo "Tag ${TAG} already points to ${GITHUB_SHA}"
+            exit 0
+          fi
+
+          git tag -a "${TAG}" "${GITHUB_SHA}" -m "Release ${TAG}"
+          git push origin "${TAG}"
+
+      - id: build
+        name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.image-meta.outputs.tags }}
+          provenance: false
+          sbom: false
+
+      - name: Create release bundle
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          TAG: ${{ needs.detect.outputs.tag }}
+          IMAGE_LIST: ${{ steps.image-meta.outputs.images }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+
+          git archive --format=tar.gz --prefix="gpt-image-web-${VERSION}/" -o "dist/release/gpt-image-web-${VERSION}-source.tar.gz" "${GITHUB_SHA}"
+
+          tar -czf "dist/release/gpt-image-web-${VERSION}-deploy.tar.gz" \
+            Dockerfile \
+            docker-compose.yml \
+            docker-compose.local.yml \
+            .env.example \
+            VERSION \
+            README.md
+
+          printf "%s\n" "${IMAGE_LIST}" > dist/release/images.txt
+
+          cat > "dist/release/release-metadata.json" <<EOF
+          {
+            "version": "${VERSION}",
+            "tag": "${TAG}",
+            "commit": "${GITHUB_SHA}",
+            "image_digest": "${DIGEST}",
+            "images_file": "images.txt"
+          }
+          EOF
+
+          cat > "dist/release/release-notes.md" <<EOF
+          ## Container Images
+
+          \`\`\`text
+          ${IMAGE_LIST}
+          \`\`\`
+
+          Digest: \`${DIGEST}\`
+          EOF
+
+          (
+            cd dist/release
+            sha256sum \
+              "gpt-image-web-${VERSION}-source.tar.gz" \
+              "gpt-image-web-${VERSION}-deploy.tar.gz" \
+              "release-metadata.json" \
+              "images.txt" \
+              > "gpt-image-web-${VERSION}-checksums.txt"
+          )
+
+      - name: Create or update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.detect.outputs.tag }}
+          name: ${{ needs.detect.outputs.tag }}
+          body_path: dist/release/release-notes.md
+          generate_release_notes: true
+          append_body: true
+          files: |
+            dist/release/gpt-image-web-${{ needs.detect.outputs.version }}-source.tar.gz
+            dist/release/gpt-image-web-${{ needs.detect.outputs.version }}-deploy.tar.gz
+            dist/release/gpt-image-web-${{ needs.detect.outputs.version }}-checksums.txt
+            dist/release/release-metadata.json
+            dist/release/images.txt
