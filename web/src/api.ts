@@ -226,6 +226,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(settings)
     }),
+  testSMTPMail: (token: string, to: string) =>
+    request<{ ok: boolean }>(token, "/api/settings/mail/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to })
+    }),
   registerState: (token: string) => request<RegisterRuntime>(token, "/api/register/state"),
   registerLogs: (token: string) => request<{ items: SystemLog[] }>(token, "/api/register/logs"),
   saveRegisterConfig: (token: string, config: RegisterConfig) =>

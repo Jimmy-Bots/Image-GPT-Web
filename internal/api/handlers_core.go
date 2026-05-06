@@ -422,6 +422,66 @@ func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(payload)
 }
 
+func (s *Server) handleSendSMTPTest(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	var req struct {
+		To string `json:"to"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	to := strings.TrimSpace(req.To)
+	if to == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "test recipient is required")
+		return
+	}
+	settings, err := s.store.GetSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	cfg := smtpMailConfigFromSettings(settings)
+	if err := validateSMTPMailConfig(cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "smtp_config_invalid", err.Error())
+		return
+	}
+	subject := "GPT Image Web SMTP Test"
+	body := strings.Join([]string{
+		"这是一封测试邮件。",
+		"",
+		"如果你收到了这封邮件，说明 SMTP 配置已经可以正常发送。",
+		fmt.Sprintf("发送时间：%s", time.Now().Format("2006/01/02 15:04")),
+	}, "\n")
+	if err := sendSMTPMail(r.Context(), cfg, to, subject, body); err != nil {
+		s.addLogContext(r.Context(), "mail", "SMTP 测试发送失败", map[string]any{
+			"status":       "failed",
+			"to":           to,
+			"host":         cfg.Host,
+			"port":         cfg.Port,
+			"starttls":     cfg.StartTLS,
+			"implicit_tls": cfg.ImplicitTLS,
+			"username":     cfg.Username,
+			"from":         cfg.FromAddress,
+			"reply_to":     cfg.ReplyTo,
+			"error":        err.Error(),
+		})
+		writeError(w, http.StatusBadRequest, "smtp_test_failed", err.Error())
+		return
+	}
+	s.addLogContext(r.Context(), "mail", "SMTP 测试发送成功", map[string]any{
+		"status":       "success",
+		"to":           to,
+		"host":         cfg.Host,
+		"port":         cfg.Port,
+		"starttls":     cfg.StartTLS,
+		"implicit_tls": cfg.ImplicitTLS,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (s *Server) handleStorageInfo(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return

@@ -106,6 +106,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/accounts/refresh-due", s.handleRefreshDueAccounts)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
+	mux.HandleFunc("POST /api/settings/mail/test", s.handleSendSMTPTest)
 	mux.HandleFunc("GET /api/register/state", s.handleGetRegisterState)
 	mux.HandleFunc("GET /api/register/logs", s.handleGetRegisterLogs)
 	mux.HandleFunc("POST /api/register/config", s.handleSaveRegisterConfig)
