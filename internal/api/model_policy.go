@@ -9,6 +9,7 @@ import (
 )
 
 const defaultImageWorkbenchModel = "gpt-image-2"
+const defaultImageMaxCount = 4
 
 func (s *Server) imageWorkbenchModel(ctx context.Context) string {
 	settings, err := s.store.GetSettings(ctx)
@@ -20,6 +21,18 @@ func (s *Server) imageWorkbenchModel(ctx context.Context) string {
 		return defaultImageWorkbenchModel
 	}
 	return model
+}
+
+func (s *Server) imageMaxCount(ctx context.Context) int {
+	settings, err := s.store.GetSettings(ctx)
+	if err != nil {
+		return defaultImageMaxCount
+	}
+	limit := intMapValue(settings, "image_max_count")
+	if limit < 1 {
+		return defaultImageMaxCount
+	}
+	return limit
 }
 
 func (s *Server) allowedPublicModels(ctx context.Context) []string {
@@ -131,10 +144,14 @@ func filterModelsByAllowed(result map[string]any, allowed []string) map[string]a
 func modelPolicyForIdentity(ctx context.Context, identity Identity, settings map[string]any) map[string]any {
 	config := map[string]any{
 		"workbench_model":       defaultImageWorkbenchModel,
+		"image_max_count":       defaultImageMaxCount,
 		"allowed_public_models": []string{},
 	}
 	if model := strings.TrimSpace(stringFromAny(settings["image_workbench_model"], "")); model != "" {
 		config["workbench_model"] = model
+	}
+	if limit := intMapValue(settings, "image_max_count"); limit > 0 {
+		config["image_max_count"] = limit
 	}
 	allowed := allowedPublicModelsFromSettings(settings)
 	if len(allowed) > 0 {

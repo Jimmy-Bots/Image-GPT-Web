@@ -10,6 +10,7 @@ export type Identity = {
 
 export type ModelPolicy = {
   workbench_model?: string;
+  image_max_count?: number;
   allowed_public_models?: string[];
   is_admin?: boolean;
 };

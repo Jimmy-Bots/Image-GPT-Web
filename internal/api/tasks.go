@@ -277,7 +277,7 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 		Gen: ImageGenerationPayload{
 			Prompt:         req.Prompt,
 			Model:          req.Model,
-			N:              clampImageTaskCount(req.N),
+			N:              clampImageTaskCountWithLimit(req.N, s.imageMaxCount(r.Context())),
 			Size:           req.Size,
 			ResponseFormat: "b64_json",
 		},
@@ -359,12 +359,15 @@ func randomLogID() string {
 	return auth.RandomID(12)
 }
 
-func clampImageTaskCount(value int) int {
+func clampImageTaskCountWithLimit(value int, limit int) int {
+	if limit < 1 {
+		limit = defaultImageMaxCount
+	}
 	if value < 1 {
 		return 1
 	}
-	if value > 4 {
-		return 4
+	if value > limit {
+		return limit
 	}
 	return value
 }
