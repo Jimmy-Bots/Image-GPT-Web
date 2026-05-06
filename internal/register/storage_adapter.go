@@ -11,8 +11,10 @@ import (
 )
 
 type StorageAccountRepository struct {
-	Store    *storage.Store
-	ProxyURL string
+	Store        *storage.Store
+	ProxyURL     string
+	RefreshFunc  func(context.Context, string) error
+	SharedClient chatgpt.HTTPDoer
 }
 
 func (r StorageAccountRepository) AddAccessToken(ctx context.Context, token string, password string) (bool, error) {
@@ -20,9 +22,16 @@ func (r StorageAccountRepository) AddAccessToken(ctx context.Context, token stri
 }
 
 func (r StorageAccountRepository) RefreshAccount(ctx context.Context, token string) error {
-	httpClient, err := chatgpt.NewHTTPClient(r.ProxyURL)
-	if err != nil {
-		return err
+	if r.RefreshFunc != nil {
+		return r.RefreshFunc(ctx, token)
+	}
+	httpClient := r.SharedClient
+	if httpClient == nil {
+		var err error
+		httpClient, err = chatgpt.NewHTTPClient(r.ProxyURL)
+		if err != nil {
+			return err
+		}
 	}
 	client := chatgpt.NewClient(token, chatgpt.WithHTTPClient(httpClient))
 	info, err := client.UserInfo(ctx)
