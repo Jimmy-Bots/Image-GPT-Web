@@ -33,6 +33,7 @@ type accountUpdateRequest struct {
 	Type        *string `json:"type"`
 	Status      *string `json:"status"`
 	Quota       *int    `json:"quota"`
+	Password    *string `json:"password"`
 }
 
 type logsDeleteRequest struct {
@@ -75,7 +76,7 @@ func (s *Server) handleCreateAccounts(w http.ResponseWriter, r *http.Request) {
 	added := 0
 	skipped := 0
 	for _, token := range compactStrings(req.Tokens) {
-		created, err := s.store.UpsertAccountToken(r.Context(), token)
+		created, err := s.store.UpsertAccountToken(r.Context(), token, "")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 			return
@@ -132,7 +133,7 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	item, err := s.store.UpdateAccount(
 		r.Context(),
 		token,
-		storage.AccountUpdate{Type: req.Type, Status: req.Status, Quota: req.Quota},
+		storage.AccountUpdate{Type: req.Type, Status: req.Status, Quota: req.Quota, Password: req.Password},
 	)
 	if err != nil {
 		writeError(w, storageStatus(err), "update_account_failed", err.Error())
@@ -326,6 +327,7 @@ func publicAccount(item domain.Account) map[string]any {
 	return map[string]any{
 		"token_ref":           accountTokenRef(item.AccessToken),
 		"access_token_masked": maskToken(item.AccessToken),
+		"password":            item.Password,
 		"type":                item.Type,
 		"status":              item.Status,
 		"quota":               item.Quota,

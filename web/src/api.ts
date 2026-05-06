@@ -1,4 +1,4 @@
-import type { Account, ApiKey, ImageTask, ModelItem, Settings, StoredImage, SystemLog, User } from "./types";
+import type { Account, ApiKey, ImageTask, ModelItem, RegisterConfig, RegisterRuntime, Settings, StoredImage, SystemLog, User } from "./types";
 
 const storageKey = "gpt_image_web_token";
 
@@ -78,7 +78,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token_refs: tokenRefs })
     }),
-  updateAccount: (token: string, tokenRef: string, body: { status?: string; type?: string; quota?: number }) =>
+  updateAccount: (token: string, tokenRef: string, body: { status?: string; type?: string; quota?: number; password?: string }) =>
     request<{ item: Account; items: Account[] }>(token, "/api/accounts/update", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -137,6 +137,25 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(settings)
+    }),
+  registerState: (token: string) => request<RegisterRuntime>(token, "/api/register/state"),
+  saveRegisterConfig: (token: string, config: RegisterConfig) =>
+    request<{ state: RegisterRuntime["state"] }>(token, "/api/register/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config)
+    }),
+  startRegister: (token: string) =>
+    request<RegisterRuntime>(token, "/api/register/start", {
+      method: "POST"
+    }),
+  stopRegister: (token: string) =>
+    request<RegisterRuntime>(token, "/api/register/stop", {
+      method: "POST"
+    }),
+  runRegisterOnce: (token: string) =>
+    request<RegisterRuntime>(token, "/api/register/run-once", {
+      method: "POST"
     }),
   storage: (token: string) => request<{ backend: { type: string; path: string }; health: { status: string } }>(token, "/api/storage/info"),
   logs: (token: string, type = "", ids: string[] = []) => {
