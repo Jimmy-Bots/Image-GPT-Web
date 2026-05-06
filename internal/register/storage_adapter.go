@@ -11,7 +11,8 @@ import (
 )
 
 type StorageAccountRepository struct {
-	Store *storage.Store
+	Store    *storage.Store
+	ProxyURL string
 }
 
 func (r StorageAccountRepository) AddAccessToken(ctx context.Context, token string, password string) (bool, error) {
@@ -19,7 +20,11 @@ func (r StorageAccountRepository) AddAccessToken(ctx context.Context, token stri
 }
 
 func (r StorageAccountRepository) RefreshAccount(ctx context.Context, token string) error {
-	client := chatgpt.NewClient(token)
+	httpClient, err := chatgpt.NewHTTPClient(r.ProxyURL)
+	if err != nil {
+		return err
+	}
+	client := chatgpt.NewClient(token, chatgpt.WithHTTPClient(httpClient))
 	info, err := client.UserInfo(ctx)
 	if err != nil {
 		return err

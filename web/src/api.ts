@@ -139,6 +139,7 @@ export const api = {
       body: JSON.stringify(settings)
     }),
   registerState: (token: string) => request<RegisterRuntime>(token, "/api/register/state"),
+  registerLogs: (token: string) => request<{ items: SystemLog[] }>(token, "/api/register/logs"),
   saveRegisterConfig: (token: string, config: RegisterConfig) =>
     request<{ state: RegisterRuntime["state"] }>(token, "/api/register/config", {
       method: "POST",

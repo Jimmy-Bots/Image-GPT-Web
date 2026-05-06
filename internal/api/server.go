@@ -88,6 +88,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /api/register/state", s.handleGetRegisterState)
+	mux.HandleFunc("GET /api/register/logs", s.handleGetRegisterLogs)
 	mux.HandleFunc("POST /api/register/config", s.handleSaveRegisterConfig)
 	mux.HandleFunc("POST /api/register/start", s.handleStartRegister)
 	mux.HandleFunc("POST /api/register/stop", s.handleStopRegister)

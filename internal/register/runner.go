@@ -3,6 +3,7 @@ package register
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -33,22 +34,26 @@ func NewRunner(registrar *Registrar, repo AccountRepository, logger Logger, now 
 func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 	cfg = cfg.withDefaults()
 	startedAt := r.now()
+	jobID := randomID(newDefaultRandomSource(), 6)
 	state := BatchState{
 		Config:  cfg,
 		Enabled: true,
 		Stats: BatchStats{
-			JobID:     randomID(newDefaultRandomSource(), 12),
+			JobID:     jobID,
 			Threads:   cfg.Threads,
 			StartedAt: &startedAt,
 			UpdatedAt: &startedAt,
 		},
 	}
+	r.logger.Printf(ctx, "info", "[batch:%s] start mode=%s total=%d threads=%d quota=%d available=%d", jobID, cfg.Mode, cfg.Total, cfg.Threads, cfg.TargetQuota, cfg.TargetAvailable)
 	metrics, err := r.poolMetrics(ctx)
 	if err != nil {
+		r.logger.Printf(ctx, "error", "[batch:%s] pool metrics failed: %v", jobID, err)
 		return state, err
 	}
 	state.Stats.CurrentQuota = metrics.CurrentQuota
 	state.Stats.CurrentAvailable = metrics.CurrentAvailable
+	r.logger.Printf(ctx, "info", "[batch:%s] pool metrics quota=%d available=%d", jobID, metrics.CurrentQuota, metrics.CurrentAvailable)
 
 	type jobResult struct {
 		ok  bool
@@ -62,24 +67,34 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 
 	tryLaunch := func() bool {
 		if state.Config.Mode == RegisterModeTotal && submitted >= state.Config.Total {
+			r.logger.Printf(ctx, "info", "[batch:%s] launch stop: submitted=%d reached total=%d", jobID, submitted, state.Config.Total)
 			return false
 		}
 		reached, err := r.targetReached(ctx, state.Config, submitted)
 		if err != nil {
+			r.logger.Printf(ctx, "error", "[batch:%s] target check failed: %v", jobID, err)
 			results <- jobResult{ok: false, err: err}
 			return false
 		}
 		if reached {
+			r.logger.Printf(ctx, "info", "[batch:%s] target reached, stop launching more jobs", jobID)
 			return false
 		}
 		submitted++
 		sem <- struct{}{}
 		wg.Add(1)
 		state.Stats.Running++
+		r.logger.Printf(ctx, "info", "[batch:%s] launch worker submitted=%d running=%d", jobID, submitted, state.Stats.Running)
 		go func(index int) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			r.logger.Printf(ctx, "info", "[batch:%s] worker-%d start", jobID, index)
 			_, err := r.registrar.Register(ctx)
+			if err != nil {
+				r.logger.Printf(ctx, "error", "[batch:%s] worker-%d failed: %v", jobID, index, err)
+			} else {
+				r.logger.Printf(ctx, "info", "[batch:%s] worker-%d success", jobID, index)
+			}
 			results <- jobResult{ok: err == nil, err: err}
 		}(submitted)
 		return true
@@ -96,8 +111,10 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 		if state.Stats.Running == 0 && !doneLaunching {
 			select {
 			case <-ctx.Done():
+				r.logger.Printf(ctx, "warn", "[batch:%s] canceled while idle", jobID)
 				return r.finishState(state, false), ctx.Err()
 			case <-time.After(cfg.CheckInterval):
+				r.logger.Printf(ctx, "info", "[batch:%s] tick interval=%s waiting for next launch", jobID, cfg.CheckInterval)
 				if !tryLaunch() {
 					doneLaunching = true
 				}
@@ -108,6 +125,7 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 		select {
 		case <-ctx.Done():
 			wg.Wait()
+			r.logger.Printf(ctx, "warn", "[batch:%s] canceled while workers running", jobID)
 			return r.finishState(state, false), ctx.Err()
 		case result := <-results:
 			state.Stats.Running--
@@ -118,6 +136,7 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 				state.Stats.Fail++
 			}
 			state = r.bumpStats(state)
+			r.logger.Printf(ctx, "info", "[batch:%s] progress done=%d success=%d fail=%d running=%d rate=%s", jobID, state.Stats.Done, state.Stats.Success, state.Stats.Fail, state.Stats.Running, formatRunnerPercent(state.Stats.SuccessRate))
 			for state.Stats.Running < cfg.Threads {
 				if !tryLaunch() {
 					doneLaunching = true
@@ -128,6 +147,7 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 	}
 
 	wg.Wait()
+	r.logger.Printf(ctx, "info", "[batch:%s] completed done=%d success=%d fail=%d elapsed=%.1fs", jobID, state.Stats.Done, state.Stats.Success, state.Stats.Fail, state.Stats.ElapsedSeconds)
 	return r.finishState(state, true), nil
 }
 
@@ -194,4 +214,11 @@ func (r *Runner) finishState(state BatchState, completed bool) BatchState {
 
 func round1(value float64) float64 {
 	return float64(int(value*10+0.5)) / 10
+}
+
+func formatRunnerPercent(value float64) string {
+	if value <= 0 {
+		return "0%"
+	}
+	return fmt.Sprintf("%.1f%%", value)
 }
