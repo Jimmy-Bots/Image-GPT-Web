@@ -6,6 +6,7 @@ import {
   Ban,
   Clock3,
   Copy,
+  Download,
   Eye,
   EyeOff,
   ImageIcon,
@@ -104,6 +105,43 @@ function quotaLabelFromUser(user: User | null) {
   if (!user) return "可用";
   if (user.quota_unlimited) return "∞";
   return compact(Number(user.available_quota || 0));
+}
+
+function describeWorkbenchError(error: unknown) {
+  const message = error instanceof Error ? error.message : "操作失败";
+  const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code || "") : "";
+  const normalized = message.toLowerCase();
+
+  if (code === "quota_exceeded") return "额度不足，请减少张数或联系管理员调整额度。";
+  if (code === "content_rejected") {
+    if (normalized.includes("sensitive")) return "请求内容命中了敏感词规则，请调整提示词后再试。";
+    if (normalized.includes("review")) return "请求内容未通过内容审查，请调整提示词后再试。";
+    return "请求内容未通过审查，请调整后再试。";
+  }
+  if (code === "invalid_model") return "当前模型不可用，请联系管理员检查工作台模型配置。";
+  if (code === "task_queue_full" || normalized.includes("queue is full")) return "任务队列已满，请稍等片刻后再试。";
+  if (code === "upstream_not_implemented") return "当前上游暂不支持这个操作。";
+  if (code === "upstream_error") {
+    if (normalized.includes("invalid_access_token")) return "可用账号登录态已失效，系统正在尝试恢复，请稍后再试。";
+    if (normalized.includes("rate limit") || normalized.includes("too many requests")) return "上游触发限流，请稍后再试。";
+    if (normalized.includes("content policy") || normalized.includes("moderation")) return "图片请求被上游内容策略拦截，请调整提示词。";
+    return "上游服务暂时不可用，请稍后重试。";
+  }
+  if (normalized.includes("failed to fetch") || normalized.includes("networkerror") || normalized.includes("network request failed")) {
+    return "网络请求失败，请检查服务是否在线后重试。";
+  }
+  if (normalized.includes("image file is required")) return "请先上传参考图，再执行编辑。";
+  if (normalized.includes("prompt is required")) return "请输入提示词后再试。";
+  if (normalized.includes("insufficient quota")) return "额度不足，请减少张数或联系管理员调整额度。";
+  if (normalized.includes("request contains sensitive word")) return "请求内容命中了敏感词规则，请调整提示词后再试。";
+
+  return message;
+}
+
+function extractWorkbenchTaskError(task: ImageTask, fallback?: string) {
+  const raw = task.error || fallback || "";
+  if (!raw) return "";
+  return describeWorkbenchError(new Error(raw));
 }
 
 function formatUserQuotaBreakdown(user: User) {
@@ -871,7 +909,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
           ...item,
           status: taskStatusToWorkbench(task.status),
           image: result || item.image,
-          error: task.error || item.error
+          error: extractWorkbenchTaskError(task, item.error)
         };
       });
       return { ...turn, images, status: deriveTurnStatus(images), error: images.find((item) => item.error)?.error };
@@ -910,7 +948,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
         }));
       } catch (error) {
         failed += 1;
-        const message = error instanceof Error ? error.message : "提交失败";
+        const message = describeWorkbenchError(error);
         setTurns((current) => current.map((row) => {
           if (row.id !== turn.id) return row;
           const images = row.images.map((image) => image.id === imageId ? { ...image, status: "error" as const, error: message } : image);
@@ -945,7 +983,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
         api.images(token).then((data) => setImages(data.items || [])).catch(() => {});
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "生成失败";
+      const message = describeWorkbenchError(error);
       setTurns((current) => current.map((row) => row.id === turn.id ? {
         ...row,
         status: "error",
@@ -1005,7 +1043,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
       }
     } catch (error) {
       refreshUserState().catch(() => {});
-      toast("error", error instanceof Error ? error.message : "生成失败");
+      toast("error", describeWorkbenchError(error));
     } finally {
       setBusy(false);
     }
@@ -1034,7 +1072,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
       await enqueueImages(retryTurn, [retryId]);
       toast("success", "已重新提交");
     } catch (error) {
-      toast("error", error instanceof Error ? error.message : "重新提交失败");
+      toast("error", describeWorkbenchError(error));
     }
   }
 
@@ -1048,7 +1086,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
       await enqueueImages(nextTurn);
       toast("success", "已重新生成");
     } catch (error) {
-      toast("error", error instanceof Error ? error.message : "重新生成失败");
+      toast("error", describeWorkbenchError(error));
     }
   }
 
@@ -1141,6 +1179,11 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
                         if (!src || src.startsWith("data:")) return;
                         copyText(src.startsWith("http") ? src : `${location.origin}${src}`).then(() => toast("success", "已复制链接"));
                       }}
+                      onDownload={() => {
+                        const src = item.image ? imageSrc(item.image) : "";
+                        if (!src) return;
+                        downloadWorkbenchImage(src, `result-${turn.id}-${index + 1}.png`);
+                      }}
                     />
                   ))}
                 </div>
@@ -1196,7 +1239,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
   );
 }
 
-function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry, onCopy }: { item: WorkbenchItem; index: number; size?: string; openLightbox: (src: string, title?: string) => void; onUseAsReference: () => void; onRetry: () => void; onCopy: () => void }) {
+function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry, onCopy, onDownload }: { item: WorkbenchItem; index: number; size?: string; openLightbox: (src: string, title?: string) => void; onUseAsReference: () => void; onRetry: () => void; onCopy: () => void; onDownload: () => void }) {
   const src = item.image ? imageSrc(item.image) : "";
   return (
     <article className={classNames("creation-image", sizeAspectClass(size), item.status === "error" && "error")}>
@@ -1212,7 +1255,7 @@ function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry
         <span>结果 {index + 1}</span>
         <Badge value={item.status} />
       </div>
-      {src ? <div className="image-card-actions"><button className="ghost small" onClick={onUseAsReference}><Sparkles size={13} />加入编辑</button>{!src.startsWith("data:") ? <IconButton title="复制链接" onClick={onCopy}><Copy size={13} /></IconButton> : null}</div> : null}
+      {src ? <div className="image-card-actions"><button className="ghost small" onClick={onUseAsReference}><Sparkles size={13} />加入编辑</button><IconButton title="下载图片" onClick={onDownload}><Download size={13} /></IconButton>{!src.startsWith("data:") ? <IconButton title="复制链接" onClick={onCopy}><Copy size={13} /></IconButton> : null}</div> : null}
       {item.status === "error" ? <button className="ghost small retry-button" onClick={onRetry}><RotateCcw size={13} />重新生成</button> : null}
       {item.error ? <p className="error-text">{item.error}</p> : null}
     </article>
@@ -1332,6 +1375,16 @@ async function buildReferenceFromResult(item: WorkbenchItem): Promise<ReferenceI
   const blob = await res.blob();
   const file = new File([blob], name, { type: blob.type || "image/png" });
   return { id: createID("ref"), name, file, dataUrl: await fileToDataURL(file) };
+}
+
+function downloadWorkbenchImage(src: string, name: string) {
+  const link = document.createElement("a");
+  link.href = src.startsWith("http") ? src : `${location.origin}${src}`;
+  link.download = name;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 function mergeImageTasks(current: ImageTask[], updates: ImageTask[]) {
