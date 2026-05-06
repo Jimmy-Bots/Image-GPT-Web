@@ -13,6 +13,7 @@ type Runner struct {
 	repo     AccountRepository
 	logger   Logger
 	now      func() time.Time
+	onState  func(BatchState)
 }
 
 func NewRunner(registrar *Registrar, repo AccountRepository, logger Logger, now func() time.Time) (*Runner, error) {
@@ -53,6 +54,14 @@ func newRunnerWithRegisterFunc(registerFn func(context.Context) (RegisterResult,
 	return &Runner{register: registerFn, repo: repo, logger: logger, now: now}, nil
 }
 
+func (r *Runner) WithStateHook(fn func(BatchState)) *Runner {
+	if r == nil {
+		return r
+	}
+	r.onState = fn
+	return r
+}
+
 func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 	cfg = cfg.withDefaults()
 	startedAt := r.now()
@@ -68,6 +77,7 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 			UpdatedAt: &startedAt,
 		},
 	}
+	r.emitState(state)
 	r.logger.Printf(batchCtx, "info", "batch start mode=%s total=%d threads=%d quota=%d available=%d", cfg.Mode, cfg.Total, cfg.Threads, cfg.TargetQuota, cfg.TargetAvailable)
 	metrics, err := r.poolMetrics(batchCtx)
 	if err != nil {
@@ -76,6 +86,7 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 	}
 	state.Stats.CurrentQuota = metrics.CurrentQuota
 	state.Stats.CurrentAvailable = metrics.CurrentAvailable
+	r.emitState(state)
 	r.logger.Printf(batchCtx, "info", "pool metrics quota=%d available=%d", metrics.CurrentQuota, metrics.CurrentAvailable)
 
 	type jobResult struct {
@@ -122,6 +133,8 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 		threadID := <-slots
 		wg.Add(1)
 		state.Stats.Running++
+		state = r.bumpStats(state)
+		r.emitState(state)
 		workerCtx := WithThread(batchCtx, threadID)
 		r.logger.Printf(workerCtx, "info", "launch attempt=%d running=%d", submitted, state.Stats.Running)
 		go func(slotID int, attempt int) {
@@ -198,6 +211,7 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 				state.Stats.Fail++
 			}
 			state = r.bumpStats(state)
+			r.emitState(state)
 			r.logger.Printf(batchCtx, "info", "progress done=%d success=%d fail=%d running=%d rate=%s", state.Stats.Done, state.Stats.Success, state.Stats.Fail, state.Stats.Running, formatRunnerPercent(state.Stats.SuccessRate))
 			stopped, err := fillWorkers()
 			if err != nil {
@@ -274,7 +288,15 @@ func (r *Runner) finishState(state BatchState, completed bool) BatchState {
 		state.Stats.FinishedAt = &now
 		state.Stats.UpdatedAt = &now
 	}
+	r.emitState(state)
 	return state
+}
+
+func (r *Runner) emitState(state BatchState) {
+	if r == nil || r.onState == nil {
+		return
+	}
+	r.onState(state.Clone())
 }
 
 func round1(value float64) float64 {

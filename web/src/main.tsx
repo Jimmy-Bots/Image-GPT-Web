@@ -1632,6 +1632,7 @@ function formatRegisterLogLine(log: SystemLog) {
   const fields = [
     ["email", detail.email],
     ["code", detail.code],
+    ["reason", detail.reason],
     ["status", detail.status],
     ["mode", detail.mode],
     ["threads", detail.threads],
