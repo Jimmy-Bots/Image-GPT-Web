@@ -69,13 +69,14 @@ export const api = {
   me: (token: string) => request<MeResponse>(token, "/api/me"),
   version: (token: string) => request<{ version: string }>(token, "/version"),
   models: (token: string) => request<{ data: ModelItem[] }>(token, "/v1/models"),
-  accounts: (token: string, params: { page?: number; pageSize?: number; query?: string; status?: string; accountType?: string } = {}) =>
+  accounts: (token: string, params: { page?: number; pageSize?: number; query?: string; status?: string; accountType?: string; activeOnly?: boolean } = {}) =>
     request<PagedResult<Account> & { summary: AccountListSummary }>(token, withQuery("/api/accounts", {
       page: params.page,
       page_size: params.pageSize,
       query: params.query,
       status: params.status,
-      account_type: params.accountType
+      account_type: params.accountType,
+      active_only: params.activeOnly
     })),
   accountRefreshStatus: (token: string) => request<{ status: AccountRefreshStatus }>(token, "/api/accounts/refresh-status"),
   deleteAccounts: (token: string, tokenRefs: string[]) =>
@@ -94,7 +95,7 @@ export const api = {
     request<{ selected: number; refreshed: number; errors: Array<{ token_ref?: string; error?: string }> }>(token, "/api/accounts/refresh-due", {
       method: "POST"
     }),
-  updateAccount: (token: string, tokenRef: string, body: { status?: string; type?: string; quota?: number; password?: string }) =>
+  updateAccount: (token: string, tokenRef: string, body: { status?: string; type?: string; quota?: number; password?: string; max_concurrency?: number }) =>
     request<{ item: Account }>(token, "/api/accounts/update", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

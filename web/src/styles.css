@@ -156,20 +156,21 @@ th input[type="checkbox"], td input[type="checkbox"] { display: block; margin: 0
 .accounts-table th:nth-child(5), .accounts-table td:nth-child(5) { width: 110px; min-width: 110px; }
 .accounts-table th:nth-child(6), .accounts-table td:nth-child(6) { width: 110px; min-width: 110px; }
 .accounts-table th:nth-child(7), .accounts-table td:nth-child(7) { width: 90px; min-width: 90px; }
-.accounts-table th:nth-child(8), .accounts-table td:nth-child(8) { width: 150px; min-width: 150px; }
-.accounts-table th:nth-child(9), .accounts-table td:nth-child(9) { width: 170px; min-width: 170px; }
-.accounts-table th:nth-child(10), .accounts-table td:nth-child(10) { width: 100px; min-width: 100px; }
-.accounts-table th:nth-child(11), .accounts-table td:nth-child(11) { width: 140px; min-width: 140px; }
-.accounts-table th:nth-child(12), .accounts-table td:nth-child(12) { position: sticky; right: 0; z-index: 5; width: 170px; min-width: 170px; background: inherit; box-shadow: -1px 0 0 #edf2f7; }
+.accounts-table th:nth-child(8), .accounts-table td:nth-child(8) { width: 110px; min-width: 110px; }
+.accounts-table th:nth-child(9), .accounts-table td:nth-child(9) { width: 150px; min-width: 150px; }
+.accounts-table th:nth-child(10), .accounts-table td:nth-child(10) { width: 170px; min-width: 170px; }
+.accounts-table th:nth-child(11), .accounts-table td:nth-child(11) { width: 100px; min-width: 100px; }
+.accounts-table th:nth-child(12), .accounts-table td:nth-child(12) { width: 140px; min-width: 140px; }
+.accounts-table th:nth-child(13), .accounts-table td:nth-child(13) { position: sticky; right: 0; z-index: 5; width: 170px; min-width: 170px; background: inherit; box-shadow: -1px 0 0 #edf2f7; }
 .accounts-table tbody td:nth-child(1),
 .accounts-table tbody td:nth-child(2),
-.accounts-table tbody td:nth-child(12) { background: #fff; }
+.accounts-table tbody td:nth-child(13) { background: #fff; }
 .accounts-table tbody tr:hover td:nth-child(1),
 .accounts-table tbody tr:hover td:nth-child(2),
-.accounts-table tbody tr:hover td:nth-child(12) { background: #fbfcfe; }
+.accounts-table tbody tr:hover td:nth-child(13) { background: #fbfcfe; }
 .accounts-table thead th:nth-child(1),
 .accounts-table thead th:nth-child(2),
-.accounts-table thead th:nth-child(12) { background: #fbfcfe; }
+.accounts-table thead th:nth-child(13) { background: #fbfcfe; }
 .account-password-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .account-password-cell code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .accounts-actions-cell { overflow: visible; }

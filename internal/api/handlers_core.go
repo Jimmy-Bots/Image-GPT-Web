@@ -31,6 +31,7 @@ type accountUpdateRequest struct {
 	Status      *string `json:"status"`
 	Quota       *int    `json:"quota"`
 	Password    *string `json:"password"`
+	MaxConcurrency *int `json:"max_concurrency"`
 }
 
 type logsDeleteRequest struct {
@@ -54,24 +55,115 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := storage.AccountListQuery{
-		Page:     queryInt(r, "page", 1),
-		PageSize: queryInt(r, "page_size", 25),
-		Query:    strings.TrimSpace(r.URL.Query().Get("query")),
-		Status:   strings.TrimSpace(r.URL.Query().Get("status")),
-		Type:     strings.TrimSpace(r.URL.Query().Get("account_type")),
+		Page:       queryInt(r, "page", 1),
+		PageSize:   queryInt(r, "page_size", 25),
+		Query:      strings.TrimSpace(r.URL.Query().Get("query")),
+		Status:     strings.TrimSpace(r.URL.Query().Get("status")),
+		Type:       strings.TrimSpace(r.URL.Query().Get("account_type")),
+		ActiveOnly: boolFromAny(r.URL.Query().Get("active_only")),
 	}
 	items, total, summary, err := s.store.ListAccountsPage(r.Context(), query)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
+	poolStats := s.pool.Stats(r.Context())
+	if query.ActiveOnly {
+		filtered := make([]domain.Account, 0, len(items))
+		for _, item := range items {
+			if stat := poolStats.Accounts[item.AccessToken]; stat.ActiveRequests > 0 {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+		total = 0
+		summary.Total = 0
+		summary.Normal = 0
+		summary.Success = 0
+		summary.Fail = 0
+		summary.QuotaTotal = 0
+		summary.QuotaUnknown = false
+		summary.QuotaUnlimited = false
+		summary.ActiveRequests = 0
+		summary.TotalConcurrency = 0
+		allItems, err := s.store.ListAccounts(r.Context())
+		if err == nil {
+			filteredAll := make([]domain.Account, 0, len(allItems))
+			for _, item := range allItems {
+				if !accountMatchesQuery(item, query) {
+					continue
+				}
+				if stat := poolStats.Accounts[item.AccessToken]; stat.ActiveRequests > 0 {
+					item.ActiveRequests = stat.ActiveRequests
+					item.AllowedConcurrency = stat.AllowedConcurrency
+					filteredAll = append(filteredAll, item)
+				}
+			}
+			total = len(filteredAll)
+			summary.Total = len(filteredAll)
+			for _, item := range filteredAll {
+				if item.Status == "正常" {
+					summary.Normal++
+					if item.ImageQuotaUnknown {
+						summary.QuotaUnknown = true
+					} else {
+						summary.QuotaTotal += item.Quota
+					}
+					if strings.EqualFold(item.Type, "pro") || strings.EqualFold(item.Type, "prolite") {
+						summary.QuotaUnlimited = true
+					}
+				}
+				summary.Success += item.Success
+				summary.Fail += item.Fail
+				summary.ActiveRequests += item.ActiveRequests
+				summary.TotalConcurrency += item.AllowedConcurrency
+			}
+			page, pageSize := query.Page, query.PageSize
+			if page < 1 {
+				page = 1
+			}
+			if pageSize < 1 {
+				pageSize = 25
+			}
+			start := (page - 1) * pageSize
+			if start > len(filteredAll) {
+				start = len(filteredAll)
+			}
+			end := start + pageSize
+			if end > len(filteredAll) {
+				end = len(filteredAll)
+			}
+			items = filteredAll[start:end]
+		}
+	} else {
+		summary.ActiveRequests = poolStats.ActiveRequests
+		summary.TotalConcurrency = poolStats.TotalConcurrency
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":     publicAccounts(items),
+		"items":     publicAccounts(items, poolStats.Accounts),
 		"total":     total,
 		"page":      query.Page,
 		"page_size": query.PageSize,
 		"summary":   summary,
 	})
+}
+
+func accountMatchesQuery(item domain.Account, query storage.AccountListQuery) bool {
+	if query.Status != "" && item.Status != query.Status {
+		return false
+	}
+	if query.Type != "" && item.Type != query.Type {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(query.Query))
+	if text == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(item.Email), text) ||
+		strings.Contains(strings.ToLower(item.Password), text) ||
+		strings.Contains(strings.ToLower(item.Type), text) ||
+		strings.Contains(strings.ToLower(item.Status), text) ||
+		strings.Contains(strings.ToLower(item.DefaultModelSlug), text)
 }
 
 func (s *Server) handleGetAccountRefreshStatus(w http.ResponseWriter, r *http.Request) {
@@ -125,13 +217,13 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	item, err := s.store.UpdateAccount(
 		r.Context(),
 		token,
-		storage.AccountUpdate{Type: req.Type, Status: req.Status, Quota: req.Quota, Password: req.Password},
+		storage.AccountUpdate{Type: req.Type, Status: req.Status, Quota: req.Quota, Password: req.Password, MaxConcurrency: req.MaxConcurrency},
 	)
 	if err != nil {
 		writeError(w, storageStatus(err), "update_account_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"item": publicAccount(item)})
+	writeJSON(w, http.StatusOK, map[string]any{"item": publicAccount(item, s.pool.Stats(r.Context()).Accounts)})
 }
 
 func (s *Server) handleRefreshAccounts(w http.ResponseWriter, r *http.Request) {
@@ -348,15 +440,16 @@ func (s *Server) resolveAccountRef(ctx context.Context, token string, ref string
 	return "", storage.ErrNotFound
 }
 
-func publicAccounts(items []domain.Account) []map[string]any {
+func publicAccounts(items []domain.Account, stats map[string]AccountPoolAccountStats) []map[string]any {
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		out = append(out, publicAccount(item))
+		out = append(out, publicAccount(item, stats))
 	}
 	return out
 }
 
-func publicAccount(item domain.Account) map[string]any {
+func publicAccount(item domain.Account, stats map[string]AccountPoolAccountStats) map[string]any {
+	accountStats := stats[item.AccessToken]
 	return map[string]any{
 		"token_ref":           accountTokenRef(item.AccessToken),
 		"access_token_masked": maskToken(item.AccessToken),
@@ -364,6 +457,7 @@ func publicAccount(item domain.Account) map[string]any {
 		"type":                item.Type,
 		"status":              item.Status,
 		"quota":               item.Quota,
+		"max_concurrency":     item.MaxConcurrency,
 		"image_quota_unknown": item.ImageQuotaUnknown,
 		"email":               item.Email,
 		"user_id":             item.UserID,
@@ -372,6 +466,8 @@ func publicAccount(item domain.Account) map[string]any {
 		"restore_at":          item.RestoreAt,
 		"success":             item.Success,
 		"fail":                item.Fail,
+		"active_requests":     accountStats.ActiveRequests,
+		"allowed_concurrency": accountStats.AllowedConcurrency,
 		"last_used_at":        item.LastUsedAt,
 		"created_at":          item.CreatedAt,
 		"updated_at":          item.UpdatedAt,

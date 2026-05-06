@@ -15,6 +15,7 @@ type AccountListQuery struct {
 	Query    string
 	Status   string
 	Type     string
+	ActiveOnly bool
 }
 
 type AccountListSummary struct {
@@ -25,6 +26,8 @@ type AccountListSummary struct {
 	QuotaTotal     int  `json:"quota_total"`
 	QuotaUnknown   bool `json:"quota_unknown"`
 	QuotaUnlimited bool `json:"quota_unlimited"`
+	ActiveRequests int  `json:"active_requests"`
+	TotalConcurrency int `json:"total_concurrency"`
 }
 
 type UserListQuery struct {
@@ -78,7 +81,7 @@ func (s *Store) ListAccountsPage(ctx context.Context, query AccountListQuery) ([
 	summary.QuotaUnknown = quotaUnknown > 0
 	summary.QuotaUnlimited = quotaUnlimited > 0
 
-	itemsQuery := `SELECT access_token, password, type, status, quota, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
+	itemsQuery := `SELECT access_token, password, type, status, quota, max_concurrency, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
 		restore_at, success, fail, last_used_at, raw_json, created_at, updated_at
 		FROM accounts` + where + ` ORDER BY updated_at DESC LIMIT ? OFFSET ?`
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))

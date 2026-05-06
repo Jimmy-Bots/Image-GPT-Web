@@ -455,6 +455,8 @@ function Dashboard({ accountSummary, models, tasks, taskTotal, storageStatus, on
   const normal = Number(accountSummary?.normal || 0);
   const success = Number(accountSummary?.success || 0);
   const fail = Number(accountSummary?.fail || 0);
+  const activeRequests = Number(accountSummary?.active_requests || 0);
+  const totalConcurrency = Number(accountSummary?.total_concurrency || 0);
   const recent = tasks[0];
   return (
     <div className="stack">
@@ -462,6 +464,7 @@ function Dashboard({ accountSummary, models, tasks, taskTotal, storageStatus, on
         <Metric label="账号总数" value={totalAccounts} />
         <Metric label="正常账号" value={normal} tone="ok" />
         <Metric label="可用额度" value={quotaLabelFromSummary(accountSummary)} />
+        <Metric label="图片并发" value={`${activeRequests}/${totalConcurrency || 0}`} />
         <Metric label="任务总数" value={taskTotal} />
         <Metric label="图片成功" value={success} tone="ok" />
         <Metric label="失败" value={fail} tone="err" />
@@ -476,6 +479,7 @@ function Dashboard({ accountSummary, models, tasks, taskTotal, storageStatus, on
           <div className="status-list">
             <div><span>存储</span><strong>{storageStatus}</strong></div>
             <div><span>账号池</span><strong>{normal}/{totalAccounts} 正常</strong></div>
+            <div><span>并发占用</span><strong>{activeRequests}/{totalConcurrency || 0}</strong></div>
             <div><span>最近任务</span><strong>{recent ? `${recent.status} · ${fmtDate(recent.updated_at)}` : "-"}</strong></div>
           </div>
         </section>
@@ -514,9 +518,11 @@ function PanelHead({ title, subtitle, action }: { title: string; subtitle?: stri
 
 function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccountSummary, toast, busy, runBusy }: { token: string; refreshIntervalMinutes: number; refreshStatus: AccountRefreshStatus | null; setAccountSummary: React.Dispatch<React.SetStateAction<AccountListSummary | null>>; toast: (type: Toast["type"], message: string) => void; busy: string | null; runBusy: (id: string, fn: () => Promise<void>) => Promise<void> }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [summary, setSummary] = useState<AccountListSummary | null>(null);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [type, setType] = useState("");
+  const [activeOnly, setActiveOnly] = useState(false);
   const [pageSize, setPageSize] = useState(25);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -527,23 +533,41 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
   const selectedSet = new Set(selected);
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   useHorizontalWheelScroll(tableWrapRef);
-  useEffect(() => setPage(1), [query, status, type, pageSize]);
+  useEffect(() => setPage(1), [query, status, type, activeOnly, pageSize]);
+  const reloadPageRef = useRef<(nextPage?: number) => Promise<void>>(async () => {});
   useEffect(() => {
     let cancelled = false;
-    api.accounts(token, { page, pageSize, query, status, accountType: type }).then((data) => {
+    api.accounts(token, { page, pageSize, query, status, accountType: type, activeOnly }).then((data) => {
       if (cancelled) return;
       setAccounts(data.items || []);
       setTotal(Number(data.total || 0));
+      setSummary(data.summary || null);
       setAccountSummary(data.summary || null);
       setSelected((prev) => prev.filter((ref) => (data.items || []).some((item) => item.token_ref === ref)));
     }).catch((error) => toast("error", error instanceof Error ? error.message : "加载账号失败"));
     return () => {
       cancelled = true;
     };
-  }, [token, page, pageSize, query, status, type, setAccountSummary]);
+  }, [token, page, pageSize, query, status, type, activeOnly, setAccountSummary]);
+  useEffect(() => {
+    reloadPageRef.current = reloadPage;
+  });
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => {
+      reloadPageRef.current(page).catch(() => {});
+    };
+    const timer = window.setInterval(() => {
+      if (!cancelled) poll();
+    }, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [page]);
 
   async function reloadPage(nextPage = page) {
-    const data = await api.accounts(token, { page: nextPage, pageSize, query, status, accountType: type });
+    const data = await api.accounts(token, { page: nextPage, pageSize, query, status, accountType: type, activeOnly });
     const nextItems = data.items || [];
     const nextTotal = Number(data.total || 0);
     const nextPageCount = Math.max(1, Math.ceil(nextTotal / pageSize));
@@ -553,6 +577,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
     }
     setAccounts(nextItems);
     setTotal(nextTotal);
+    setSummary(data.summary || null);
     setAccountSummary(data.summary || null);
     setSelected((prev) => prev.filter((ref) => nextItems.some((item) => item.token_ref === ref)));
   }
@@ -573,7 +598,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
     await reloadPage(page);
     toast("success", `已删除 ${result.removed} 个账号`);
   }
-  async function update(ref: string, body: { type?: string; status?: string; quota?: number; password?: string }) {
+  async function update(ref: string, body: { type?: string; status?: string; quota?: number; password?: string; max_concurrency?: number }) {
     await api.updateAccount(token, ref, body);
     await reloadPage();
   }
@@ -587,6 +612,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
         <span className="chip">正常轮转批量 {Number(refreshStatus?.normal_batch_size || 0)}</span>
         <span className="chip">间隔 {Number(refreshStatus?.interval_minutes || refreshIntervalMinutes || 0)} 分钟</span>
         <span className="chip">待刷新 {Number(refreshStatus?.due_count || 0)}</span>
+        <span className="chip">占用 {Number(summary?.active_requests || 0)} / 总并发 {Number(summary?.total_concurrency || 0)}</span>
         <span className="chip">下次 {fmtDate(refreshStatus?.next_run_at)}</span>
         <span className="chip">上次刷新 {Number(refreshStatus?.last_refreshed || 0)}</span>
         <span className="chip">上次失败 {Number(refreshStatus?.last_failed || 0)}</span>
@@ -599,6 +625,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
         <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱、token ref、密码、类型" />
         <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>正常</option><option>限流</option><option>异常</option><option>禁用</option></select></ControlField>
         <ControlField label="类型"><select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option>{types.map((item) => <option key={item}>{item}</option>)}</select></ControlField>
+        <ControlField label="占用"><select value={activeOnly ? "busy" : ""} onChange={(event) => setActiveOnly(event.target.value === "busy")}><option value="">全部</option><option value="busy">仅看占用中</option></select></ControlField>
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
       </div>
       <div className="bulkbar">
@@ -613,7 +640,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
       <datalist id="account-type-options">{types.map((value) => <option key={value}>{value}</option>)}</datalist>
       <div ref={tableWrapRef} className="table-wrap account-table-wrap">
         <table className="accounts-table">
-          <thead><tr><th></th><th>Email</th><th>Token</th><th>密码</th><th>类型</th><th>状态</th><th>额度</th><th>恢复</th><th>预计下次刷新</th><th>成功/失败</th><th>最近使用</th><th></th></tr></thead>
+          <thead><tr><th></th><th>Email</th><th>Token</th><th>密码</th><th>类型</th><th>状态</th><th>额度</th><th>图片并发</th><th>恢复</th><th>预计下次刷新</th><th>成功/失败</th><th>最近使用</th><th></th></tr></thead>
           <tbody>{accounts.map((item) => (
             <AccountRow
               key={item.token_ref}
@@ -639,18 +666,18 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
   );
 }
 
-function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefresh, onToggle, onDelete, onSave, busy, toast }: { item: Account; refreshIntervalMinutes: number; selected: boolean; onSelect: (checked: boolean) => void; onRefresh: () => void; onToggle: () => void; onDelete: () => void; onSave: (body: { type?: string; status?: string; quota?: number; password?: string }) => Promise<void>; busy: string | null; toast: (type: Toast["type"], message: string) => void }) {
+function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefresh, onToggle, onDelete, onSave, busy, toast }: { item: Account; refreshIntervalMinutes: number; selected: boolean; onSelect: (checked: boolean) => void; onRefresh: () => void; onToggle: () => void; onDelete: () => void; onSave: (body: { type?: string; status?: string; quota?: number; password?: string; max_concurrency?: number }) => Promise<void>; busy: string | null; toast: (type: Toast["type"], message: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [revealPassword, setRevealPassword] = useState(false);
-  const [draft, setDraft] = useState({ type: item.type || "Free", status: item.status || "正常", quota: String(item.quota ?? 0), password: item.password || "" });
+  const [draft, setDraft] = useState({ type: item.type || "Free", status: item.status || "正常", quota: String(item.quota ?? 0), password: item.password || "", maxConcurrency: String(item.max_concurrency ?? 0) });
   useEffect(() => {
-    if (!editing) setDraft({ type: item.type || "Free", status: item.status || "正常", quota: String(item.quota ?? 0), password: item.password || "" });
-  }, [editing, item.type, item.status, item.quota, item.password]);
+    if (!editing) setDraft({ type: item.type || "Free", status: item.status || "正常", quota: String(item.quota ?? 0), password: item.password || "", maxConcurrency: String(item.max_concurrency ?? 0) });
+  }, [editing, item.type, item.status, item.quota, item.password, item.max_concurrency]);
   async function save() {
     setSaving(true);
     try {
-      await onSave({ type: draft.type.trim() || "Free", status: draft.status, quota: Number(draft.quota) || 0, password: draft.password.trim() });
+      await onSave({ type: draft.type.trim() || "Free", status: draft.status, quota: Number(draft.quota) || 0, password: draft.password.trim(), max_concurrency: Math.max(0, Number(draft.maxConcurrency) || 0) });
       setEditing(false);
     } finally {
       setSaving(false);
@@ -682,6 +709,7 @@ function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefres
       <td>{editing ? <input className="cell-input" list="account-type-options" value={draft.type} onChange={(event) => setDraft({ ...draft, type: event.target.value })} /> : (item.type || "Free")}</td>
       <td>{editing ? <select className="cell-input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}><option>正常</option><option>限流</option><option>异常</option><option>禁用</option></select> : <Badge value={item.status} />}</td>
       <td>{editing ? <input className="cell-input" type="number" min={0} value={draft.quota} onChange={(event) => setDraft({ ...draft, quota: event.target.value })} /> : formatQuota(item)}</td>
+      <td>{editing ? <input className="cell-input" type="number" min={0} value={draft.maxConcurrency} onChange={(event) => setDraft({ ...draft, maxConcurrency: event.target.value })} /> : `${Number(item.active_requests || 0)}/${Number(item.allowed_concurrency || 0)}`}</td>
       <td title={item.restore_at ? fmtDate(item.restore_at) : "-"}>{formatRestoreCountdown(item.restore_at)}</td>
       <td title={formatNextAutoRefreshTitle(item.updated_at, refreshIntervalMinutes)}>{formatNextAutoRefresh(item.updated_at, refreshIntervalMinutes)}</td>
       <td>{item.success}/{item.fail}</td>
@@ -1977,7 +2005,7 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
   const aiReview = settings.ai_review && typeof settings.ai_review === "object" ? settings.ai_review as Record<string, unknown> : {};
   function updateField(key: string, value: unknown) { setSettings({ ...settings, [key]: value }); }
   async function save(next = settings) { const data = await api.saveSettings(token, next); setSettings(data.config || {}); toast("success", "设置已保存"); }
-  return <div className="settings-layout"><section className="panel"><PanelHead title="常用设置" subtitle="保存后会同步写入配置表" action={<button onClick={() => save().catch((error) => toast("error", error.message))}>保存</button>} /><div className="settings-form"><label><span>Proxy</span><input value={String(settings.proxy || "")} onChange={(event) => updateField("proxy", event.target.value)} /></label><label><span>Base URL</span><input value={String(settings.base_url || "")} onChange={(event) => updateField("base_url", event.target.value)} /></label><label><span>账号自动刷新间隔（分钟）</span><input type="number" min={1} value={Number(settings.refresh_account_interval_minute || 5)} onChange={(event) => updateField("refresh_account_interval_minute", Number(event.target.value))} /></label><label><span>账号刷新并发（自动刷新/手动刷新共用）</span><input type="number" min={1} value={Number(settings.refresh_account_concurrency || 4)} onChange={(event) => updateField("refresh_account_concurrency", Number(event.target.value))} /></label><label><span>正常账号轮转批大小</span><input type="number" min={1} value={Number(settings.refresh_account_normal_batch_size || 8)} onChange={(event) => updateField("refresh_account_normal_batch_size", Number(event.target.value))} /></label><label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label><label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label><label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label><label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label><label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label></div></section><section className="panel"><PanelHead title="原始 JSON" subtitle="高级设置可以直接编辑" action={<button className="secondary" onClick={() => { const parsed = parseJSON(json) as SettingsType; save(parsed).catch((error) => toast("error", error.message)); }}>保存 JSON</button>} /><textarea className="json-editor settings-json" value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} /></section></div>;
+  return <div className="settings-layout"><section className="panel"><PanelHead title="常用设置" subtitle="保存后会同步写入配置表" action={<button onClick={() => save().catch((error) => toast("error", error.message))}>保存</button>} /><div className="settings-form"><label><span>Proxy</span><input value={String(settings.proxy || "")} onChange={(event) => updateField("proxy", event.target.value)} /></label><label><span>Base URL</span><input value={String(settings.base_url || "")} onChange={(event) => updateField("base_url", event.target.value)} /></label><label><span>账号自动刷新间隔（分钟）</span><input type="number" min={1} value={Number(settings.refresh_account_interval_minute || 5)} onChange={(event) => updateField("refresh_account_interval_minute", Number(event.target.value))} /></label><label><span>账号刷新并发（自动刷新/手动刷新共用）</span><input type="number" min={1} value={Number(settings.refresh_account_concurrency || 4)} onChange={(event) => updateField("refresh_account_concurrency", Number(event.target.value))} /></label><label><span>正常账号轮转批大小</span><input type="number" min={1} value={Number(settings.refresh_account_normal_batch_size || 8)} onChange={(event) => updateField("refresh_account_normal_batch_size", Number(event.target.value))} /></label><label><span>单账号默认图片并发</span><input type="number" min={1} value={Number(settings.image_account_concurrency || 1)} onChange={(event) => updateField("image_account_concurrency", Number(event.target.value))} /></label><label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label><label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label><label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label><label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label><label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label></div></section><section className="panel"><PanelHead title="原始 JSON" subtitle="高级设置可以直接编辑" action={<button className="secondary" onClick={() => { const parsed = parseJSON(json) as SettingsType; save(parsed).catch((error) => toast("error", error.message)); }}>保存 JSON</button>} /><textarea className="json-editor settings-json" value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} /></section></div>;
 }
 
 function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { token: string; registerRuntime: RegisterRuntime | null; setRegisterRuntime: React.Dispatch<React.SetStateAction<RegisterRuntime | null>>; toast: (type: Toast["type"], message: string) => void }) {

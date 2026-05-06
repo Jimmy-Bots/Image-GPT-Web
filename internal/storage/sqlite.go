@@ -99,6 +99,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			type TEXT NOT NULL DEFAULT 'free',
 			status TEXT NOT NULL DEFAULT '正常',
 			quota INTEGER NOT NULL DEFAULT 0,
+			max_concurrency INTEGER NOT NULL DEFAULT 0,
 			image_quota_unknown INTEGER NOT NULL DEFAULT 0,
 			email TEXT NOT NULL DEFAULT '',
 			user_id TEXT NOT NULL DEFAULT '',
@@ -155,6 +156,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "accounts", "password", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "accounts", "max_concurrency", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "image_tasks", "prompt", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -448,7 +452,7 @@ func (s *Store) TouchAPIKey(ctx context.Context, id string, at time.Time) error 
 func (s *Store) ListAccounts(ctx context.Context) ([]domain.Account, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
-		`SELECT access_token, password, type, status, quota, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
+		`SELECT access_token, password, type, status, quota, max_concurrency, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
 		 restore_at, success, fail, last_used_at, raw_json, created_at, updated_at
 		 FROM accounts ORDER BY updated_at DESC`,
 	)
@@ -516,10 +520,11 @@ func (s *Store) DeleteAccounts(ctx context.Context, tokens []string) (int, error
 }
 
 type AccountUpdate struct {
-	Type     *string
-	Status   *string
-	Quota    *int
-	Password *string
+	Type           *string
+	Status         *string
+	Quota          *int
+	Password       *string
+	MaxConcurrency *int
 }
 
 func (s *Store) UpdateAccount(ctx context.Context, accessToken string, update AccountUpdate) (domain.Account, error) {
@@ -539,14 +544,21 @@ func (s *Store) UpdateAccount(ctx context.Context, accessToken string, update Ac
 	if update.Password != nil {
 		current.Password = strings.TrimSpace(*update.Password)
 	}
+	if update.MaxConcurrency != nil {
+		current.MaxConcurrency = *update.MaxConcurrency
+		if current.MaxConcurrency < 0 {
+			current.MaxConcurrency = 0
+		}
+	}
 	current.UpdatedAt = time.Now().UTC()
 	_, err = s.db.ExecContext(
 		ctx,
-		`UPDATE accounts SET type = ?, status = ?, quota = ?, password = ?, updated_at = ? WHERE access_token = ?`,
+		`UPDATE accounts SET type = ?, status = ?, quota = ?, password = ?, max_concurrency = ?, updated_at = ? WHERE access_token = ?`,
 		current.Type,
 		current.Status,
 		current.Quota,
 		current.Password,
+		current.MaxConcurrency,
 		formatTime(current.UpdatedAt),
 		accessToken,
 	)
@@ -559,7 +571,7 @@ func (s *Store) UpdateAccount(ctx context.Context, accessToken string, update Ac
 func (s *Store) GetAccount(ctx context.Context, accessToken string) (domain.Account, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT access_token, password, type, status, quota, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
+		`SELECT access_token, password, type, status, quota, max_concurrency, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
 		 restore_at, success, fail, last_used_at, raw_json, created_at, updated_at
 		 FROM accounts WHERE access_token = ?`,
 		accessToken,
@@ -989,6 +1001,7 @@ func scanAccount(row rowScanner) (domain.Account, error) {
 		&item.Type,
 		&item.Status,
 		&item.Quota,
+		&item.MaxConcurrency,
 		&imageQuotaUnknown,
 		&item.Email,
 		&item.UserID,
