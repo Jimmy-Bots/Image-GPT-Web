@@ -358,15 +358,15 @@ func (s *Store) TouchUserLogin(ctx context.Context, id string, at time.Time) err
 }
 
 type UserUpdate struct {
-	Email              *string
-	Name               *string
-	PasswordHash       *string
-	Role               *domain.Role
-	Status             *domain.UserStatus
-	QuotaUnlimited     *bool
-	PermanentQuota     *int
-	TemporaryQuota     *int
-	TemporaryQuotaDate *string
+	Email               *string
+	Name                *string
+	PasswordHash        *string
+	Role                *domain.Role
+	Status              *domain.UserStatus
+	QuotaUnlimited      *bool
+	PermanentQuota      *int
+	TemporaryQuota      *int
+	TemporaryQuotaDate  *string
 	DailyTemporaryQuota *int
 	AddPermanentQuota   *int
 }
@@ -1310,21 +1310,33 @@ func defaultSettings() map[string]any {
 		"auto_remove_rate_limited_accounts": false,
 		"log_levels":                        []any{},
 		"ai_review":                         map[string]any{"enabled": false, "base_url": "", "api_key": "", "model": "", "prompt": ""},
+		"smtp_mail": map[string]any{
+			"enabled":      false,
+			"host":         "",
+			"port":         587,
+			"username":     "",
+			"password":     "",
+			"from_address": "",
+			"from_name":    "",
+			"reply_to":     "",
+			"starttls":     true,
+			"implicit_tls": false,
+		},
 		"backup": map[string]any{
-			"enabled":            false,
-			"schedule_hour":      24,
-			"schedule_minute":    0,
-			"keep_latest":        7,
-			"encrypt":            true,
-			"passphrase":         "",
-			"r2_account_id":      "",
-			"r2_access_key_id":   "",
+			"enabled":              false,
+			"schedule_hour":        24,
+			"schedule_minute":      0,
+			"keep_latest":          7,
+			"encrypt":              true,
+			"passphrase":           "",
+			"r2_account_id":        "",
+			"r2_access_key_id":     "",
 			"r2_secret_access_key": "",
-			"r2_bucket":          "",
-			"r2_prefix":          "gpt-image-web",
-			"include_env":        true,
-			"include_compose":    true,
-			"include_version":    true,
+			"r2_bucket":            "",
+			"r2_prefix":            "gpt-image-web",
+			"include_env":          true,
+			"include_compose":      true,
+			"include_version":      true,
 		},
 		"register": map[string]any{
 			"proxy":                  "",

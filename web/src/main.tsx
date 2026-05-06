@@ -2436,14 +2436,18 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
   const [backupItems, setBackupItems] = useState<BackupRemoteItem[]>([]);
   const [backupBusy, setBackupBusy] = useState<"" | "run" | "reload" | "list">("");
   const [deletingBackupKey, setDeletingBackupKey] = useState("");
+  const [smtpTestTo, setSMTPTestTo] = useState("");
+  const [smtpTestBusy, setSMTPTestBusy] = useState(false);
   const backupTableRef = useRef<HTMLDivElement | null>(null);
   useHorizontalWheelScroll(backupTableRef);
   useEffect(() => setJson(safeJSON(settings)), [settings]);
   const aiReview = settings.ai_review && typeof settings.ai_review === "object" ? settings.ai_review as Record<string, unknown> : {};
   const allowedPublicModels = Array.isArray(settings.allowed_public_models) ? settings.allowed_public_models.map((item) => String(item)) : [];
   const backup = settings.backup && typeof settings.backup === "object" ? settings.backup as Record<string, unknown> : {};
+  const smtpMail = settings.smtp_mail && typeof settings.smtp_mail === "object" ? settings.smtp_mail as Record<string, unknown> : {};
   function updateField(key: string, value: unknown) { setSettings({ ...settings, [key]: value }); }
   function updateBackupField(key: string, value: unknown) { updateField("backup", { ...backup, [key]: value }); }
+  function updateSMTPField(key: string, value: unknown) { updateField("smtp_mail", { ...smtpMail, [key]: value }); }
   async function save(next = settings) { const data = await api.saveSettings(token, next); setSettings(data.config || {}); toast("success", "设置已保存"); }
   useEffect(() => {
     let cancelled = false;
@@ -2511,7 +2515,201 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
     const index = value.lastIndexOf("/");
     return index > 0 ? value.slice(0, index) : "root";
   }
-  return <div className="settings-layout"><section className="panel"><PanelHead title="常用设置" subtitle="保存后会同步写入配置表" action={<button onClick={() => save().catch((error) => toast("error", error.message))}>保存配置</button>} /><div className="settings-form"><label><span>Proxy</span><input value={String(settings.proxy || "")} onChange={(event) => updateField("proxy", event.target.value)} /></label><label><span>Base URL</span><input value={String(settings.base_url || "")} onChange={(event) => updateField("base_url", event.target.value)} /></label><label><span>图片工作台固定模型</span><input value={String(settings.image_workbench_model || "gpt-image-2")} onChange={(event) => updateField("image_workbench_model", event.target.value)} placeholder="gpt-image-2" /></label><label><span>图片单次张数上限</span><input type="number" min={1} value={Number(settings.image_max_count || 4)} onChange={(event) => updateField("image_max_count", Number(event.target.value))} /></label><label className="wide"><span>公开允许模型，每行一个</span><textarea value={allowedPublicModels.join("\n")} onChange={(event) => updateField("allowed_public_models", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} placeholder={"gpt-image-2\ngpt-5\nauto"} /></label><label><span>账号自动刷新间隔（分钟）</span><input type="number" min={1} value={Number(settings.refresh_account_interval_minute || 5)} onChange={(event) => updateField("refresh_account_interval_minute", Number(event.target.value))} /></label><label><span>账号刷新并发（自动刷新/手动刷新共用）</span><input type="number" min={1} value={Number(settings.refresh_account_concurrency || 4)} onChange={(event) => updateField("refresh_account_concurrency", Number(event.target.value))} /></label><label><span>正常账号轮转批大小</span><input type="number" min={1} value={Number(settings.refresh_account_normal_batch_size || 8)} onChange={(event) => updateField("refresh_account_normal_batch_size", Number(event.target.value))} /></label><label><span>单账号默认图片并发</span><input type="number" min={1} value={Number(settings.image_account_concurrency || 1)} onChange={(event) => updateField("image_account_concurrency", Number(event.target.value))} /></label><label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label><label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label><label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label><label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label><label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label></div></section><section className="panel"><PanelHead title="备份" subtitle="按间隔自动备份数据库和关键配置并上传到 Cloudflare R2" action={<div className="actions"><button onClick={() => save().catch((error) => toast("error", error.message))}>保存配置</button><button className="secondary" disabled={backupBusy === "reload" || backupBusy === "list"} onClick={() => reloadBackupState().catch((error) => toast("error", error.message))}>{backupBusy === "reload" ? "刷新中" : "刷新状态"}</button><button className="secondary" disabled={backupBusy === "reload" || backupBusy === "list"} onClick={() => reloadBackups().catch((error) => toast("error", error.message))}>{backupBusy === "list" ? "列表刷新中" : "刷新列表"}</button><button disabled={backupBusy === "run"} onClick={() => runBackupNow().catch((error) => toast("error", error.message))}>{backupBusy === "run" ? "备份中" : "立即备份"}</button></div>} /><div className="settings-form"><label className="inline"><input type="checkbox" checked={Boolean(backup.enabled)} onChange={(event) => updateBackupField("enabled", event.target.checked)} /><span>启用自动备份</span></label><label className="inline"><input type="checkbox" checked={Boolean(backup.encrypt ?? true)} onChange={(event) => updateBackupField("encrypt", event.target.checked)} /><span>启用加密</span></label><label><span>备份间隔小时</span><input type="number" min={0} max={720} value={Number(backup.schedule_hour ?? 24)} onChange={(event) => updateBackupField("schedule_hour", Number(event.target.value))} /></label><label><span>备份间隔分钟</span><input type="number" min={0} max={59} value={Number(backup.schedule_minute ?? 0)} onChange={(event) => updateBackupField("schedule_minute", Number(event.target.value))} /></label><label><span>轮替保留份数</span><input type="number" min={1} value={Number(backup.keep_latest ?? 7)} onChange={(event) => updateBackupField("keep_latest", Number(event.target.value))} /></label><label><span>R2 Prefix</span><input value={String(backup.r2_prefix || "gpt-image-web")} onChange={(event) => updateBackupField("r2_prefix", event.target.value)} placeholder="gpt-image-web" /></label><label><span>R2 Account ID</span><input value={String(backup.r2_account_id || "")} onChange={(event) => updateBackupField("r2_account_id", event.target.value)} /></label><label><span>R2 Access Key ID</span><input value={String(backup.r2_access_key_id || "")} onChange={(event) => updateBackupField("r2_access_key_id", event.target.value)} /></label><label><span>R2 Secret Access Key</span><input type="password" value={String(backup.r2_secret_access_key || "")} onChange={(event) => updateBackupField("r2_secret_access_key", event.target.value)} /></label><label><span>R2 Bucket</span><input value={String(backup.r2_bucket || "")} onChange={(event) => updateBackupField("r2_bucket", event.target.value)} /></label><label className="wide"><span>备份加密口令</span><input type="password" value={String(backup.passphrase || "")} onChange={(event) => updateBackupField("passphrase", event.target.value)} placeholder="用于 AES-256-GCM 加密备份包" /></label><label className="inline"><input type="checkbox" checked={Boolean(backup.include_env ?? true)} onChange={(event) => updateBackupField("include_env", event.target.checked)} /><span>包含 .env</span></label><label className="inline"><input type="checkbox" checked={Boolean(backup.include_compose ?? true)} onChange={(event) => updateBackupField("include_compose", event.target.checked)} /><span>包含 docker-compose.yml</span></label><label className="inline"><input type="checkbox" checked={Boolean(backup.include_version ?? true)} onChange={(event) => updateBackupField("include_version", event.target.checked)} /><span>包含 VERSION</span></label></div><div className="detail-panel detail-panel-plain"><div className="detail-grid detail-grid-two"><DetailItem label="状态" value={backupState?.last_status || (backupState?.enabled ? "Idle" : "Disabled")} /><DetailItem label="下次执行" value={fmtDate(backupState?.next_run_at)} /><DetailItem label="当前间隔" value={`${Number(backupState?.schedule_hour || 0)} 小时 ${Number(backupState?.schedule_minute || 0)} 分钟`} /><DetailItem label="最近开始" value={fmtDate(backupState?.last_started_at)} /><DetailItem label="最近结束" value={fmtDate(backupState?.last_finished_at)} /><DetailItem label="耗时" value={formatDuration(backupState?.last_duration_ms)} /><DetailItem label="触发方式" value={String(backupState?.last_trigger || "-")} /><DetailItem label="最近对象" value={String(backupState?.last_artifact?.key || "-")} /><DetailItem label="最近大小" value={backupState?.last_artifact?.size_bytes ? fmtBytes(backupState.last_artifact.size_bytes) : "-"} /></div><p className="backup-note">`0 小时 1 分钟` 表示每 1 分钟自动备份一次；最小间隔为 1 分钟。</p>{backupState?.last_error ? <p className="detail-error">{backupState.last_error}</p> : null}</div><div className="detail-panel detail-panel-plain"><div className="backup-list-head"><div className="backup-list-title"><strong>最近远端备份</strong><span>{backupItems.length ? `${backupItems.length} 项` : "暂无远端备份"}</span></div><span className="chip">下载时自动返回解密后的 tar.gz</span></div><ScrollableTable tableRef={backupTableRef} className="data-table-wrap" height="medium"><table className="activity-table backup-table"><thead><tr><th>备份文件</th><th>最近修改</th><th>大小</th><th></th></tr></thead><tbody>{backupItems.length ? backupItems.map((item) => <tr key={item.key}><td><div className="backup-key-cell" title={item.key}><strong>{backupDisplayName(item.key)}</strong><small>{backupPrefixLabel(item.key)}</small></div></td><td>{fmtDate(item.last_modified)}</td><td>{item.size_bytes ? fmtBytes(item.size_bytes) : "-"}</td><td><div className="row-actions"><IconButton title="下载解密后的压缩包" onClick={() => downloadBackup(item.key)}><Download size={15} /></IconButton><button className="ghost small danger-text" disabled={deletingBackupKey === item.key} onClick={() => removeBackup(item.key).catch((error) => toast("error", error.message))}>{deletingBackupKey === item.key ? "删除中" : "删除"}</button></div></td></tr>) : <tr><td colSpan={4} className="table-empty">{backupBusy === "list" ? "远端备份加载中..." : "暂无远端备份"}</td></tr>}</tbody></table></ScrollableTable></div></section><section className="panel"><PanelHead title="原始 JSON" subtitle="高级设置可以直接编辑" action={<button className="secondary" onClick={() => { const parsed = parseJSON(json) as SettingsType; save(parsed).catch((error) => toast("error", error.message)); }}>保存 JSON</button>} /><textarea className="json-editor settings-json" value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} /></section></div>;
+  async function sendSMTPTest() {
+    const to = smtpTestTo.trim();
+    if (!to) {
+      toast("error", "请先填写测试收件邮箱");
+      return;
+    }
+    setSMTPTestBusy(true);
+    try {
+      await api.testSMTPMail(token, to);
+      toast("success", `测试邮件已发送到 ${to}`);
+    } finally {
+      setSMTPTestBusy(false);
+    }
+  }
+
+  return (
+    <div className="settings-layout">
+      <section className="panel">
+        <PanelHead
+          title="常用设置"
+          subtitle="保存后会同步写入配置表"
+          action={<button onClick={() => save().catch((error) => toast("error", error.message))}>保存配置</button>}
+        />
+        <div className="settings-form">
+          <label><span>Proxy</span><input value={String(settings.proxy || "")} onChange={(event) => updateField("proxy", event.target.value)} /></label>
+          <label><span>Base URL</span><input value={String(settings.base_url || "")} onChange={(event) => updateField("base_url", event.target.value)} /></label>
+          <label><span>图片工作台固定模型</span><input value={String(settings.image_workbench_model || "gpt-image-2")} onChange={(event) => updateField("image_workbench_model", event.target.value)} placeholder="gpt-image-2" /></label>
+          <label><span>图片单次张数上限</span><input type="number" min={1} value={Number(settings.image_max_count || 4)} onChange={(event) => updateField("image_max_count", Number(event.target.value))} /></label>
+          <label className="wide"><span>公开允许模型，每行一个</span><textarea value={allowedPublicModels.join("\n")} onChange={(event) => updateField("allowed_public_models", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} placeholder={"gpt-image-2\ngpt-5\nauto"} /></label>
+          <label><span>账号自动刷新间隔（分钟）</span><input type="number" min={1} value={Number(settings.refresh_account_interval_minute || 5)} onChange={(event) => updateField("refresh_account_interval_minute", Number(event.target.value))} /></label>
+          <label><span>账号刷新并发（自动刷新/手动刷新共用）</span><input type="number" min={1} value={Number(settings.refresh_account_concurrency || 4)} onChange={(event) => updateField("refresh_account_concurrency", Number(event.target.value))} /></label>
+          <label><span>正常账号轮转批大小</span><input type="number" min={1} value={Number(settings.refresh_account_normal_batch_size || 8)} onChange={(event) => updateField("refresh_account_normal_batch_size", Number(event.target.value))} /></label>
+          <label><span>单账号默认图片并发</span><input type="number" min={1} value={Number(settings.image_account_concurrency || 1)} onChange={(event) => updateField("image_account_concurrency", Number(event.target.value))} /></label>
+          <label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label>
+          <label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label>
+          <label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label>
+          <label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label>
+          <label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label>
+        </div>
+      </section>
+
+      <section className="panel">
+        <PanelHead
+          title="SMTP 邮件"
+          subtitle="用于后续注册验证码发送，支持测试发送"
+          action={
+            <div className="actions">
+              <button onClick={() => save().catch((error) => toast("error", error.message))}>保存配置</button>
+              <button className="secondary" disabled={smtpTestBusy} onClick={() => sendSMTPTest().catch((error) => toast("error", error.message))}>
+                {smtpTestBusy ? "发送中" : "发送测试"}
+              </button>
+            </div>
+          }
+        />
+        <div className="settings-form">
+          <label className="inline"><input type="checkbox" checked={Boolean(smtpMail.enabled)} onChange={(event) => updateSMTPField("enabled", event.target.checked)} /><span>启用 SMTP</span></label>
+          <label className="inline">
+            <input
+              type="checkbox"
+              checked={Boolean(smtpMail.starttls ?? true)}
+              disabled={Boolean(smtpMail.implicit_tls)}
+              onChange={(event) => updateSMTPField("starttls", event.target.checked)}
+            />
+            <span>启用 STARTTLS</span>
+          </label>
+          <label className="inline">
+            <input
+              type="checkbox"
+              checked={Boolean(smtpMail.implicit_tls)}
+              onChange={(event) => {
+                const checked = event.target.checked;
+                updateField("smtp_mail", { ...smtpMail, implicit_tls: checked, starttls: checked ? false : smtpMail.starttls ?? true });
+              }}
+            />
+            <span>启用隐式 TLS / SSL（常用于 465）</span>
+          </label>
+          <label><span>SMTP Host</span><input value={String(smtpMail.host || "")} onChange={(event) => updateSMTPField("host", event.target.value)} placeholder="smtp.example.com" /></label>
+          <label><span>SMTP Port</span><input type="number" min={1} max={65535} value={Number(smtpMail.port ?? 587)} onChange={(event) => updateSMTPField("port", Number(event.target.value))} /></label>
+          <label><span>用户名</span><input value={String(smtpMail.username || "")} onChange={(event) => updateSMTPField("username", event.target.value)} placeholder="user@example.com" /></label>
+          <label><span>密码 / 授权码</span><input type="password" value={String(smtpMail.password || "")} onChange={(event) => updateSMTPField("password", event.target.value)} placeholder="SMTP password or app password" /></label>
+          <label><span>发件邮箱</span><input value={String(smtpMail.from_address || "")} onChange={(event) => updateSMTPField("from_address", event.target.value)} placeholder="no-reply@example.com" /></label>
+          <label><span>发件人名称</span><input value={String(smtpMail.from_name || "")} onChange={(event) => updateSMTPField("from_name", event.target.value)} placeholder="GPT Image Web" /></label>
+          <label><span>Reply-To</span><input value={String(smtpMail.reply_to || "")} onChange={(event) => updateSMTPField("reply_to", event.target.value)} placeholder="support@example.com" /></label>
+          <label><span>测试收件邮箱</span><input value={smtpTestTo} onChange={(event) => setSMTPTestTo(event.target.value)} placeholder="you@example.com" /></label>
+        </div>
+        <div className="detail-panel detail-panel-plain">
+          <p className="backup-note">测试发送会读取当前已保存的 SMTP 配置，并发送一封纯文本测试邮件。常见组合是 `587 + STARTTLS` 或 `465 + 隐式 TLS / SSL`。</p>
+        </div>
+      </section>
+
+      <section className="panel">
+        <PanelHead
+          title="备份"
+          subtitle="按间隔自动备份数据库和关键配置并上传到 Cloudflare R2"
+          action={
+            <div className="actions">
+              <button onClick={() => save().catch((error) => toast("error", error.message))}>保存配置</button>
+              <button className="secondary" disabled={backupBusy === "reload" || backupBusy === "list"} onClick={() => reloadBackupState().catch((error) => toast("error", error.message))}>{backupBusy === "reload" ? "刷新中" : "刷新状态"}</button>
+              <button className="secondary" disabled={backupBusy === "reload" || backupBusy === "list"} onClick={() => reloadBackups().catch((error) => toast("error", error.message))}>{backupBusy === "list" ? "列表刷新中" : "刷新列表"}</button>
+              <button disabled={backupBusy === "run"} onClick={() => runBackupNow().catch((error) => toast("error", error.message))}>{backupBusy === "run" ? "备份中" : "立即备份"}</button>
+            </div>
+          }
+        />
+        <div className="settings-form">
+          <label className="inline"><input type="checkbox" checked={Boolean(backup.enabled)} onChange={(event) => updateBackupField("enabled", event.target.checked)} /><span>启用自动备份</span></label>
+          <label className="inline"><input type="checkbox" checked={Boolean(backup.encrypt ?? true)} onChange={(event) => updateBackupField("encrypt", event.target.checked)} /><span>启用加密</span></label>
+          <label><span>备份间隔小时</span><input type="number" min={0} max={720} value={Number(backup.schedule_hour ?? 24)} onChange={(event) => updateBackupField("schedule_hour", Number(event.target.value))} /></label>
+          <label><span>备份间隔分钟</span><input type="number" min={0} max={59} value={Number(backup.schedule_minute ?? 0)} onChange={(event) => updateBackupField("schedule_minute", Number(event.target.value))} /></label>
+          <label><span>轮替保留份数</span><input type="number" min={1} value={Number(backup.keep_latest ?? 7)} onChange={(event) => updateBackupField("keep_latest", Number(event.target.value))} /></label>
+          <label><span>R2 Prefix</span><input value={String(backup.r2_prefix || "gpt-image-web")} onChange={(event) => updateBackupField("r2_prefix", event.target.value)} placeholder="gpt-image-web" /></label>
+          <label><span>R2 Account ID</span><input value={String(backup.r2_account_id || "")} onChange={(event) => updateBackupField("r2_account_id", event.target.value)} /></label>
+          <label><span>R2 Access Key ID</span><input value={String(backup.r2_access_key_id || "")} onChange={(event) => updateBackupField("r2_access_key_id", event.target.value)} /></label>
+          <label><span>R2 Secret Access Key</span><input type="password" value={String(backup.r2_secret_access_key || "")} onChange={(event) => updateBackupField("r2_secret_access_key", event.target.value)} /></label>
+          <label><span>R2 Bucket</span><input value={String(backup.r2_bucket || "")} onChange={(event) => updateBackupField("r2_bucket", event.target.value)} /></label>
+          <label className="wide"><span>备份加密口令</span><input type="password" value={String(backup.passphrase || "")} onChange={(event) => updateBackupField("passphrase", event.target.value)} placeholder="用于 AES-256-GCM 加密备份包" /></label>
+          <label className="inline"><input type="checkbox" checked={Boolean(backup.include_env ?? true)} onChange={(event) => updateBackupField("include_env", event.target.checked)} /><span>包含 .env</span></label>
+          <label className="inline"><input type="checkbox" checked={Boolean(backup.include_compose ?? true)} onChange={(event) => updateBackupField("include_compose", event.target.checked)} /><span>包含 docker-compose.yml</span></label>
+          <label className="inline"><input type="checkbox" checked={Boolean(backup.include_version ?? true)} onChange={(event) => updateBackupField("include_version", event.target.checked)} /><span>包含 VERSION</span></label>
+        </div>
+
+        <div className="detail-panel detail-panel-plain">
+          <div className="detail-grid detail-grid-two">
+            <DetailItem label="状态" value={backupState?.last_status || (backupState?.enabled ? "Idle" : "Disabled")} />
+            <DetailItem label="下次执行" value={fmtDate(backupState?.next_run_at)} />
+            <DetailItem label="当前间隔" value={`${Number(backupState?.schedule_hour || 0)} 小时 ${Number(backupState?.schedule_minute || 0)} 分钟`} />
+            <DetailItem label="最近开始" value={fmtDate(backupState?.last_started_at)} />
+            <DetailItem label="最近结束" value={fmtDate(backupState?.last_finished_at)} />
+            <DetailItem label="耗时" value={formatDuration(backupState?.last_duration_ms)} />
+            <DetailItem label="触发方式" value={String(backupState?.last_trigger || "-")} />
+            <DetailItem label="最近对象" value={String(backupState?.last_artifact?.key || "-")} />
+            <DetailItem label="最近大小" value={backupState?.last_artifact?.size_bytes ? fmtBytes(backupState.last_artifact.size_bytes) : "-"} />
+          </div>
+          <p className="backup-note">`0 小时 1 分钟` 表示每 1 分钟自动备份一次；最小间隔为 1 分钟。</p>
+          {backupState?.last_error ? <p className="detail-error">{backupState.last_error}</p> : null}
+        </div>
+
+        <div className="detail-panel detail-panel-plain">
+          <div className="backup-list-head">
+            <div className="backup-list-title">
+              <strong>最近远端备份</strong>
+              <span>{backupItems.length ? `${backupItems.length} 项` : "暂无远端备份"}</span>
+            </div>
+            <span className="chip">下载时自动返回解密后的 tar.gz</span>
+          </div>
+          <ScrollableTable tableRef={backupTableRef} className="data-table-wrap" height="medium">
+            <table className="activity-table backup-table">
+              <thead>
+                <tr>
+                  <th>备份文件</th>
+                  <th>最近修改</th>
+                  <th>大小</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {backupItems.length ? backupItems.map((item) => (
+                  <tr key={item.key}>
+                    <td>
+                      <div className="backup-key-cell" title={item.key}>
+                        <strong>{backupDisplayName(item.key)}</strong>
+                        <small>{backupPrefixLabel(item.key)}</small>
+                      </div>
+                    </td>
+                    <td>{fmtDate(item.last_modified)}</td>
+                    <td>{item.size_bytes ? fmtBytes(item.size_bytes) : "-"}</td>
+                    <td>
+                      <div className="row-actions">
+                        <IconButton title="下载解密后的压缩包" onClick={() => downloadBackup(item.key)}><Download size={15} /></IconButton>
+                        <button className="ghost small danger-text" disabled={deletingBackupKey === item.key} onClick={() => removeBackup(item.key).catch((error) => toast("error", error.message))}>
+                          {deletingBackupKey === item.key ? "删除中" : "删除"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )) : (
+                  <tr>
+                    <td colSpan={4} className="table-empty">{backupBusy === "list" ? "远端备份加载中..." : "暂无远端备份"}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </ScrollableTable>
+        </div>
+      </section>
+
+      <section className="panel">
+        <PanelHead
+          title="原始 JSON"
+          subtitle="高级设置可以直接编辑"
+          action={<button className="secondary" onClick={() => { const parsed = parseJSON(json) as SettingsType; save(parsed).catch((error) => toast("error", error.message)); }}>保存 JSON</button>}
+        />
+        <textarea className="json-editor settings-json" value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} />
+      </section>
+    </div>
+  );
 }
 
 function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { token: string; registerRuntime: RegisterRuntime | null; setRegisterRuntime: React.Dispatch<React.SetStateAction<RegisterRuntime | null>>; toast: (type: Toast["type"], message: string) => void }) {

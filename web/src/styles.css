@@ -310,7 +310,8 @@ span.composer-pill { display: inline-flex; align-items: center; }
 .detail-image-hero { padding: 0; overflow: hidden; border-radius: 10px; background: #eef2f7; }
 .detail-image-hero img { width: 100%; max-height: 62vh; object-fit: contain; display: block; background: #f4f7fb; }
 
-.playground-grid, .settings-layout, .register-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, .82fr); gap: 14px; align-items: start; }
+.playground-grid, .register-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, .82fr); gap: 14px; align-items: start; }
+.settings-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
 .play-controls { display: grid; grid-template-columns: 1.2fr 1fr 120px auto auto; gap: 8px; align-items: end; margin-bottom: 10px; }
 .json-editor { min-height: 440px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.5; }
 .settings-json { min-height: 560px; }
@@ -451,7 +452,7 @@ span.composer-pill { display: inline-flex; align-items: center; }
 
 @media (max-width: 1280px) {
   .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .dashboard-grid, .playground-grid, .settings-layout, .register-layout { grid-template-columns: 1fr; }
+  .dashboard-grid, .playground-grid, .register-layout { grid-template-columns: 1fr; }
   .play-controls, .toolbar.user-toolbar, .filters, .activity-filters, .filters.images-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .creator-page { grid-template-columns: 220px minmax(0, 1fr); }
 }
