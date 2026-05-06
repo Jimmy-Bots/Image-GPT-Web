@@ -1,4 +1,4 @@
-import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, BackupArtifact, BackupRemoteItem, BackupState, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, Settings, StoredImage, SystemLog, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, BackupArtifact, BackupRemoteItem, BackupState, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, RegisterStatus, Settings, StoredImage, SystemLog, User } from "./types";
 
 const storageKey = "gpt_image_web_token";
 
@@ -98,17 +98,24 @@ function withQuery(path: string, params: Record<string, string | number | boolea
 
 export const api = {
   health: () => request<{ ok: boolean; version?: string }>("", "/healthz"),
+  registerStatus: () => request<{ status: RegisterStatus }>("", "/auth/register/status"),
   loginWithPassword: (email: string, password: string) =>
     request<AuthResponse>("", "/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password })
     }),
-  registerWithPassword: (body: { email: string; name?: string; password: string }) =>
+  registerWithPassword: (body: { email: string; name?: string; password: string; verification_code: string }) =>
     request<{ user: User; token: string; expires_at?: string }>("", "/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
+    }),
+  sendRegisterCode: (email: string) =>
+    request<{ ok: boolean }>("", "/auth/register/send-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
     }),
   me: (token: string) => request<MeResponse>(token, "/api/me"),
   version: (token: string) => request<{ version: string }>(token, "/version"),

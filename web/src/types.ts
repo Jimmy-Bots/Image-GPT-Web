@@ -23,6 +23,25 @@ export type AuthResponse = {
   user?: User;
 };
 
+export type RegisterStatus = {
+  enabled: boolean;
+  needs_bootstrap: boolean;
+  ordinary_users: number;
+  max_ordinary_users: number;
+  remaining_ordinary: number;
+  allowed_email_domains: string[];
+  code_cooldown_seconds: number;
+  can_register: boolean;
+  disabled_reason?: string;
+};
+
+export type RegistrationSettingsState = {
+  public_registration_enabled?: boolean;
+  register_code_cooldown_seconds?: number;
+  register_allowed_email_domains?: string[];
+  register_max_ordinary_users?: number;
+};
+
 export type Account = {
   token_ref: string;
   access_token_masked: string;

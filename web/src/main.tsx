@@ -28,7 +28,7 @@ import {
   X
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken, withTokenQuery } from "./api";
-import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
 import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass } from "./utils";
 import "./styles.css";
 
@@ -187,6 +187,45 @@ function describeWorkbenchError(error: unknown) {
   return message;
 }
 
+function describeRegisterError(error: unknown) {
+  const message = error instanceof Error ? error.message : "操作失败";
+  const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code || "") : "";
+  const normalized = message.toLowerCase();
+
+  if (code === "registration_disabled") {
+    if (normalized.includes("quota is full")) return "当前注册名额已满，暂时无法继续注册。";
+    return "当前暂未开放公开注册。";
+  }
+  if (code === "email_exists") return "这个邮箱已经注册过了，可以直接登录。";
+  if (code === "bad_request") {
+    if (normalized.includes("invalid email address")) return "邮箱格式不正确，请检查后重试。";
+    if (normalized.includes("email domain is not allowed")) return "该邮箱后缀暂不支持注册，请更换符合要求的邮箱。";
+    if (normalized.includes("verification code")) return "请填写正确的邮箱验证码。";
+    if (normalized.includes("name")) return "请输入名字后再继续。";
+    if (normalized.includes("email")) return "请输入邮箱后再继续。";
+  }
+  if (code === "verification_failed") {
+    if (normalized.includes("expired")) return "验证码已过期，请重新发送。";
+    if (normalized.includes("invalid")) return "验证码不正确，请重新输入。";
+    return "验证码校验失败，请重试。";
+  }
+  if (code === "register_code_cooldown") {
+    const match = message.match(/(\d+)/);
+    return match ? `发送过于频繁，请等待 ${match[1]} 秒后再试。` : "发送过于频繁，请稍后再试。";
+  }
+  if (code === "smtp_config_invalid") return "管理员尚未完成注册邮件配置，暂时无法发送验证码。";
+  if (code === "register_send_code_failed") return "验证码发送失败，请稍后再试；如果多次失败，请联系管理员检查邮件配置。";
+  if (code === "create_user_failed") {
+    if (normalized.includes("already exists") || normalized.includes("duplicate")) return "这个邮箱已经注册过了，可以直接登录。";
+    return "注册失败，请稍后重试。";
+  }
+  if (code === "session_error") return "注册成功，但登录态创建失败，请稍后直接登录。";
+  if (normalized.includes("failed to fetch") || normalized.includes("networkerror") || normalized.includes("network request failed")) {
+    return "网络连接失败，请确认服务在线后重试。";
+  }
+  return message;
+}
+
 function extractWorkbenchTaskError(task: ImageTask, fallback?: string) {
   const raw = task.error || fallback || "";
   if (!raw) return "";
@@ -251,6 +290,7 @@ function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [lightbox, setLightbox] = useState<{ src: string; title?: string } | null>(null);
   const [loginError, setLoginError] = useState("");
+  const [registerStatus, setRegisterStatus] = useState<RegisterStatus | null>(null);
 
   const isAdmin = identity?.role === "admin";
   function toast(type: Toast["type"], message: string) {
@@ -354,6 +394,26 @@ function App() {
   }, [token]);
 
   useEffect(() => {
+    if (token) return;
+    let cancelled = false;
+    const load = () => {
+      api.registerStatus().then((data) => {
+        if (!cancelled) {
+          setRegisterStatus(data.status || null);
+        }
+      }).catch(() => {
+        if (!cancelled) {
+          setRegisterStatus(null);
+        }
+      });
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
     if (!token) {
       api.version("").then((data) => setVersion(data.version || "-")).catch(() => {});
       return;
@@ -418,6 +478,27 @@ function App() {
     }
   }
 
+  async function submitRegister(email: string, name: string, password: string, verificationCode: string) {
+    if (busy) return;
+    setBusy("login");
+    setLoginError("");
+    try {
+      const data = await api.registerWithPassword({
+        email: email.trim(),
+        name: name.trim(),
+        password,
+        verification_code: verificationCode.trim()
+      });
+      setStoredToken(data.token);
+      setToken(data.token);
+      await bootstrap(data.token);
+    } catch (error) {
+      setLoginError(describeRegisterError(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function logout() {
     setStoredToken("");
     setToken("");
@@ -428,7 +509,7 @@ function App() {
   }
 
   if (!token || !identity) {
-    return <LoginView busy={busy === "login"} error={loginError} version={version} healthBadge={healthBadge} onLogin={submitLogin} />;
+    return <LoginView busy={busy === "login"} error={loginError} version={version} healthBadge={healthBadge} registerStatus={registerStatus} onLogin={submitLogin} onRegister={submitRegister} />;
   }
 
   if (!adminMode || !isAdmin) {
@@ -527,11 +608,64 @@ function App() {
   );
 }
 
-function LoginView({ busy, error, version, healthBadge, onLogin }: { busy: boolean; error: string; version: string; healthBadge: "healthy" | "offline"; onLogin: (email: string, password: string) => void }) {
+function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin, onRegister }: { busy: boolean; error: string; version: string; healthBadge: "healthy" | "offline"; registerStatus: RegisterStatus | null; onLogin: (email: string, password: string) => void; onRegister: (email: string, name: string, password: string, verificationCode: string) => void }) {
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
   const [localError, setLocalError] = useState("");
+  const [notice, setNotice] = useState("");
   const [agreementChecked, setAgreementChecked] = useState(false);
+  const [sendingCode, setSendingCode] = useState(false);
+  const [cooldownUntil, setCooldownUntil] = useState<number>(0);
+  const [cooldownNow, setCooldownNow] = useState(Date.now());
+  const registerDisabled = mode === "register" && registerStatus !== null && !registerStatus.can_register;
+  const cooldownRemaining = Math.max(0, Math.ceil((cooldownUntil - cooldownNow) / 1000));
+
+  useEffect(() => {
+    if (!cooldownUntil) return;
+    const timer = window.setInterval(() => setCooldownNow(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, [cooldownUntil]);
+
+  useEffect(() => {
+    if (cooldownRemaining <= 0) {
+      setCooldownUntil(0);
+    }
+  }, [cooldownRemaining]);
+
+  async function sendCode() {
+    const value = email.trim();
+    setLocalError("");
+    setNotice("");
+    if (registerDisabled) {
+      setLocalError(registerStatus?.disabled_reason || "当前无法注册");
+      return;
+    }
+    if (cooldownRemaining > 0) {
+      setLocalError(`请等待 ${cooldownRemaining}s 后再发送验证码`);
+      return;
+    }
+    if (!value) {
+      setLocalError("请输入邮箱");
+      return;
+    }
+    setSendingCode(true);
+    try {
+      await api.sendRegisterCode(value);
+      const seconds = Math.max(1, Number(registerStatus?.code_cooldown_seconds || 60));
+      setCooldownUntil(Date.now() + seconds * 1000);
+      setCooldownNow(Date.now());
+      setNotice(`验证码已发送到 ${value}，请注意查收。`);
+    } catch (error) {
+      setLocalError(describeRegisterError(error));
+    } finally {
+      setSendingCode(false);
+    }
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault();
     setLocalError("");
@@ -539,12 +673,53 @@ function LoginView({ busy, error, version, healthBadge, onLogin }: { busy: boole
       setLocalError("请输入邮箱和密码");
       return;
     }
-    if (!agreementChecked) {
-      setLocalError("请先阅读并确认使用说明");
+    if (mode === "register") {
+      if (registerDisabled) {
+        setLocalError(registerStatus?.disabled_reason || "当前无法注册");
+        return;
+      }
+      if (!name.trim()) {
+        setLocalError("请输入名字");
+        return;
+      }
+      if (!verificationCode.trim()) {
+        setLocalError("请输入邮箱验证码");
+        return;
+      }
+      if (!confirmPassword.trim()) {
+        setLocalError("请再次输入密码");
+        return;
+      }
+      if (password !== confirmPassword) {
+        setLocalError("两次输入的密码不一致，请重新检查");
+        return;
+      }
+      if (!agreementChecked) {
+        setLocalError("请先阅读并确认使用说明");
+        return;
+      }
+      onRegister(email, name, password, verificationCode);
       return;
     }
     onLogin(email, password);
   }
+
+  useEffect(() => {
+    setLocalError("");
+    setNotice("");
+    setVerificationCode("");
+    setConfirmPassword("");
+  }, [mode]);
+
+  const quotaText = registerStatus
+    ? registerStatus.max_ordinary_users > 0
+      ? `${Math.max(0, registerStatus.remaining_ordinary)}/${registerStatus.max_ordinary_users}`
+      : "∞"
+    : "-";
+  const domainText = registerStatus?.allowed_email_domains?.length
+    ? registerStatus.allowed_email_domains.map((item) => `@${item}`).join("、")
+    : "不限";
+
   return (
     <main className="login-view">
       <form className="login-panel" onSubmit={submit}>
@@ -553,22 +728,49 @@ function LoginView({ busy, error, version, healthBadge, onLogin }: { busy: boole
           <div className="brand-mark">GI</div>
           <div>
             <strong>GPT Image Web</strong>
-            <span>{version && version !== "-" ? `v${version}` : "继续登录"}</span>
+            <span>{version && version !== "-" ? `v${version}` : mode === "login" ? "继续登录" : "创建账号"}</span>
           </div>
         </div>
-        <label><span>Email</span><input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" placeholder="cc98@zju.edu.cn" /></label>
-        <label><span>Password</span><input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="********" placeholder="账户密码" /></label>
-        <div className="login-notice">
-          <p>为完成功能实现，服务端可能会暂存你的部分账户信息、请求内容、任务日志和图片结果，并在用户使用结束后按系统策略删除。</p>
-          <p>这些数据不会被用于非法用途，如果你介意相关暂存，请不要继续使用。</p>
-          <p>本系统仅提供工具能力，用户应确保其输入、生成内容和使用行为合法合规；因违法违规使用产生的责任由用户本人承担。</p>
-          <label className="login-agreement">
-            <input type="checkbox" checked={agreementChecked} onChange={(event) => setAgreementChecked(event.target.checked)} />
-            <span>我已阅读并同意上述说明，知悉数据与使用责任边界。</span>
-          </label>
+        <div className="auth-switch">
+          <button type="button" className={classNames(mode === "login" && "active")} onClick={() => setMode("login")}>登录</button>
+          <button type="button" className={classNames(mode === "register" && "active")} onClick={() => setMode("register")}>注册</button>
         </div>
+        {mode === "register" ? (
+          <div className="auth-meta">
+            <span>剩余名额 {quotaText}</span>
+            <span>邮箱后缀 {domainText}</span>
+          </div>
+        ) : null}
+        {mode === "register" ? <label><span>Name</span><input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" placeholder="你的名字" /></label> : null}
+        <label><span>Email</span><input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" placeholder="cc98@zju.edu.cn" /></label>
+        {mode === "register" ? (
+          <label>
+            <span>Verification Code</span>
+            <div className="verify-row">
+              <input value={verificationCode} onChange={(event) => setVerificationCode(event.target.value)} inputMode="numeric" placeholder="6 位验证码" />
+              <button type="button" className="secondary small" disabled={sendingCode || cooldownRemaining > 0 || registerDisabled} onClick={() => sendCode().catch((error) => setLocalError(error instanceof Error ? error.message : "验证码发送失败"))}>
+                {sendingCode ? "发送中" : (cooldownRemaining > 0 ? `${cooldownRemaining}s` : "发送验证码")}
+              </button>
+            </div>
+          </label>
+        ) : null}
+        <label><span>Password</span><input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder="账户密码" /></label>
+        {mode === "register" ? <label><span>Confirm Password</span><input value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="再次输入密码" /></label> : null}
+        {mode === "register" ? (
+          <div className="login-notice">
+            <p>为完成功能实现，服务端可能会暂存你的部分账户信息、请求内容、任务日志和图片结果，并在用户使用结束后按系统策略删除。</p>
+            <p>这些数据不会被用于非法用途，如果你介意相关暂存，请不要继续使用。</p>
+            <p>本系统仅提供工具能力，用户应确保其输入、生成内容和使用行为合法合规；因违法违规使用产生的责任由用户本人承担。</p>
+            <label className="login-agreement">
+              <input type="checkbox" checked={agreementChecked} onChange={(event) => setAgreementChecked(event.target.checked)} />
+              <span>我已阅读并同意上述说明，知悉数据与使用责任边界。</span>
+            </label>
+          </div>
+        ) : null}
+        {notice ? <p className="form-success">{notice}</p> : null}
+        {mode === "register" && registerDisabled ? <p className="form-error">{describeRegisterError({ code: "registration_disabled", message: registerStatus?.disabled_reason || "public registration is disabled" })}</p> : null}
         {localError || error ? <p className="form-error">{localError || error}</p> : null}
-        <button disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : null}登录</button>
+        <button disabled={busy || registerDisabled}>{busy ? <LoaderCircle className="spin" size={16} /> : null}{mode === "login" ? "登录" : "注册"}</button>
       </form>
     </main>
   );
@@ -2184,7 +2386,7 @@ function Playground({ token, models, toast, openLightbox }: { token: string; mod
 }
 
 function UsersPanel({ token, users, setUsers, toast }: { token: string; users: User[]; setUsers: (items: User[]) => void; toast: (type: Toast["type"], message: string) => void }) {
-  const [form, setForm] = useState({ email: "", name: "", password: "", role: "user", quotaUnlimited: false, permanentQuota: "0", temporaryQuota: "0" });
+  const [form, setForm] = useState({ email: "", name: "", password: "", role: "user", quotaUnlimited: false, permanentQuota: "0", temporaryQuota: "" });
   const [newKey, setNewKey] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [batchTempOpen, setBatchTempOpen] = useState(false);
@@ -2199,6 +2401,7 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [total, setTotal] = useState(0);
+  const [defaultTemporaryQuota, setDefaultTemporaryQuota] = useState(10);
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   useHorizontalWheelScroll(tableWrapRef);
   const selectedSet = useMemo(() => new Set(selected), [selected]);
@@ -2207,11 +2410,15 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
   useEffect(() => setPage(1), [query, status, role, pageSize]);
   useEffect(() => {
     let cancelled = false;
-    api.users(token, { page, pageSize, query, status, role }).then((data) => {
+    Promise.all([
+      api.users(token, { page, pageSize, query, status, role }),
+      api.settings(token)
+    ]).then(([data, settingsData]) => {
       if (cancelled) return;
       setUsers(data.items || []);
       setTotal(Number(data.total || 0));
       setSelected((prev) => prev.filter((id) => (data.items || []).some((item) => item.id === id)));
+      setDefaultTemporaryQuota(Math.max(0, Number(settingsData.config?.default_new_user_temporary_quota || 0)));
     }).catch((error) => toast("error", error instanceof Error ? error.message : "加载用户失败"));
     return () => {
       cancelled = true;
@@ -2225,7 +2432,9 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
   }
   async function create() {
     const quotaUnlimited = form.role === "admin" ? true : form.quotaUnlimited;
-    const temporaryQuota = Math.max(0, Number(form.temporaryQuota) || 0);
+    const temporaryQuotaText = form.temporaryQuota.trim();
+    const temporaryQuotaValue = temporaryQuotaText === "" ? defaultTemporaryQuota : Math.max(0, Number(temporaryQuotaText) || 0);
+    const temporaryQuota = form.role === "admin" || quotaUnlimited ? 0 : temporaryQuotaValue;
     const data = await api.createUser(token, {
       email: form.email,
       name: form.name,
@@ -2233,10 +2442,10 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
       role: form.role,
       quota_unlimited: quotaUnlimited,
       permanent_quota: quotaUnlimited ? 0 : Math.max(0, Number(form.permanentQuota) || 0),
-      temporary_quota: quotaUnlimited ? 0 : temporaryQuota,
+      temporary_quota: temporaryQuota,
       temporary_quota_date: temporaryQuota > 0 ? localDayString() : ""
     });
-    setForm({ email: "", name: "", password: "", role: "user", quotaUnlimited: false, permanentQuota: "0", temporaryQuota: "0" });
+    setForm({ email: "", name: "", password: "", role: "user", quotaUnlimited: false, permanentQuota: "0", temporaryQuota: "" });
     setCreateOpen(false);
     if (data.key) setNewKey(data.key);
     await reload();
@@ -2262,7 +2471,7 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
   }
   return (
     <section className="panel">
-      <PanelHead title="用户" subtitle="创建用户、编辑资料、删除账号，并维护每个用户唯一 API Key" action={<button onClick={() => setCreateOpen(true)}>创建用户</button>} />
+      <PanelHead title="用户" subtitle="创建用户、编辑资料、删除账号，并维护每个用户唯一 API Key" action={<button onClick={() => { setForm({ email: "", name: "", password: "", role: "user", quotaUnlimited: false, permanentQuota: "0", temporaryQuota: "" }); setCreateOpen(true); }}>创建用户</button>} />
       <div className="toolbar user-toolbar form-toolbar">
         <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱或名称" />
         <div className="toolbar-actions"><span className="chip">{total} 用户</span></div>
@@ -2298,7 +2507,7 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
             <ControlField label="角色"><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option>user</option><option>admin</option></select></ControlField>
             <ControlField label="无限额度"><select value={form.role === "admin" || form.quotaUnlimited ? "true" : "false"} onChange={(event) => setForm({ ...form, quotaUnlimited: event.target.value === "true" })} disabled={form.role === "admin"}><option value="false">有限额度</option><option value="true">无限额度</option></select></ControlField>
             <ControlField label="永久额度"><input type="number" min={0} value={form.permanentQuota} onChange={(event) => setForm({ ...form, permanentQuota: event.target.value })} disabled={form.role === "admin" || form.quotaUnlimited} /></ControlField>
-            <ControlField label="临时额度（每天自动发放）"><input type="number" min={0} value={form.temporaryQuota} onChange={(event) => setForm({ ...form, temporaryQuota: event.target.value })} disabled={form.role === "admin" || form.quotaUnlimited} /></ControlField>
+            <ControlField label="临时额度（每天自动发放）"><input type="number" min={0} value={form.temporaryQuota} onChange={(event) => setForm({ ...form, temporaryQuota: event.target.value })} disabled={form.role === "admin" || form.quotaUnlimited} placeholder={`默认 ${defaultTemporaryQuota}`} /></ControlField>
           </div>
           <div className="modal-actions"><button className="secondary" onClick={() => setCreateOpen(false)}>取消</button><button onClick={() => create().catch((error) => toast("error", error.message))}>创建用户</button></div>
         </div>
@@ -2569,6 +2778,11 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
           <label><span>单账号默认图片并发</span><input type="number" min={1} value={Number(settings.image_account_concurrency || 1)} onChange={(event) => updateField("image_account_concurrency", Number(event.target.value))} /></label>
           <label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label>
           <label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label>
+          <label><span>新用户默认临时额度</span><input type="number" min={0} value={Number(settings.default_new_user_temporary_quota || 0)} onChange={(event) => updateField("default_new_user_temporary_quota", Math.max(0, Number(event.target.value) || 0))} /></label>
+          <label className="inline"><input type="checkbox" checked={Boolean(settings.public_registration_enabled)} onChange={(event) => updateField("public_registration_enabled", event.target.checked)} /><span>启用公开注册</span></label>
+          <label><span>注册验证码冷却（秒）</span><input type="number" min={1} value={Number(settings.register_code_cooldown_seconds || 60)} onChange={(event) => updateField("register_code_cooldown_seconds", Math.max(1, Number(event.target.value) || 60))} /></label>
+          <label><span>普通用户上限</span><input type="number" min={0} value={Number(settings.register_max_ordinary_users || 0)} onChange={(event) => updateField("register_max_ordinary_users", Math.max(0, Number(event.target.value) || 0))} placeholder="0 表示不限" /></label>
+          <label className="wide"><span>可注册邮箱后缀，每行一个</span><textarea value={Array.isArray(settings.register_allowed_email_domains) ? settings.register_allowed_email_domains.join("\n") : ""} onChange={(event) => updateField("register_allowed_email_domains", event.target.value.split("\n").map((line) => line.trim().replace(/^@+/, "")).filter(Boolean))} placeholder={"gmail.com\nzju.edu.cn"} /></label>
           <label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label>
           <label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label>
           <label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label>
