@@ -12,6 +12,13 @@ func (s *Server) handleGetRegisterState(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, s.register.Runtime())
 }
 
+func (s *Server) handleGetRegisterLogs(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.register.Logs()})
+}
+
 func (s *Server) handleSaveRegisterConfig(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -26,7 +33,7 @@ func (s *Server) handleSaveRegisterConfig(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "save_register_config_failed", err.Error())
 		return
 	}
-	s.addLog(r, "register", "保存注册配置", map[string]any{"config": state.Config})
+	s.addLog(r, "account", "保存注册配置", map[string]any{"config": state.Config})
 	writeJSON(w, http.StatusOK, map[string]any{"state": state})
 }
 
@@ -39,7 +46,7 @@ func (s *Server) handleStartRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "start_register_failed", err.Error())
 		return
 	}
-	s.addLog(r, "register", "启动注册任务", map[string]any{"time": time.Now().UTC()})
+	s.addLog(r, "account", "启动注册任务", map[string]any{"time": time.Now().UTC()})
 	writeJSON(w, http.StatusOK, data)
 }
 
@@ -48,7 +55,7 @@ func (s *Server) handleStopRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := s.register.Stop()
-	s.addLog(r, "register", "停止注册任务", map[string]any{"time": time.Now().UTC()})
+	s.addLog(r, "account", "停止注册任务", map[string]any{"time": time.Now().UTC()})
 	writeJSON(w, http.StatusOK, data)
 }
 
@@ -61,6 +68,6 @@ func (s *Server) handleRunRegisterOnce(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "register_once_failed", err.Error())
 		return
 	}
-	s.addLog(r, "register", "执行单次注册", map[string]any{"time": time.Now().UTC()})
+	s.addLog(r, "account", "执行单次注册", map[string]any{"time": time.Now().UTC()})
 	writeJSON(w, http.StatusOK, data)
 }

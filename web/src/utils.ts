@@ -8,6 +8,34 @@ export function fmtDate(value?: string | null) {
   return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+export function formatRemainingTime(value?: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const diff = date.getTime() - Date.now();
+  if (diff <= 0) return `已到期 · ${fmtDate(value)}`;
+  const totalMinutes = Math.ceil(diff / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+  if (days > 0) parts.push(`${days}天`);
+  if (hours > 0) parts.push(`${hours}小时`);
+  if (minutes > 0 || parts.length === 0) parts.push(`${minutes}分钟`);
+  return `${parts.join("")}后 · ${fmtDate(value)}`;
+}
+
+export function formatNextRefreshTime(updatedAt?: string | null, intervalMinutes = 5) {
+  if (!updatedAt) return "-";
+  const date = new Date(updatedAt);
+  if (Number.isNaN(date.getTime())) return "-";
+  const next = new Date(date.getTime() + Math.max(1, intervalMinutes) * 60000);
+  const remaining = next.getTime() - Date.now();
+  if (remaining <= 0) return `待刷新 · ${fmtDate(next.toISOString())}`;
+  const minutes = Math.ceil(remaining / 60000);
+  return `${minutes}分钟后 · ${fmtDate(next.toISOString())}`;
+}
+
 export function fmtBytes(value: number) {
   if (!Number.isFinite(value)) return "-";
   if (value < 1024) return `${value} B`;

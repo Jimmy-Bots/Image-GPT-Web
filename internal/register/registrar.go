@@ -67,6 +67,7 @@ func New(options Options) (*Registrar, error) {
 }
 
 func (r *Registrar) Register(ctx context.Context) (RegisterResult, error) {
+	runID := randomID(r.random, 4)
 	client, err := r.httpFactory.New(r.cfg)
 	if err != nil {
 		return RegisterResult{}, err
@@ -82,43 +83,61 @@ func (r *Registrar) Register(ctx context.Context) (RegisterResult, error) {
 		logger:   r.logger,
 	}
 
-	r.logf(ctx, "info", "creating mailbox")
+	r.logRegistration(ctx, "info", runMessage(runID, "creating mailbox"), nil)
 	mailbox, err := r.mail.CreateMailbox(ctx)
 	if err != nil {
+		r.logRegistration(ctx, "error", runMessage(runID, "create mailbox failed"), map[string]any{"error": err.Error()})
 		return RegisterResult{}, err
 	}
 	email := strings.TrimSpace(mailbox.Address)
 	if email == "" {
+		r.logRegistration(ctx, "error", runMessage(runID, "mail provider returned empty address"), nil)
 		return RegisterResult{}, errors.New("mail provider returned empty address")
 	}
+	r.logRegistration(ctx, "info", runMessage(runID, "mailbox ready"), map[string]any{"email": email})
 	password := r.identity.Password()
 	firstName, lastName := r.identity.Name()
 	fullName := joinFullName(firstName, lastName)
 	birthdate := r.identity.Birthdate()
 
+	r.logRegistration(ctx, "info", runMessage(runID, "platform authorize"), map[string]any{"email": email})
 	if err := state.platformAuthorize(ctx, email); err != nil {
+		r.logRegistration(ctx, "error", runMessage(runID, "platform authorize failed"), map[string]any{"email": email, "error": err.Error()})
 		return RegisterResult{}, err
 	}
+	r.logRegistration(ctx, "info", runMessage(runID, "register user"), map[string]any{"email": email})
 	if err := state.registerUser(ctx, email, password); err != nil {
+		r.logRegistration(ctx, "error", runMessage(runID, "register user failed"), map[string]any{"email": email, "error": err.Error()})
 		return RegisterResult{}, err
 	}
+	r.logRegistration(ctx, "info", runMessage(runID, "send email otp"), map[string]any{"email": email})
 	if err := state.sendOTP(ctx); err != nil {
+		r.logRegistration(ctx, "error", runMessage(runID, "send email otp failed"), map[string]any{"email": email, "error": err.Error()})
 		return RegisterResult{}, err
 	}
 
+	r.logRegistration(ctx, "info", runMessage(runID, "waiting for verification code"), map[string]any{"email": email})
 	code, err := r.waitForCode(ctx, mailbox)
 	if err != nil {
+		r.logRegistration(ctx, "error", runMessage(runID, "wait for verification code failed"), map[string]any{"email": email, "error": err.Error()})
 		return RegisterResult{}, err
 	}
+	r.logRegistration(ctx, "info", runMessage(runID, "verification code received"), map[string]any{"email": email, "code": code})
+	r.logRegistration(ctx, "info", runMessage(runID, "validate email otp"), map[string]any{"email": email, "code": code})
 	if err := state.validateOTP(ctx, code); err != nil {
+		r.logRegistration(ctx, "error", runMessage(runID, "validate email otp failed"), map[string]any{"email": email, "code": code, "error": err.Error()})
 		return RegisterResult{}, err
 	}
+	r.logRegistration(ctx, "info", runMessage(runID, "create account profile"), map[string]any{"email": email})
 	if err := state.createAccount(ctx, fullName, birthdate); err != nil {
+		r.logRegistration(ctx, "error", runMessage(runID, "create account profile failed"), map[string]any{"email": email, "error": err.Error()})
 		return RegisterResult{}, err
 	}
 
+	r.logRegistration(ctx, "info", runMessage(runID, "exchange platform tokens"), map[string]any{"email": email})
 	tokens, err := state.loginAndExchangeTokens(ctx, email, password, mailbox, r.mail)
 	if err != nil {
+		r.logRegistration(ctx, "error", runMessage(runID, "exchange platform tokens failed"), map[string]any{"email": email, "error": err.Error()})
 		return RegisterResult{}, err
 	}
 	result := RegisterResult{
@@ -130,15 +149,19 @@ func (r *Registrar) Register(ctx context.Context) (RegisterResult, error) {
 		CreatedAt:    r.now(),
 	}
 	if result.AccessToken == "" {
+		r.logRegistration(ctx, "error", runMessage(runID, "empty access token"), map[string]any{"email": email})
 		return RegisterResult{}, errors.New("empty access token")
 	}
+	r.logRegistration(ctx, "info", runMessage(runID, "store account token"), map[string]any{"email": email})
 	if _, err := r.accountRepo.AddAccessToken(ctx, result.AccessToken, result.Password); err != nil {
+		r.logRegistration(ctx, "error", runMessage(runID, "store account token failed"), map[string]any{"email": email, "error": err.Error()})
 		return RegisterResult{}, err
 	}
-	if err := r.accountRepo.RefreshAccount(ctx, result.AccessToken); err != nil {
-		return RegisterResult{}, err
+	r.logRegistration(ctx, "info", runMessage(runID, "refresh account remote info"), map[string]any{"email": email})
+	if err := r.refreshAccountRemoteInfo(ctx, result.AccessToken); err != nil {
+		r.logRegistration(ctx, "warn", runMessage(runID, "refresh account remote info failed"), map[string]any{"email": email, "error": err.Error()})
 	}
-	r.logRegistration(ctx, "info", "register success", map[string]any{
+	r.logRegistration(ctx, "info", runMessage(runID, "register success"), map[string]any{
 		"email": result.Email,
 	})
 	return result, nil
@@ -162,8 +185,28 @@ func (r *Registrar) waitForCode(ctx context.Context, mailbox Mailbox) (string, e
 	return code, nil
 }
 
+func (r *Registrar) refreshAccountRemoteInfo(ctx context.Context, accessToken string) error {
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := r.accountRepo.RefreshAccount(ctx, accessToken); err != nil {
+			lastErr = err
+			if attempt < 3 {
+				r.logRegistration(ctx, "warn", fmt.Sprintf("refresh account remote info retry %d/3", attempt), map[string]any{"error": err.Error()})
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(time.Duration(attempt) * time.Second):
+				}
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return lastErr
+}
+
 func (r *Registrar) logRegistration(ctx context.Context, level string, summary string, detail map[string]any) {
-	r.logf(ctx, level, summary)
 	if r.logSink != nil {
 		_ = r.logSink.Log(ctx, level, summary, detail)
 	}
@@ -171,6 +214,14 @@ func (r *Registrar) logRegistration(ctx context.Context, level string, summary s
 
 func (r *Registrar) logf(ctx context.Context, level string, format string, args ...any) {
 	r.logger.Printf(ctx, level, format, args...)
+}
+
+func runMessage(runID string, message string) string {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return message
+	}
+	return "[" + runID + "] " + strings.TrimSpace(message)
 }
 
 type flowState struct {

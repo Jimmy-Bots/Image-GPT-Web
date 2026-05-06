@@ -76,6 +76,15 @@ type LogSink interface {
 	Log(ctx context.Context, level string, summary string, detail map[string]any) error
 }
 
+type LogSinkFunc func(ctx context.Context, level string, summary string, detail map[string]any) error
+
+func (f LogSinkFunc) Log(ctx context.Context, level string, summary string, detail map[string]any) error {
+	if f == nil {
+		return nil
+	}
+	return f(ctx, level, summary, detail)
+}
+
 type LoggerFunc func(ctx context.Context, level string, format string, args ...any)
 
 func (f LoggerFunc) Printf(ctx context.Context, level string, format string, args ...any) {

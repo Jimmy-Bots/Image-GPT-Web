@@ -11,10 +11,19 @@ import (
 	"time"
 
 	"gpt-image-web/internal/config"
-	"gpt-image-web/internal/domain"
 	"gpt-image-web/internal/register"
 	"gpt-image-web/internal/storage"
 )
+
+const registerLogLimit = 400
+
+type registerLogEntry struct {
+	ID      string         `json:"id"`
+	Time    time.Time      `json:"time"`
+	Type    string         `json:"type"`
+	Summary string         `json:"summary"`
+	Detail  map[string]any `json:"detail,omitempty"`
+}
 
 type registerManager struct {
 	cfg     config.Config
@@ -25,16 +34,23 @@ type registerManager struct {
 	state   register.BatchState
 	lastErr string
 	lastRun *register.RegisterResult
+	logs    []registerLogEntry
 }
 
 func newRegisterManager(cfg config.Config, store *storage.Store) *registerManager {
-	return &registerManager{
+	manager := &registerManager{
 		cfg:   cfg,
 		store: store,
 		state: register.BatchState{
 			Config: defaultRegisterBatchConfig(cfg),
 		},
 	}
+	if store != nil {
+		if settings, err := store.GetSettings(context.Background()); err == nil {
+			manager.state.Config = batchConfigFromSettings(cfg, settings)
+		}
+	}
+	return manager
 }
 
 func defaultRegisterBatchConfig(cfg config.Config) register.BatchConfig {
@@ -63,6 +79,14 @@ func (m *registerManager) Runtime() map[string]any {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.runtimeLocked()
+}
+
+func (m *registerManager) Logs() []registerLogEntry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]registerLogEntry, len(m.logs))
+	copy(out, m.logs)
+	return out
 }
 
 func (m *registerManager) SaveConfig(ctx context.Context, payload map[string]any) (register.BatchState, error) {
@@ -134,7 +158,7 @@ func (m *registerManager) RunOnce(ctx context.Context) (map[string]any, error) {
 		m.mu.Lock()
 		m.lastErr = err.Error()
 		m.mu.Unlock()
-		m.addLog(ctx, "单次注册失败", map[string]any{"error": err.Error()})
+		m.addLog(ctx, "error", "single run failed", map[string]any{"error": err.Error()})
 		return nil, err
 	}
 	copyResult := result
@@ -142,7 +166,7 @@ func (m *registerManager) RunOnce(ctx context.Context) (map[string]any, error) {
 	m.lastRun = &copyResult
 	m.lastErr = ""
 	m.mu.Unlock()
-	m.addLog(ctx, "单次注册成功", map[string]any{
+	m.addLog(ctx, "info", "single run success", map[string]any{
 		"email":      result.Email,
 		"created_at": result.CreatedAt,
 	})
@@ -155,7 +179,17 @@ func (m *registerManager) runBatch(ctx context.Context, cfg register.BatchConfig
 		m.finishBatch(register.BatchState{Config: cfg}, err)
 		return
 	}
-	runner, err := register.NewRunner(registrar, register.StorageAccountRepository{Store: m.store}, register.LoggerFunc(func(context.Context, string, string, ...any) {}), nil)
+	logger := register.LoggerFunc(func(ctx context.Context, level string, format string, args ...any) {
+		message := strings.TrimSpace(fmt.Sprintf(format, args...))
+		if message == "" {
+			return
+		}
+		m.addLog(ctx, level, message, map[string]any{"level": level})
+	})
+	runner, err := register.NewRunner(registrar, register.StorageAccountRepository{
+		Store:    m.store,
+		ProxyURL: fallbackString(cfg.Proxy, m.cfg.ProxyURL),
+	}, logger, nil)
 	if err != nil {
 		m.finishBatch(register.BatchState{Config: cfg}, err)
 		return
@@ -199,8 +233,21 @@ func (m *registerManager) newRegistrar(cfg register.BatchConfig) (*register.Regi
 			WaitInterval:         2 * time.Second,
 		},
 		MailProvider: provider,
-		AccountRepo:  register.StorageAccountRepository{Store: m.store},
-		LogSink:      register.StorageLogSink{Store: m.store},
+		AccountRepo: register.StorageAccountRepository{
+			Store:    m.store,
+			ProxyURL: fallbackString(cfg.Proxy, m.cfg.ProxyURL),
+		},
+		LogSink: register.LogSinkFunc(func(ctx context.Context, level string, summary string, detail map[string]any) error {
+			m.addLog(ctx, level, summary, detail)
+			return nil
+		}),
+		Logger: register.LoggerFunc(func(ctx context.Context, level string, format string, args ...any) {
+			message := strings.TrimSpace(fmt.Sprintf(format, args...))
+			if message == "" {
+				return
+			}
+			m.addLog(ctx, level, message, map[string]any{"level": level})
+		}),
 	})
 }
 
@@ -243,29 +290,38 @@ func (m *registerManager) logBatchResult(ctx context.Context, state register.Bat
 	}
 	switch {
 	case err == nil:
-		m.addLog(ctx, "注册批次完成", detail)
+		m.addLog(ctx, "info", "batch completed", detail)
 	case errors.Is(err, context.Canceled):
 		detail["status"] = "canceled"
-		m.addLog(ctx, "注册批次已停止", detail)
+		m.addLog(ctx, "warn", "batch canceled", detail)
 	default:
 		detail["status"] = "error"
 		detail["error"] = err.Error()
-		m.addLog(ctx, "注册批次失败", detail)
+		m.addLog(ctx, "error", "batch failed", detail)
 	}
 }
 
-func (m *registerManager) addLog(ctx context.Context, summary string, detail map[string]any) {
-	if m.store == nil {
-		return
-	}
-	payload, _ := json.Marshal(detail)
-	_ = m.store.AddLog(ctx, domain.SystemLog{
+func (m *registerManager) addLog(ctx context.Context, level string, summary string, detail map[string]any) {
+	_ = ctx
+	entry := registerLogEntry{
 		ID:      randomLogID(),
 		Time:    time.Now().UTC(),
 		Type:    "register",
 		Summary: summary,
-		Detail:  payload,
-	})
+		Detail:  cloneAnyMap(detail),
+	}
+	if entry.Detail == nil {
+		entry.Detail = map[string]any{}
+	}
+	if strings.TrimSpace(level) != "" && entry.Detail["level"] == nil {
+		entry.Detail["level"] = strings.TrimSpace(level)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logs = append(m.logs, entry)
+	if len(m.logs) > registerLogLimit {
+		m.logs = append([]registerLogEntry(nil), m.logs[len(m.logs)-registerLogLimit:]...)
+	}
 }
 
 func batchConfigFromSettings(cfg config.Config, settings map[string]any) register.BatchConfig {
@@ -312,6 +368,21 @@ func cloneMap(src map[string]any) map[string]any {
 	out := make(map[string]any, len(src))
 	for key, value := range src {
 		out[key] = value
+	}
+	return out
+}
+
+func cloneAnyMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return cloneMap(src)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return cloneMap(src)
 	}
 	return out
 }
