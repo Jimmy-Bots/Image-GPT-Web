@@ -14,10 +14,6 @@ import (
 	"gpt-image-web/internal/storage"
 )
 
-type accountCreateRequest struct {
-	Tokens []string `json:"tokens"`
-}
-
 type accountDeleteRequest struct {
 	Tokens    []string `json:"tokens"`
 	TokenRefs []string `json:"token_refs"`
@@ -87,33 +83,6 @@ func (s *Server) handleGetAccountRefreshStatus(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": s.autoRef.Status(r.Context())})
-}
-
-func (s *Server) handleCreateAccounts(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
-	var req accountCreateRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
-	}
-	added := 0
-	skipped := 0
-	for _, token := range compactStrings(req.Tokens) {
-		created, err := s.store.UpsertAccountToken(r.Context(), token, "")
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
-			return
-		}
-		if created {
-			added++
-		} else {
-			skipped++
-		}
-	}
-	s.addLog(r, "account", "新增账号", map[string]any{"added": added, "skipped": skipped})
-	writeJSON(w, http.StatusOK, map[string]any{"added": added, "skipped": skipped})
 }
 
 func (s *Server) handleDeleteAccounts(w http.ResponseWriter, r *http.Request) {

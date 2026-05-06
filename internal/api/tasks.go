@@ -112,7 +112,11 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskError, jsonData([]any{}), err.Error())
 		return
 	}
-	saved := persistImageResultItems(q.imagesDir, q.baseURL, result)
+	prompt := job.Gen.Prompt
+	if job.Mode == "edit" {
+		prompt = job.Edit.Prompt
+	}
+	saved := persistImageResultItems(q.imagesDir, q.baseURL, result, prompt)
 	shapeImageResponseForClient(result, "url")
 	log.Printf("image_task success id=%s owner=%s mode=%s items=%d archived=%d base_url_configured=%t", job.TaskID, job.OwnerID, job.Mode, imageResultCount(result), saved, q.baseURL != "")
 	data := result["data"]

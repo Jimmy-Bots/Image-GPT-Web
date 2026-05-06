@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -18,16 +19,48 @@ type imagesDeleteRequest struct {
 	Paths []string `json:"paths"`
 }
 
+const imageMetaSuffix = ".meta.json"
+
+type storedImageMeta struct {
+	Prompt        string    `json:"prompt,omitempty"`
+	RevisedPrompt string    `json:"revised_prompt,omitempty"`
+	ArchivedAt    time.Time `json:"archived_at,omitempty"`
+}
+
 func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	items, err := s.listStoredImages(r)
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("query")))
+	sortMode := strings.TrimSpace(r.URL.Query().Get("sort"))
+	dateScope := strings.TrimSpace(r.URL.Query().Get("date_scope"))
+	items, err := s.listStoredImages(r, query, sortMode, dateScope)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "image_list_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "page_size", 24)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 24
+	}
+	start := (page - 1) * pageSize
+	if start > len(items) {
+		start = len(items)
+	}
+	end := start + pageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":     items[start:end],
+		"total":     len(items),
+		"page":      page,
+		"page_size": pageSize,
+	})
 }
 
 func (s *Server) handleDeleteImages(w http.ResponseWriter, r *http.Request) {
@@ -46,19 +79,23 @@ func (s *Server) handleDeleteImages(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if err := os.Remove(path); err == nil {
+			_ = os.Remove(imageMetaPath(path))
 			removed++
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
-func (s *Server) listStoredImages(r *http.Request) ([]map[string]any, error) {
+func (s *Server) listStoredImages(r *http.Request, query string, sortMode string, dateScope string) ([]map[string]any, error) {
 	items := make([]map[string]any, 0)
 	err := filepath.WalkDir(s.cfg.ImagesDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(strings.ToLower(entry.Name()), imageMetaSuffix) {
 			return nil
 		}
 		rel, err := filepath.Rel(s.cfg.ImagesDir, path)
@@ -70,12 +107,37 @@ func (s *Server) listStoredImages(r *http.Request) ([]map[string]any, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if !matchImageDateScope(info.ModTime(), dateScope) {
+			return nil
+		}
+		meta := readImageMeta(path)
+		if query != "" {
+			haystack := strings.ToLower(strings.Join([]string{
+				entry.Name(),
+				rel,
+				meta.Prompt,
+				meta.RevisedPrompt,
+			}, " "))
+			if !strings.Contains(haystack, query) {
+				return nil
+			}
+		}
+		displayPrompt := strings.TrimSpace(meta.Prompt)
+		if displayPrompt == "" {
+			displayPrompt = strings.TrimSpace(meta.RevisedPrompt)
+		}
+		if displayPrompt == "" {
+			displayPrompt = entry.Name()
+		}
 		items = append(items, map[string]any{
-			"path":       rel,
-			"name":       entry.Name(),
-			"url":        publicBaseURL(r) + "/images/" + rel,
-			"size":       info.Size(),
-			"created_at": info.ModTime().UTC(),
+			"path":           rel,
+			"name":           entry.Name(),
+			"url":            publicBaseURL(r) + "/images/" + rel,
+			"size":           info.Size(),
+			"created_at":     info.ModTime().UTC(),
+			"prompt":         meta.Prompt,
+			"revised_prompt": meta.RevisedPrompt,
+			"display_prompt": displayPrompt,
 		})
 		return nil
 	})
@@ -83,32 +145,45 @@ func (s *Server) listStoredImages(r *http.Request) ([]map[string]any, error) {
 		return nil, err
 	}
 	sort.Slice(items, func(i, j int) bool {
+		if sortMode == "large" {
+			leftSize, _ := items[i]["size"].(int64)
+			rightSize, _ := items[j]["size"].(int64)
+			if leftSize == rightSize {
+				left, _ := items[i]["created_at"].(time.Time)
+				right, _ := items[j]["created_at"].(time.Time)
+				return left.After(right)
+			}
+			return leftSize > rightSize
+		}
 		left, _ := items[i]["created_at"].(time.Time)
 		right, _ := items[j]["created_at"].(time.Time)
+		if sortMode == "old" {
+			return left.Before(right)
+		}
 		return left.After(right)
 	})
 	return items, nil
 }
 
-func (s *Server) persistImageResults(r *http.Request, result map[string]any) int {
-	saved := persistImageResultItems(s.cfg.ImagesDir, publicBaseURL(r), result)
+func (s *Server) persistImageResults(r *http.Request, result map[string]any, prompt string) int {
+	saved := persistImageResultItems(s.cfg.ImagesDir, publicBaseURL(r), result, prompt)
 	if saved == 0 && s.cfg.DebugLogging() {
 		log.Printf("image_archive saved=0 path=%s items=%d", r.URL.Path, imageResultCount(result))
 	}
 	return saved
 }
 
-func persistImageResultItems(imagesDir string, baseURL string, result map[string]any) int {
+func persistImageResultItems(imagesDir string, baseURL string, result map[string]any, prompt string) int {
 	saved := 0
 	forEachImageResultItem(result, func(item map[string]any) {
-		if persistImageItem(imagesDir, baseURL, item) {
+		if persistImageItem(imagesDir, baseURL, item, prompt) {
 			saved++
 		}
 	})
 	return saved
 }
 
-func persistImageItem(root string, baseURL string, item map[string]any) bool {
+func persistImageItem(root string, baseURL string, item map[string]any, prompt string) bool {
 	b64 := strings.TrimSpace(stringFromAny(item["b64_json"], ""))
 	if b64 == "" {
 		return false
@@ -136,8 +211,52 @@ func persistImageItem(root string, baseURL string, item map[string]any) bool {
 	} else {
 		item["url"] = "/images/" + rel
 	}
+	writeImageMeta(path, storedImageMeta{
+		Prompt:        strings.TrimSpace(prompt),
+		RevisedPrompt: strings.TrimSpace(stringFromAny(item["revised_prompt"], "")),
+		ArchivedAt:    now,
+	})
 	log.Printf("image_archive saved path=%s bytes=%d url_configured=%t", rel, len(data), baseURL != "")
 	return true
+}
+
+func imageMetaPath(path string) string {
+	return path + imageMetaSuffix
+}
+
+func writeImageMeta(path string, meta storedImageMeta) {
+	payload, err := json.Marshal(meta)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(imageMetaPath(path), payload, 0o644)
+}
+
+func readImageMeta(path string) storedImageMeta {
+	body, err := os.ReadFile(imageMetaPath(path))
+	if err != nil || len(body) == 0 {
+		return storedImageMeta{}
+	}
+	var meta storedImageMeta
+	if err := json.Unmarshal(body, &meta); err != nil {
+		return storedImageMeta{}
+	}
+	return meta
+}
+
+func matchImageDateScope(createdAt time.Time, scope string) bool {
+	now := time.Now()
+	created := createdAt.In(now.Location())
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "today":
+		y1, m1, d1 := now.Date()
+		y2, m2, d2 := created.Date()
+		return y1 == y2 && m1 == m2 && d1 == d2
+	case "7d":
+		return created.After(now.Add(-7 * 24 * time.Hour))
+	default:
+		return true
+	}
 }
 
 func forEachImageResultItem(result map[string]any, fn func(map[string]any)) int {
