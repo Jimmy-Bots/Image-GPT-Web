@@ -21,28 +21,37 @@ type aiReviewSettings struct {
 	Prompt  string
 }
 
-func (s *Server) checkContentPolicy(w http.ResponseWriter, r *http.Request, identity Identity, endpoint string, model string, text string) bool {
+func (s *Server) checkContentPolicy(w http.ResponseWriter, r *http.Request, identity Identity, endpoint string, model string, text string, originalPrompt string) bool {
 	settings, err := s.store.GetSettings(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return false
 	}
+	originalPrompt = strings.TrimSpace(originalPrompt)
 	if blocked := firstSensitiveWord(text, settings); blocked != "" {
 		errText := "sensitive word rejected"
-		s.logCall(r, identity, endpoint, model, "failed", errText, map[string]any{
+		detail := map[string]any{
 			"matched_rule": blocked,
 			"content_gate": "sensitive_words",
 			"error_code":   "content_rejected",
-		})
+		}
+		if originalPrompt != "" {
+			detail["original_prompt"] = originalPrompt
+		}
+		s.logCall(r, identity, endpoint, model, "failed", errText, detail)
 		writeError(w, http.StatusBadRequest, "content_rejected", "request contains sensitive word")
 		return false
 	}
 	if review := aiReviewConfig(settings); review.Enabled {
 		if err := s.reviewContent(r.Context(), review, text); err != nil {
-			s.logCall(r, identity, endpoint, model, "failed", err.Error(), map[string]any{
+			detail := map[string]any{
 				"content_gate": "external_review",
 				"error_code":   "content_rejected",
-			})
+			}
+			if originalPrompt != "" {
+				detail["original_prompt"] = originalPrompt
+			}
+			s.logCall(r, identity, endpoint, model, "failed", err.Error(), detail)
 			writeError(w, http.StatusBadRequest, "content_rejected", err.Error())
 			return false
 		}

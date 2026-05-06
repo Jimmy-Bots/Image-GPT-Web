@@ -307,7 +307,7 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	req.Model = model
-	if !s.checkContentPolicy(w, r, identity, "/api/image-tasks/generations", req.Model, req.Prompt) {
+	if !s.checkContentPolicy(w, r, identity, "/api/image-tasks/generations", req.Model, req.Prompt, req.Prompt) {
 		return
 	}
 	requestedCount := clampImageTaskCountWithLimit(req.N, s.imageMaxCount(r.Context()))
@@ -428,7 +428,7 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 	req.Model = model
 	req.Size = normalizeImageTaskSize(req.Size)
 	req.N = clampImageTaskCountWithLimit(req.N, s.imageMaxCount(r.Context()))
-	if !s.checkContentPolicy(w, r, identity, "/api/image-tasks/edits", req.Model, req.Prompt) {
+	if !s.checkContentPolicy(w, r, identity, "/api/image-tasks/edits", req.Model, req.Prompt, req.Prompt) {
 		return
 	}
 	taskID := strings.TrimSpace(r.FormValue("client_task_id"))
