@@ -44,6 +44,11 @@ export type User = {
   name: string;
   role: Role;
   status: "active" | "disabled" | "deleted";
+  quota_unlimited: boolean;
+  permanent_quota: number;
+  temporary_quota: number;
+  temporary_quota_date?: string;
+  available_quota: number;
   api_key?: ApiKey;
   created_at: string;
   updated_at: string;

@@ -58,6 +58,11 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	if req.N == 0 {
 		req.N = 1
 	}
+	user, receipt, err := s.reserveImageQuota(r.Context(), identity, req.N)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
+		return
+	}
 	requestedFormat := normalizeImageResponseFormat(req.ResponseFormat)
 	req.ResponseFormat = "b64_json"
 	start := time.Now()
@@ -80,6 +85,7 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	result, err := s.upstream.GenerateImage(ctx, req)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
+		s.refundImageQuota(r.Context(), identity, receipt)
 		log.Printf("image_generation failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, duration, err)
 		s.logCall(r, identity, "/v1/images/generations", req.Model, "failed", err.Error(), map[string]any{
 			"duration_ms":      duration,
@@ -93,6 +99,9 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	saved := s.persistImageResults(r, result, req.Prompt)
 	shapeImageResponseForClient(result, requestedFormat)
 	count := imageResultCount(result)
+	if refund := receipt.Total - count; refund > 0 {
+		s.refundImageQuota(r.Context(), identity, quotaRefundPortion(receipt, refund))
+	}
 	log.Printf("image_generation success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, count, saved, duration)
 	s.logCall(r, identity, "/v1/images/generations", req.Model, "success", "", map[string]any{
 		"duration_ms":      duration,
@@ -101,6 +110,7 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		"n":                req.N,
 		"items":            count,
 		"archived":         saved,
+		"available_quota":  user.AvailableQuota,
 	})
 	writeJSON(w, http.StatusOK, result)
 }
@@ -126,6 +136,11 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	}
 	requestedFormat := normalizeImageResponseFormat(req.ResponseFormat)
 	req.ResponseFormat = "b64_json"
+	user, receipt, err := s.reserveImageQuota(r.Context(), identity, req.N)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
+		return
+	}
 	start := time.Now()
 	log.Printf("image_edit start user=%s auth=%s model=%s n=%d size=%s images=%d requested_format=%s", identity.ID, identity.AuthType, req.Model, req.N, req.Size, len(req.Images), requestedFormat)
 	if s.cfg.DebugLogging() {
@@ -147,6 +162,7 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	result, err := s.upstream.EditImage(ctx, req)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
+		s.refundImageQuota(r.Context(), identity, receipt)
 		log.Printf("image_edit failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, duration, err)
 		s.logCall(r, identity, "/v1/images/edits", req.Model, "failed", err.Error(), map[string]any{
 			"duration_ms":      duration,
@@ -161,6 +177,9 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	saved := s.persistImageResults(r, result, req.Prompt)
 	shapeImageResponseForClient(result, requestedFormat)
 	count := imageResultCount(result)
+	if refund := receipt.Total - count; refund > 0 {
+		s.refundImageQuota(r.Context(), identity, quotaRefundPortion(receipt, refund))
+	}
 	log.Printf("image_edit success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, count, saved, duration)
 	s.logCall(r, identity, "/v1/images/edits", req.Model, "success", "", map[string]any{
 		"duration_ms":      duration,
@@ -170,6 +189,7 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		"input_images":     len(req.Images),
 		"items":            count,
 		"archived":         saved,
+		"available_quota":  user.AvailableQuota,
 	})
 	writeJSON(w, http.StatusOK, result)
 }
