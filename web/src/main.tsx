@@ -759,7 +759,7 @@ function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefres
         )}
       </td>
       <td>{editing ? <input className="cell-input" list="account-type-options" value={draft.type} onChange={(event) => setDraft({ ...draft, type: event.target.value })} /> : (item.type || "Free")}</td>
-      <td>{editing ? <select className="cell-input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}><option>正常</option><option>限流</option><option>异常</option><option>禁用</option></select> : <Badge value={item.status} />}</td>
+      <td>{editing ? <select className="cell-input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}><option>正常</option><option>限流</option><option>异常</option><option>禁用</option></select> : <div className="account-status-cell"><Badge value={item.status} />{item.recovery_state === "recovering" ? <small className="status-subtle warn">重登恢复中</small> : item.recovery_state === "recover_failed" ? <small className="status-subtle err" title={item.recovery_error || "-"}>重登恢复失败</small> : null}</div>}</td>
       <td>{editing ? <input className="cell-input" type="number" min={0} value={draft.quota} onChange={(event) => setDraft({ ...draft, quota: event.target.value })} /> : formatQuota(item)}</td>
       <td>{editing ? <input className="cell-input" type="number" min={0} value={draft.maxConcurrency} onChange={(event) => setDraft({ ...draft, maxConcurrency: event.target.value })} /> : `${Number(item.active_requests || 0)}/${Number(item.allowed_concurrency || 0)}`}</td>
       <td title={item.restore_at ? fmtDate(item.restore_at) : "-"}>{formatRestoreCountdown(item.restore_at)}</td>
@@ -1365,7 +1365,7 @@ function mergeLogs(current: SystemLog[], updates: SystemLog[]) {
     const previous = map.get(log.id);
     map.set(log.id, previous ? { ...previous, ...log, detail: hasLogDetail(log.detail) ? log.detail : previous.detail } : log);
   });
-  return sortLogs(Array.from(map.values()));
+  return Array.from(map.values()).sort((a, b) => b.time.localeCompare(a.time) || b.id.localeCompare(a.id));
 }
 
 function ActivityPanel({ token, tasks, setTasks, setTaskTotal, logs, setLogs, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; logs: SystemLog[]; setLogs: React.Dispatch<React.SetStateAction<SystemLog[]>>; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
@@ -1525,6 +1525,7 @@ function TaskDetail({ task, openLightbox }: { task: ImageTask; openLightbox: (sr
         <DetailItem label="模型" value={task.model || "-"} />
         <DetailItem label="比例" value={task.size || "-"} />
         <DetailItem label="模式" value={task.mode} />
+        <DetailItem label="请求张数" value={String(task.requested_count || results.length || 0)} />
       </div>
       {task.prompt ? <div className="detail-prompt"><span>提示词</span><p>{task.prompt}</p></div> : null}
       {task.error ? <p className="detail-error">{task.error}</p> : null}
@@ -1661,6 +1662,8 @@ function LogDetail({ log }: { log: SystemLog }) {
         <DetailItem label="状态" value={String(detail.status || "-")} />
         <DetailItem label="生成时间" value={formatDuration(detail.duration_ms)} />
         <DetailItem label="用户" value={String(detail.name || detail.subject_id || "-")} />
+        <DetailItem label="消耗额度" value={String(detail.quota_used ?? detail.quota_reserved ?? "-")} />
+        <DetailItem label="剩余额度" value={String(detail.available_quota ?? "-")} />
       </div>
       {detail.error ? <p className="detail-error">{String(detail.error)}</p> : null}
       <pre className="detail-json">{safeJSON({ id: log.id, time: log.time, type: log.type, summary: log.summary, detail })}</pre>
@@ -2007,6 +2010,7 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
 function UserRow({ token, user, reload, toast, showKey }: { token: string; user: User; reload: () => Promise<void>; toast: (type: Toast["type"], message: string) => void; showKey: (key: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [grantingTemp, setGrantingTemp] = useState(false);
   const [draft, setDraft] = useState({
     email: user.email,
     name: user.name || "",
@@ -2071,6 +2075,22 @@ function UserRow({ token, user, reload, toast, showKey }: { token: string; user:
     await reload();
     toast("success", "API Key 已重置");
   }
+  async function grantTemporaryQuota() {
+    const input = window.prompt(`给 ${user.email} 发放今日临时额度`, "10");
+    if (input === null) return;
+    const value = Math.max(0, Number(input) || 0);
+    setGrantingTemp(true);
+    try {
+      await api.updateUser(token, user.id, {
+        temporary_quota: value,
+        temporary_quota_date: value > 0 ? new Date().toISOString().slice(0, 10) : ""
+      });
+      await reload();
+      toast("success", value > 0 ? `已发放今日临时额度 ${value}` : "已清空今日临时额度");
+    } finally {
+      setGrantingTemp(false);
+    }
+  }
   return (
     <tr>
       <td>{editing ? <input className="cell-input" value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} /> : user.email}</td>
@@ -2091,6 +2111,7 @@ function UserRow({ token, user, reload, toast, showKey }: { token: string; user:
         ) : (
           <>
             <button className="ghost small" onClick={() => setEditing(true)}>编辑</button>
+            <button className="ghost small" disabled={grantingTemp} onClick={() => grantTemporaryQuota().catch((error) => toast("error", error.message))}>{grantingTemp ? "发放中" : "发临时额度"}</button>
             <IconButton title={user.status === "active" ? "停用" : "启用"} onClick={() => toggleStatus().catch((error) => toast("error", error.message))}>{user.status === "active" ? <Ban size={15} /> : <Eye size={15} />}</IconButton>
             <IconButton title="重置 API Key" onClick={() => resetKey().catch((error) => toast("error", error.message))}><RotateCcw size={15} /></IconButton>
             <IconButton title="删除" className="danger-icon" onClick={() => remove().catch((error) => toast("error", error.message))}><Trash2 size={15} /></IconButton>

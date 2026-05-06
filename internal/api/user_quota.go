@@ -18,6 +18,17 @@ func (s *Server) refundImageQuota(ctx context.Context, identity Identity, receip
 	_, _ = s.store.RefundUserQuota(ctx, identity.ID, receipt)
 }
 
+func (s *Server) refundImageQuotaWithResult(ctx context.Context, identity Identity, receipt domain.UserQuotaReceipt) (domain.User, bool) {
+	if receipt.Total < 1 {
+		return domain.User{}, false
+	}
+	user, err := s.store.RefundUserQuota(ctx, identity.ID, receipt)
+	if err != nil {
+		return domain.User{}, false
+	}
+	return user, true
+}
+
 func quotaRefundPortion(receipt domain.UserQuotaReceipt, refund int) domain.UserQuotaReceipt {
 	if refund <= 0 || receipt.Total <= 0 {
 		return domain.UserQuotaReceipt{}

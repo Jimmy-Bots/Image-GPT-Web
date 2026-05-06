@@ -110,6 +110,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			limits_progress_json TEXT NOT NULL DEFAULT '[]',
 			default_model_slug TEXT NOT NULL DEFAULT '',
 			restore_at TEXT NOT NULL DEFAULT '',
+			recovery_state TEXT NOT NULL DEFAULT '',
+			recovery_error TEXT NOT NULL DEFAULT '',
 			success INTEGER NOT NULL DEFAULT 0,
 			fail INTEGER NOT NULL DEFAULT 0,
 			last_used_at TEXT NOT NULL DEFAULT '',
@@ -165,6 +167,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "accounts", "max_concurrency", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "accounts", "recovery_state", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "accounts", "recovery_error", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "users", "quota_unlimited", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -624,7 +632,7 @@ func (s *Store) ListAccounts(ctx context.Context) ([]domain.Account, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
 		`SELECT access_token, password, type, status, quota, max_concurrency, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
-		 restore_at, success, fail, last_used_at, raw_json, created_at, updated_at
+		 restore_at, recovery_state, recovery_error, success, fail, last_used_at, raw_json, created_at, updated_at
 		 FROM accounts ORDER BY updated_at DESC`,
 	)
 	if err != nil {
@@ -743,7 +751,7 @@ func (s *Store) GetAccount(ctx context.Context, accessToken string) (domain.Acco
 	row := s.db.QueryRowContext(
 		ctx,
 		`SELECT access_token, password, type, status, quota, max_concurrency, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
-		 restore_at, success, fail, last_used_at, raw_json, created_at, updated_at
+		 restore_at, recovery_state, recovery_error, success, fail, last_used_at, raw_json, created_at, updated_at
 		 FROM accounts WHERE access_token = ?`,
 		accessToken,
 	)
@@ -778,7 +786,7 @@ func (s *Store) UpdateAccountRemoteInfo(ctx context.Context, accessToken string,
 		ctx,
 		`UPDATE accounts
 		 SET type = ?, status = ?, quota = ?, image_quota_unknown = ?, email = ?, user_id = ?,
-		     limits_progress_json = ?, default_model_slug = ?, restore_at = ?, raw_json = ?, updated_at = ?
+		     limits_progress_json = ?, default_model_slug = ?, restore_at = ?, recovery_state = ?, recovery_error = ?, raw_json = ?, updated_at = ?
 		 WHERE access_token = ?`,
 		current.Type,
 		current.Status,
@@ -789,6 +797,8 @@ func (s *Store) UpdateAccountRemoteInfo(ctx context.Context, accessToken string,
 		string(defaultJSON(current.LimitsProgress, `[]`)),
 		current.DefaultModelSlug,
 		current.RestoreAt,
+		current.RecoveryState,
+		current.RecoveryError,
 		string(defaultJSON(current.RawJSON, `{}`)),
 		formatTime(current.UpdatedAt),
 		accessToken,
@@ -799,6 +809,89 @@ func (s *Store) UpdateAccountRemoteInfo(ctx context.Context, accessToken string,
 	return current, nil
 }
 
+func (s *Store) ReplaceAccountToken(ctx context.Context, oldToken string, newToken string) (domain.Account, error) {
+	oldToken = strings.TrimSpace(oldToken)
+	newToken = strings.TrimSpace(newToken)
+	if oldToken == "" || newToken == "" {
+		return domain.Account{}, fmt.Errorf("old and new access token are required")
+	}
+	if oldToken == newToken {
+		return s.GetAccount(ctx, oldToken)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Account{}, err
+	}
+	defer tx.Rollback()
+	current, err := scanAccount(tx.QueryRowContext(
+		ctx,
+		`SELECT access_token, password, type, status, quota, max_concurrency, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
+		 restore_at, recovery_state, recovery_error, success, fail, last_used_at, raw_json, created_at, updated_at
+		 FROM accounts WHERE access_token = ?`,
+		oldToken,
+	))
+	if err != nil {
+		return domain.Account{}, err
+	}
+	_, err = tx.ExecContext(
+		ctx,
+		`INSERT INTO accounts (
+			access_token, password, type, status, quota, max_concurrency, image_quota_unknown, email, user_id, limits_progress_json,
+			default_model_slug, restore_at, recovery_state, recovery_error, success, fail, last_used_at, raw_json, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(access_token) DO UPDATE SET
+			password = excluded.password,
+			type = excluded.type,
+			status = excluded.status,
+			quota = excluded.quota,
+			max_concurrency = excluded.max_concurrency,
+			image_quota_unknown = excluded.image_quota_unknown,
+			email = excluded.email,
+			user_id = excluded.user_id,
+			limits_progress_json = excluded.limits_progress_json,
+			default_model_slug = excluded.default_model_slug,
+			restore_at = excluded.restore_at,
+			recovery_state = excluded.recovery_state,
+			recovery_error = excluded.recovery_error,
+			success = excluded.success,
+			fail = excluded.fail,
+			last_used_at = excluded.last_used_at,
+			raw_json = excluded.raw_json,
+			created_at = excluded.created_at,
+			updated_at = excluded.updated_at`,
+		newToken,
+		current.Password,
+		current.Type,
+		current.Status,
+		current.Quota,
+		current.MaxConcurrency,
+		boolInt(current.ImageQuotaUnknown),
+		current.Email,
+		current.UserID,
+		string(defaultJSON(current.LimitsProgress, `[]`)),
+		current.DefaultModelSlug,
+		current.RestoreAt,
+		current.RecoveryState,
+		current.RecoveryError,
+		current.Success,
+		current.Fail,
+		current.LastUsedAt,
+		string(defaultJSON(current.RawJSON, `{}`)),
+		formatTime(current.CreatedAt),
+		formatTime(time.Now().UTC()),
+	)
+	if err != nil {
+		return domain.Account{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM accounts WHERE access_token = ?`, oldToken); err != nil {
+		return domain.Account{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Account{}, err
+	}
+	return s.GetAccount(ctx, newToken)
+}
+
 func (s *Store) MarkAccountUsed(ctx context.Context, accessToken string) error {
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(
@@ -806,6 +899,18 @@ func (s *Store) MarkAccountUsed(ctx context.Context, accessToken string) error {
 		`UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE access_token = ?`,
 		formatTime(now),
 		formatTime(now),
+		accessToken,
+	)
+	return err
+}
+
+func (s *Store) SetAccountRecovery(ctx context.Context, accessToken string, state string, recoveryErr string) error {
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE accounts SET recovery_state = ?, recovery_error = ?, updated_at = ? WHERE access_token = ?`,
+		strings.TrimSpace(state),
+		strings.TrimSpace(recoveryErr),
+		formatTime(time.Now().UTC()),
 		accessToken,
 	)
 	return err
@@ -1184,6 +1289,8 @@ func scanAccount(row rowScanner) (domain.Account, error) {
 		&limitsProgress,
 		&item.DefaultModelSlug,
 		&item.RestoreAt,
+		&item.RecoveryState,
+		&item.RecoveryError,
 		&item.Success,
 		&item.Fail,
 		&item.LastUsedAt,

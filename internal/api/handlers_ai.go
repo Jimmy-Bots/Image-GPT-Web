@@ -99,8 +99,11 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	saved := s.persistImageResults(r, result, req.Prompt)
 	shapeImageResponseForClient(result, requestedFormat)
 	count := imageResultCount(result)
+	finalUser := user
 	if refund := receipt.Total - count; refund > 0 {
-		s.refundImageQuota(r.Context(), identity, quotaRefundPortion(receipt, refund))
+		if updatedUser, ok := s.refundImageQuotaWithResult(r.Context(), identity, quotaRefundPortion(receipt, refund)); ok {
+			finalUser = updatedUser
+		}
 	}
 	log.Printf("image_generation success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, count, saved, duration)
 	s.logCall(r, identity, "/v1/images/generations", req.Model, "success", "", map[string]any{
@@ -110,7 +113,8 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		"n":                req.N,
 		"items":            count,
 		"archived":         saved,
-		"available_quota":  user.AvailableQuota,
+		"quota_used":       count,
+		"available_quota":  finalUser.AvailableQuota,
 	})
 	writeJSON(w, http.StatusOK, result)
 }
@@ -177,8 +181,11 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	saved := s.persistImageResults(r, result, req.Prompt)
 	shapeImageResponseForClient(result, requestedFormat)
 	count := imageResultCount(result)
+	finalUser := user
 	if refund := receipt.Total - count; refund > 0 {
-		s.refundImageQuota(r.Context(), identity, quotaRefundPortion(receipt, refund))
+		if updatedUser, ok := s.refundImageQuotaWithResult(r.Context(), identity, quotaRefundPortion(receipt, refund)); ok {
+			finalUser = updatedUser
+		}
 	}
 	log.Printf("image_edit success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, count, saved, duration)
 	s.logCall(r, identity, "/v1/images/edits", req.Model, "success", "", map[string]any{
@@ -189,7 +196,8 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		"input_images":     len(req.Images),
 		"items":            count,
 		"archived":         saved,
-		"available_quota":  user.AvailableQuota,
+		"quota_used":       count,
+		"available_quota":  finalUser.AvailableQuota,
 	})
 	writeJSON(w, http.StatusOK, result)
 }
