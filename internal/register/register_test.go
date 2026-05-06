@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -61,6 +62,41 @@ func TestWaitForCodeReturnsTimeoutErrorOnEmptyCode(t *testing.T) {
 	if !errors.Is(err, ErrCodeTimeout) {
 		t.Fatalf("expected ErrCodeTimeout, got %v", err)
 	}
+}
+
+type sequenceAccountRepo struct {
+	mu      sync.Mutex
+	metrics []PoolMetrics
+	index   int
+}
+
+func (r *sequenceAccountRepo) AddAccessToken(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
+func (r *sequenceAccountRepo) RefreshAccount(context.Context, string) error { return nil }
+
+func (r *sequenceAccountRepo) ListAccounts(context.Context) ([]AccountSnapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := PoolMetrics{}
+	if len(r.metrics) > 0 {
+		if r.index >= len(r.metrics) {
+			current = r.metrics[len(r.metrics)-1]
+		} else {
+			current = r.metrics[r.index]
+			r.index++
+		}
+	}
+	items := make([]AccountSnapshot, 0, current.CurrentAvailable)
+	for i := 0; i < current.CurrentAvailable; i++ {
+		quota := 0
+		if i == 0 {
+			quota = current.CurrentQuota
+		}
+		items = append(items, AccountSnapshot{Status: "正常", Quota: quota})
+	}
+	return items, nil
 }
 
 func TestNewLoginOnlyWithMailUsesProvidedMailProvider(t *testing.T) {
@@ -160,6 +196,49 @@ func TestNewRunnerFactoryCreatesIndependentRegistrarPerWorker(t *testing.T) {
 	}
 	if maxConcurrent.Load() < 2 {
 		t.Fatalf("expected concurrent worker execution, max=%d", maxConcurrent.Load())
+	}
+}
+
+func TestRunnerAvailableModeKeepsMonitoringAndResumes(t *testing.T) {
+	repo := &sequenceAccountRepo{
+		metrics: []PoolMetrics{
+			{CurrentQuota: 10, CurrentAvailable: 0},
+			{CurrentQuota: 10, CurrentAvailable: 2},
+			{CurrentQuota: 10, CurrentAvailable: 2},
+			{CurrentQuota: 10, CurrentAvailable: 0},
+			{CurrentQuota: 10, CurrentAvailable: 0},
+		},
+	}
+	var registerCalls atomic.Int32
+	runner, err := newRunnerWithRegisterFunc(func(ctx context.Context) (RegisterResult, error) {
+		registerCalls.Add(1)
+		return RegisterResult{Email: "test@example.com"}, nil
+	}, repo, nil, func() time.Time { return time.Now().UTC() })
+	if err != nil {
+		t.Fatalf("newRunnerWithRegisterFunc() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx, BatchConfig{
+			Mode:            RegisterModeAvailable,
+			TargetAvailable: 2,
+			Threads:         1,
+			CheckInterval:   5 * time.Millisecond,
+		})
+		done <- runErr
+	}()
+
+	time.Sleep(40 * time.Millisecond)
+	cancel()
+	runErr := <-done
+	if !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", runErr)
+	}
+	if registerCalls.Load() < 2 {
+		t.Fatalf("expected monitoring mode to resume registration, calls=%d", registerCalls.Load())
 	}
 }
 
