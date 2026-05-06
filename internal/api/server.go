@@ -88,7 +88,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/users/{user_id}/api-key/reset", s.handleResetUserAPIKey)
 	mux.HandleFunc("GET /api/accounts", s.handleListAccounts)
 	mux.HandleFunc("GET /api/accounts/refresh-status", s.handleGetAccountRefreshStatus)
-	mux.HandleFunc("POST /api/accounts", s.handleCreateAccounts)
 	mux.HandleFunc("DELETE /api/accounts", s.handleDeleteAccounts)
 	mux.HandleFunc("POST /api/accounts/update", s.handleUpdateAccount)
 	mux.HandleFunc("POST /api/accounts/refresh", s.handleRefreshAccounts)

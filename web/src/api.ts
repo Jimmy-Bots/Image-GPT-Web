@@ -78,12 +78,6 @@ export const api = {
       account_type: params.accountType
     })),
   accountRefreshStatus: (token: string) => request<{ status: AccountRefreshStatus }>(token, "/api/accounts/refresh-status"),
-  addAccounts: (token: string, tokens: string[]) =>
-    request<{ added: number; skipped: number }>(token, "/api/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tokens })
-    }),
   deleteAccounts: (token: string, tokenRefs: string[]) =>
     request<{ removed: number }>(token, "/api/accounts", {
       method: "DELETE",
@@ -156,7 +150,14 @@ export const api = {
       method: "POST",
       body
     }),
-  images: (token: string) => request<{ items: StoredImage[] }>(token, "/api/images"),
+  images: (token: string, params: { page?: number; pageSize?: number; query?: string; sort?: string; dateScope?: string } = {}) =>
+    request<PagedResult<StoredImage>>(token, withQuery("/api/images", {
+      page: params.page,
+      page_size: params.pageSize,
+      query: params.query,
+      sort: params.sort,
+      date_scope: params.dateScope
+    })),
   deleteImages: (token: string, paths: string[]) =>
     request<{ removed: number }>(token, "/api/images/delete", {
       method: "POST",

@@ -74,7 +74,7 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		s.writeUpstreamError(w, err)
 		return
 	}
-	saved := s.persistImageResults(r, result)
+	saved := s.persistImageResults(r, result, req.Prompt)
 	shapeImageResponseForClient(result, requestedFormat)
 	count := imageResultCount(result)
 	log.Printf("image_generation success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, count, saved, duration)
@@ -123,7 +123,7 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, err)
 		return
 	}
-	saved := s.persistImageResults(r, result)
+	saved := s.persistImageResults(r, result, req.Prompt)
 	shapeImageResponseForClient(result, requestedFormat)
 	count := imageResultCount(result)
 	log.Printf("image_edit success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, count, saved, duration)

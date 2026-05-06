@@ -76,6 +76,9 @@ export type StoredImage = {
   url: string;
   size: number;
   created_at: string;
+  prompt?: string;
+  revised_prompt?: string;
+  display_prompt?: string;
 };
 
 export type SystemLog = {

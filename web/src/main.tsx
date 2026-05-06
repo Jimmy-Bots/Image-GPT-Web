@@ -22,7 +22,6 @@ import {
   Settings,
   Sparkles,
   Trash2,
-  Upload,
   Users,
   WandSparkles,
   X
@@ -105,6 +104,14 @@ function IconButton({ children, className, ...props }: React.ButtonHTMLAttribute
   return <button className={classNames("icon-button", className)} {...props}>{children}</button>;
 }
 
+function ControlField({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
+  return <label className={classNames("control-field", className)}><span>{label}</span>{children}</label>;
+}
+
+function SearchControl({ label = "搜索", value, onChange, placeholder }: { label?: string; value: string; onChange: (event: React.ChangeEvent<HTMLInputElement>) => void; placeholder: string }) {
+  return <ControlField label={label} className="control-field-search"><div className="searchbox"><Search size={16} /><input value={value} onChange={onChange} placeholder={placeholder} /></div></ControlField>;
+}
+
 function App() {
   const [token, setToken] = useState(getStoredToken());
   const [identity, setIdentity] = useState<Identity | null>(null);
@@ -173,7 +180,7 @@ function App() {
             setAccountSummary(data.summary || null);
           }),
           api.users(currentToken, { page: 1, pageSize: 25 }).then((data) => setUsers(data.items || [])),
-          api.images(currentToken).then((data) => setImages(data.items || [])),
+          api.images(currentToken, { page: 1, pageSize: 24 }).then((data) => setImages(data.items || [])),
           api.settings(currentToken).then((data) => setSettings(data.config || {})),
           api.accountRefreshStatus(currentToken).then((data) => setAccountRefreshStatus(data.status || null)),
           api.registerState(currentToken).then((data) => setRegisterRuntime(data)),
@@ -507,7 +514,6 @@ function PanelHead({ title, subtitle, action }: { title: string; subtitle?: stri
 
 function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccountSummary, toast, busy, runBusy }: { token: string; refreshIntervalMinutes: number; refreshStatus: AccountRefreshStatus | null; setAccountSummary: React.Dispatch<React.SetStateAction<AccountListSummary | null>>; toast: (type: Toast["type"], message: string) => void; busy: string | null; runBusy: (id: string, fn: () => Promise<void>) => Promise<void> }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [tokens, setTokens] = useState("");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [type, setType] = useState("");
@@ -550,14 +556,6 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
     setAccountSummary(data.summary || null);
     setSelected((prev) => prev.filter((ref) => nextItems.some((item) => item.token_ref === ref)));
   }
-  async function importTokens() {
-    const values = tokens.split(/\s+/).map((item) => item.trim()).filter(Boolean);
-    if (!values.length) return;
-    const result = await api.addAccounts(token, values);
-    setTokens("");
-    await reloadPage(1);
-    toast("success", `新增 ${result.added} 个，跳过 ${result.skipped} 个`);
-  }
   async function refresh(refs = selected) {
     const result = await api.refreshAccounts(token, refs);
     await reloadPage();
@@ -577,7 +575,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
 
   return (
     <section className="panel">
-      <PanelHead title="账号池" subtitle={`导入、筛选、刷新和维护 ChatGPT access_token · 自动刷新间隔 ${refreshIntervalMinutes} 分钟`} action={<><button className="secondary" disabled={busy === "refresh-all-accounts"} onClick={() => runBusy("refresh-all-accounts", () => refresh([]))}>刷新全部</button><button className="secondary-danger" disabled={busy === "remove-bad"} onClick={() => runBusy("remove-bad", () => remove(accounts.filter((item) => item.status === "异常").map((item) => item.token_ref)))}>移除异常</button></>} />
+      <PanelHead title="账号池" subtitle={`筛选、刷新和维护 ChatGPT access_token · 自动刷新间隔 ${refreshIntervalMinutes} 分钟`} action={<><button className="secondary" disabled={busy === "refresh-all-accounts"} onClick={() => runBusy("refresh-all-accounts", () => refresh([]))}>刷新全部</button><button className="secondary-danger" disabled={busy === "remove-bad"} onClick={() => runBusy("remove-bad", () => remove(accounts.filter((item) => item.status === "异常").map((item) => item.token_ref)))}>移除异常</button></>} />
       <div className="auto-refresh-bar">
         <span className={classNames("badge", refreshStatus?.running ? "warn" : "ok")}>{refreshStatus?.running ? "自动刷新中" : "自动刷新空闲"}</span>
         <span className="chip">并发 {Number(refreshStatus?.concurrency || 0)}</span>
@@ -591,12 +589,11 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
         <span className="chip">耗时 {formatDuration(refreshStatus?.last_duration_ms)}</span>
       </div>
       {refreshStatus?.last_error ? <p className="detail-error">{refreshStatus.last_error}</p> : null}
-      <div className="account-import"><textarea value={tokens} onChange={(event) => setTokens(event.target.value)} placeholder="每行一个 access_token，支持批量粘贴" /><button disabled={busy === "import"} onClick={() => runBusy("import", importTokens)}><Upload size={16} />导入账号</button></div>
-      <div className="filters">
-        <div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱、token ref、密码、类型" /></div>
-        <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>正常</option><option>限流</option><option>异常</option><option>禁用</option></select>
-        <select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option>{types.map((item) => <option key={item}>{item}</option>)}</select>
-        <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select>
+      <div className="filters filters-card">
+        <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱、token ref、密码、类型" />
+        <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>正常</option><option>限流</option><option>异常</option><option>禁用</option></select></ControlField>
+        <ControlField label="类型"><select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option>{types.map((item) => <option key={item}>{item}</option>)}</select></ControlField>
+        <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
       </div>
       <div className="bulkbar">
         <label className="inline"><input type="checkbox" checked={accounts.length > 0 && accounts.every((item) => selectedSet.has(item.token_ref))} onChange={(event) => {
@@ -1386,7 +1383,12 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
   }
   return (
     <>
-      <div className="filters activity-filters"><div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务 ID、模型、提示词、状态" /></div><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>queued</option><option>running</option><option>success</option><option>error</option></select><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select><button className="secondary" onClick={() => api.tasks(token, [], { page, pageSize, query, status }).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
+      <div className="filters filters-card activity-filters">
+        <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务 ID、模型、提示词、状态" />
+        <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>queued</option><option>running</option><option>success</option><option>error</option></select></ControlField>
+        <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
+        <div className="filter-actions"><button className="secondary" onClick={() => api.tasks(token, [], { page, pageSize, query, status }).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
+      </div>
       <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
         const first = parseTaskData(task.data)[0];
         const src = first ? imageSrc(first) : "";
@@ -1506,12 +1508,11 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
   }
   return (
     <>
-      <div className="filters activity-filters">
-        <div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索日志内容、接口、模型" /></div>
-        <select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="account">账号</option><option value="register">注册</option></select>
-        <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select>
-        <button className="secondary" onClick={() => load().catch((error) => toast("error", error.message))}>刷新日志</button>
-        <button className="danger" disabled={!selected.length} onClick={() => clear().catch((error) => toast("error", error.message))}>清理选中</button>
+      <div className="filters filters-card activity-filters">
+        <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索日志内容、接口、模型" />
+        <ControlField label="类型"><select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="account">账号</option><option value="register">注册</option></select></ControlField>
+        <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
+        <div className="filter-actions"><button className="secondary" onClick={() => load().catch((error) => toast("error", error.message))}>刷新日志</button><button className="danger" disabled={!selected.length} onClick={() => clear().catch((error) => toast("error", error.message))}>清理选中</button></div>
       </div>
       <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="activity-table log-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前日志" /></th><th>Time</th><th>Type</th><th>Status</th><th>Endpoint</th><th>Model</th><th>耗时</th><th>Summary</th><th></th></tr></thead><tbody>{rows.map((log) => {
         const detail = logDetail(log);
@@ -1646,27 +1647,112 @@ function formatDuration(value: unknown) {
   return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
 }
 
+function formatRegisterSeconds(value: unknown) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return "-";
+  return formatDuration(seconds * 1000);
+}
+
 function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token: string; images: StoredImage[]; setImages: (items: StoredImage[]) => void; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("new");
+  const [dateScope, setDateScope] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
-  const items = [...images].filter((item) => `${item.name} ${item.path}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => sort === "old" ? new Date(a.created_at).getTime() - new Date(b.created_at).getTime() : sort === "large" ? b.size - a.size : new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const [detailPath, setDetailPath] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(24);
+  const [total, setTotal] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  useEffect(() => setPage(1), [pageSize, query, sort, dateScope]);
+  useEffect(() => {
+    let cancelled = false;
+    api.images(token, { page, pageSize, query, sort, dateScope }).then((data) => {
+      if (cancelled) return;
+      setImages(data.items || []);
+      setTotal(Number(data.total || 0));
+      setSelected((prev) => prev.filter((path) => (data.items || []).some((item) => item.path === path)));
+    }).catch((error) => toast("error", error instanceof Error ? error.message : "加载图片失败"));
+    return () => {
+      cancelled = true;
+    };
+  }, [token, page, pageSize, query, sort, dateScope, setImages]);
+  const items = images;
+  const detailImage = detailPath ? items.find((item) => item.path === detailPath) || null : null;
+  const allVisibleSelected = items.length > 0 && items.every((item) => selected.includes(item.path));
+  const groupedItems = items.reduce<Array<{ date: string; items: StoredImage[] }>>((groups, item) => {
+    const date = fmtDate(item.created_at).split(" ")[0] || "未知日期";
+    const current = groups[groups.length - 1];
+    if (current && current.date === date) {
+      current.items.push(item);
+      return groups;
+    }
+    groups.push({ date, items: [item] });
+    return groups;
+  }, []);
+  async function reload(nextPage = page) {
+    const data = await api.images(token, { page: nextPage, pageSize, query, sort, dateScope });
+    const nextItems = data.items || [];
+    const nextTotal = Number(data.total || 0);
+    const nextPageCount = Math.max(1, Math.ceil(nextTotal / pageSize));
+    if (nextPage > nextPageCount) {
+      setPage(nextPageCount);
+      return;
+    }
+    setImages(nextItems);
+    setTotal(nextTotal);
+    setSelected((prev) => prev.filter((path) => nextItems.some((item) => item.path === path)));
+  }
   async function remove() {
     if (!selected.length || !confirm(`删除 ${selected.length} 张图片？`)) return;
     const data = await api.deleteImages(token, selected);
     setSelected([]);
-    setImages((await api.images(token)).items || []);
+    await reload(page);
     toast("success", `已删除 ${data.removed} 张图片`);
   }
   return (
     <section className="panel">
-      <PanelHead title="图片库" subtitle="本地归档图片，支持预览、复制链接和批量删除" action={<><button className="secondary" onClick={() => api.images(token).then((data) => setImages(data.items || []))}>刷新图片</button><button className="danger" disabled={!selected.length} onClick={remove}>删除选中</button></>} />
-      <div className="filters"><div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件名或路径" /></div><select value={sort} onChange={(event) => setSort(event.target.value)}><option value="new">最新优先</option><option value="old">最早优先</option><option value="large">文件最大</option></select></div>
-      <div className="image-grid">{items.map((item) => {
+      <PanelHead title="图片库" subtitle="本地归档图片，支持预览、复制链接和批量删除" action={<><button className="secondary" onClick={() => reload().catch((error) => toast("error", error.message))}>刷新图片</button><button className="danger" disabled={!selected.length} onClick={remove}>删除选中</button></>} />
+      <div className="filters filters-card">
+        <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件名或路径" />
+        <ControlField label="排序"><select value={sort} onChange={(event) => setSort(event.target.value)}><option value="new">最新优先</option><option value="old">最早优先</option><option value="large">文件最大</option></select></ControlField>
+        <ControlField label="时间"><select value={dateScope} onChange={(event) => setDateScope(event.target.value)}><option value="">全部时间</option><option value="today">仅看今日</option><option value="7d">最近 7 天</option></select></ControlField>
+        <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>12</option><option>24</option><option>48</option><option>96</option></select></ControlField>
+        <div className="filter-actions"><span className="chip">当前页 {items.length} / 总计 {total}</span></div>
+      </div>
+      <div className="bulkbar">
+        <label className="inline"><input type="checkbox" checked={allVisibleSelected} onChange={(event) => setSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...items.map((item) => item.path)])) : prev.filter((path) => !items.some((item) => item.path === path)))} /><span>选择当前页</span></label>
+        <span>已选择 {selected.length} 张</span>
+        <button className="ghost small" disabled={!selected.length} onClick={remove}>删除选中</button>
+      </div>
+      <div className="image-groups">{groupedItems.map((group) => <section key={group.date} className="image-group"><div className="image-group-head"><span>{group.date}</span><small>{group.items.length} 张</small></div><div className="image-grid">{group.items.map((item) => {
         const copyURL = item.url.startsWith("http") ? item.url : `${location.origin}${item.url}`;
-        return <article key={item.path} className="image-item"><label><input type="checkbox" checked={selected.includes(item.path)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /><span>{item.name}</span></label><button onClick={() => openLightbox(item.url, item.name)}><img src={item.url} alt={item.name} loading="lazy" /></button><div><span>{fmtDate(item.created_at)} · {fmtBytes(item.size)}</span><IconButton onClick={() => copyText(copyURL).then(() => toast("success", "已复制链接"))}><Copy size={14} /></IconButton></div></article>;
-      })}</div>
+        const prompt = item.display_prompt || item.prompt || item.revised_prompt || item.name;
+        return <article key={item.path} className="image-item"><div className="image-item-head"><label><input type="checkbox" checked={selected.includes(item.path)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /><span title={prompt}>{prompt}</span></label><div className="image-item-actions"><IconButton title="复制链接" onClick={() => copyText(copyURL).then(() => toast("success", "已复制链接"))}><Copy size={14} /></IconButton><button className="ghost small" onClick={() => setDetailPath(item.path)}>详情</button></div></div><button className="image-item-preview" onClick={() => openLightbox(item.url, prompt)}><img src={item.url} alt={prompt} loading="lazy" /></button></article>;
+      })}</div></section>)}</div>
+      <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
+      <DetailModal title={detailImage ? `图片详情 · ${detailImage.display_prompt || detailImage.prompt || detailImage.revised_prompt || detailImage.name}` : "图片详情"} open={Boolean(detailPath)} onClose={() => setDetailPath(null)}>
+        {detailImage ? <ImageDetail image={detailImage} openLightbox={openLightbox} /> : <div className="detail-panel detail-panel-plain">图片详情不存在</div>}
+      </DetailModal>
     </section>
+  );
+}
+
+function ImageDetail({ image, openLightbox }: { image: StoredImage; openLightbox: (src: string, title?: string) => void }) {
+  const prompt = image.display_prompt || image.prompt || image.revised_prompt || image.name;
+  return (
+    <div className="detail-panel">
+      <div className="detail-grid">
+        <DetailItem label="提示词" value={prompt} />
+        <DetailItem label="时间" value={fmtDate(image.created_at)} />
+        <DetailItem label="大小" value={fmtBytes(image.size)} />
+        <DetailItem label="路径" value={image.path} code />
+      </div>
+      <button className="detail-image-hero" onClick={() => openLightbox(image.url, prompt)}>
+        <img src={image.url} alt={prompt} loading="lazy" />
+      </button>
+      {image.prompt ? <div className="detail-prompt"><span>原始提示词</span><p>{image.prompt}</p></div> : null}
+      {image.revised_prompt && image.revised_prompt !== image.prompt ? <div className="detail-prompt"><span>修订提示词</span><p>{image.revised_prompt}</p></div> : null}
+    </div>
   );
 }
 
@@ -1778,14 +1864,19 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
   return (
     <section className="panel">
       <PanelHead title="用户" subtitle="创建用户、编辑资料、删除账号，并维护每个用户唯一 API Key" />
-      <div className="toolbar user-toolbar">
-        <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="email" />
-        <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="name" />
-        <input value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} type="password" placeholder="password" />
-        <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option>user</option><option>admin</option></select>
-        <button onClick={() => create().catch((error) => toast("error", error.message))}>创建用户</button>
+      <div className="toolbar user-toolbar form-toolbar">
+        <ControlField label="邮箱"><input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="email" /></ControlField>
+        <ControlField label="名称"><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="name" /></ControlField>
+        <ControlField label="密码"><input value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} type="password" placeholder="password" /></ControlField>
+        <ControlField label="角色"><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option>user</option><option>admin</option></select></ControlField>
+        <div className="toolbar-actions"><button onClick={() => create().catch((error) => toast("error", error.message))}>创建用户</button></div>
       </div>
-      <div className="filters activity-filters"><div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱或名称" /></div><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">active</option><option value="disabled">disabled</option></select><select value={role} onChange={(event) => setRole(event.target.value)}><option value="">全部角色</option><option value="user">user</option><option value="admin">admin</option></select><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></div>
+      <div className="filters filters-card activity-filters">
+        <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱或名称" />
+        <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">active</option><option value="disabled">disabled</option></select></ControlField>
+        <ControlField label="角色"><select value={role} onChange={(event) => setRole(event.target.value)}><option value="">全部角色</option><option value="user">user</option><option value="admin">admin</option></select></ControlField>
+        <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
+      </div>
       {newKey ? <div className="notice"><span>新 API Key 只显示一次：</span><code>{newKey}</code><IconButton title="复制" onClick={() => copyText(newKey).then(() => toast("success", "已复制"))}><Copy size={14} /></IconButton><IconButton title="隐藏" onClick={() => setNewKey("")}><EyeOff size={14} /></IconButton></div> : null}
       <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="users-table"><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>API Key</th><th>Last login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} />)}</tbody></table></div>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
@@ -2044,7 +2135,7 @@ function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { 
   }
   const registerRunning = Boolean(registerRuntime?.running);
   const registerBusyNow = registerBusy !== "";
-  return <div className="stack"><div className="register-layout"><section className="panel"><PanelHead title="注册配置" subtitle="inbucket 邮箱、并发和目标模式" action={<><span className={classNames("chip", draftDirty && "warn")}>{draftDirty ? "未保存" : "已保存"}</span><button className="secondary small" disabled={registerBusyNow} onClick={() => reloadRegister().catch((error) => toast("error", error.message))}>{registerBusy === "reload" ? "刷新中" : "刷新"}</button><button className="secondary small" disabled={registerBusyNow || registerRunning} onClick={() => saveRegister().catch((error) => toast("error", error.message))}>{registerBusy === "save" ? "保存中" : "保存配置"}</button></>} /><div className="settings-form register-form"><label><span>Inbucket API Base</span><input value={draft.apiBase} onChange={(event) => updateDraft({ apiBase: event.target.value })} placeholder="http://127.0.0.1:9000" /></label><label><span>Register Proxy</span><input value={draft.proxy} onChange={(event) => updateDraft({ proxy: event.target.value })} placeholder="留空则继承全局 Proxy" /></label><label><span>模式</span><select value={draft.mode} onChange={(event) => updateDraft({ mode: event.target.value })}><option value="total">total</option><option value="quota">quota</option><option value="available">available</option></select></label><label><span>线程数</span><input type="number" value={draft.threads} onChange={(event) => updateDraft({ threads: Number(event.target.value) })} /></label><label><span>Total</span><input type="number" value={draft.total} onChange={(event) => updateDraft({ total: Number(event.target.value) })} /></label><label><span>Check Interval 秒</span><input type="number" value={draft.checkIntervalSeconds} onChange={(event) => updateDraft({ checkIntervalSeconds: Number(event.target.value) })} /></label><label><span>Target Quota</span><input type="number" value={draft.targetQuota} onChange={(event) => updateDraft({ targetQuota: Number(event.target.value) })} /></label><label><span>Target Available</span><input type="number" value={draft.targetAvailable} onChange={(event) => updateDraft({ targetAvailable: Number(event.target.value) })} /></label><label className="inline"><input type="checkbox" checked={draft.randomSubdomain} onChange={(event) => updateDraft({ randomSubdomain: event.target.checked })} /><span>随机子域名</span></label><label className="wide"><span>Inbucket Domains，每行一个</span><textarea value={draft.domains} onChange={(event) => updateDraft({ domains: event.target.value })} /></label></div></section><section className="panel"><PanelHead title="运行状态" subtitle="单次注册和批量注册控制" action={<div className="register-toolbar"><span className={classNames("badge", registerRuntime?.running ? "warn" : "ok")}>{registerRuntime?.running ? "running" : "idle"}</span></div>} /><div className="detail-grid register-stats"><DetailItem label="Success" value={String(Number(registerRuntime?.state?.stats?.success || 0))} /><DetailItem label="Fail" value={String(Number(registerRuntime?.state?.stats?.fail || 0))} /><DetailItem label="Done" value={String(Number(registerRuntime?.state?.stats?.done || 0))} /><DetailItem label="Running" value={String(Number(registerRuntime?.state?.stats?.running || 0))} /><DetailItem label="Quota" value={String(Number(registerRuntime?.state?.stats?.current_quota || 0))} /><DetailItem label="Available" value={String(Number(registerRuntime?.state?.stats?.current_available || 0))} /><DetailItem label="Started" value={fmtDate(registerRuntime?.state?.stats?.started_at)} /><DetailItem label="Updated" value={fmtDate(registerRuntime?.state?.stats?.updated_at)} /></div>{registerRuntime?.last_error ? <p className="detail-error">{registerRuntime.last_error}</p> : null}{registerRuntime?.last_result?.email ? <p className="register-last">last success: {registerRuntime.last_result.email} · {fmtDate(registerRuntime.last_result.created_at)}</p> : null}<div className="register-actions"><button disabled={registerBusyNow || registerRunning} onClick={() => runRegisterOnce().catch((error) => toast("error", error.message))}>{registerBusy === "run-once" ? "执行中" : "单次注册"}</button><button className="secondary" disabled={registerBusyNow || registerRunning} onClick={() => startRegister().catch((error) => toast("error", error.message))}>{registerBusy === "start" ? "启动中" : "启动批量"}</button><button className="secondary-danger" disabled={registerBusyNow || !registerRunning} onClick={() => stopRegister().catch((error) => toast("error", error.message))}>{registerBusy === "stop" ? "停止中" : "停止批量"}</button></div></section></div><section className="panel"><PanelHead title="注册流水日志" subtitle="像终端输出一样实时追踪注册每一步进度" action={<div className="register-toolbar"><span className={classNames("chip", !registerLogStickBottom && "warn")}>{registerLogStickBottom ? "自动跟随" : "查看历史中"}</span><button className="secondary small" onClick={() => refreshRegisterLogs().catch((error) => toast("error", error.message))}>{registerLogsLoading ? "刷新中" : "刷新日志"}</button></div>} /><div ref={logViewportRef} className="terminal-log" onScroll={handleRegisterLogScroll}>{registerLogs.length ? registerLogs.map((log) => {
+  return <div className="stack"><div className="register-layout"><section className="panel"><PanelHead title="注册配置" subtitle="inbucket 邮箱、并发和目标模式" action={<><span className={classNames("chip", draftDirty && "warn")}>{draftDirty ? "未保存" : "已保存"}</span><button className="secondary small" disabled={registerBusyNow} onClick={() => reloadRegister().catch((error) => toast("error", error.message))}>{registerBusy === "reload" ? "刷新中" : "刷新"}</button><button className="secondary small" disabled={registerBusyNow || registerRunning} onClick={() => saveRegister().catch((error) => toast("error", error.message))}>{registerBusy === "save" ? "保存中" : "保存配置"}</button></>} /><div className="settings-form register-form"><label><span>Inbucket API Base</span><input value={draft.apiBase} onChange={(event) => updateDraft({ apiBase: event.target.value })} placeholder="http://127.0.0.1:9000" /></label><label><span>Register Proxy</span><input value={draft.proxy} onChange={(event) => updateDraft({ proxy: event.target.value })} placeholder="留空则继承全局 Proxy" /></label><label><span>模式</span><select value={draft.mode} onChange={(event) => updateDraft({ mode: event.target.value })}><option value="total">total</option><option value="quota">quota</option><option value="available">available</option></select></label><label><span>线程数</span><input type="number" value={draft.threads} onChange={(event) => updateDraft({ threads: Number(event.target.value) })} /></label><label><span>Total</span><input type="number" value={draft.total} onChange={(event) => updateDraft({ total: Number(event.target.value) })} /></label><label><span>Check Interval 秒</span><input type="number" value={draft.checkIntervalSeconds} onChange={(event) => updateDraft({ checkIntervalSeconds: Number(event.target.value) })} /></label><label><span>Target Quota</span><input type="number" value={draft.targetQuota} onChange={(event) => updateDraft({ targetQuota: Number(event.target.value) })} /></label><label><span>Target Available</span><input type="number" value={draft.targetAvailable} onChange={(event) => updateDraft({ targetAvailable: Number(event.target.value) })} /></label><label className="inline"><input type="checkbox" checked={draft.randomSubdomain} onChange={(event) => updateDraft({ randomSubdomain: event.target.checked })} /><span>随机子域名</span></label><label className="wide"><span>Inbucket Domains，每行一个</span><textarea value={draft.domains} onChange={(event) => updateDraft({ domains: event.target.value })} /></label></div></section><section className="panel"><PanelHead title="运行状态" subtitle="单次注册和批量注册控制" action={<div className="register-toolbar"><span className={classNames("badge", registerRuntime?.running ? "warn" : "ok")}>{registerRuntime?.running ? "running" : "idle"}</span></div>} /><div className="detail-grid register-stats"><DetailItem label="Success" value={String(Number(registerRuntime?.state?.stats?.success || 0))} /><DetailItem label="Fail" value={String(Number(registerRuntime?.state?.stats?.fail || 0))} /><DetailItem label="Done" value={String(Number(registerRuntime?.state?.stats?.done || 0))} /><DetailItem label="Running" value={String(Number(registerRuntime?.state?.stats?.running || 0))} /><DetailItem label="Quota" value={String(Number(registerRuntime?.state?.stats?.current_quota || 0))} /><DetailItem label="Available" value={String(Number(registerRuntime?.state?.stats?.current_available || 0))} /><DetailItem label="Elapsed" value={formatRegisterSeconds(registerRuntime?.state?.stats?.elapsed_seconds)} /><DetailItem label="Avg / success" value={formatRegisterSeconds(registerRuntime?.state?.stats?.avg_seconds)} /><DetailItem label="Started" value={fmtDate(registerRuntime?.state?.stats?.started_at)} /><DetailItem label="Updated" value={fmtDate(registerRuntime?.state?.stats?.updated_at)} /></div>{registerRuntime?.last_error ? <p className="detail-error">{registerRuntime.last_error}</p> : null}{registerRuntime?.last_result?.email ? <p className="register-last">last success: {registerRuntime.last_result.email} · {fmtDate(registerRuntime.last_result.created_at)}</p> : null}<div className="register-actions"><button disabled={registerBusyNow || registerRunning} onClick={() => runRegisterOnce().catch((error) => toast("error", error.message))}>{registerBusy === "run-once" ? "执行中" : "单次注册"}</button><button className="secondary" disabled={registerBusyNow || registerRunning} onClick={() => startRegister().catch((error) => toast("error", error.message))}>{registerBusy === "start" ? "启动中" : "启动批量"}</button><button className="secondary-danger" disabled={registerBusyNow || !registerRunning} onClick={() => stopRegister().catch((error) => toast("error", error.message))}>{registerBusy === "stop" ? "停止中" : "停止批量"}</button></div></section></div><section className="panel"><PanelHead title="注册流水日志" subtitle="像终端输出一样实时追踪注册每一步进度" action={<div className="register-toolbar"><span className={classNames("chip", !registerLogStickBottom && "warn")}>{registerLogStickBottom ? "自动跟随" : "查看历史中"}</span><button className="secondary small" onClick={() => refreshRegisterLogs().catch((error) => toast("error", error.message))}>{registerLogsLoading ? "刷新中" : "刷新日志"}</button></div>} /><div ref={logViewportRef} className="terminal-log" onScroll={handleRegisterLogScroll}>{registerLogs.length ? registerLogs.map((log) => {
     const detail = logDetail(log);
     const level = typeof detail.level === "string" ? detail.level : "";
     const lineClass = classNames("terminal-log-line", Boolean(detail.error) && "err", level === "warn" && "warn");
