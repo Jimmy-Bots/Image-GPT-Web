@@ -50,7 +50,7 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	}
 	req.Model = model
 	req.Size = normalizeImageTaskSize(req.Size)
-	if !s.checkContentPolicy(w, r, identity, "/v1/images/generations", req.Model, req.Prompt) {
+	if !s.checkContentPolicy(w, r, identity, "/v1/images/generations", req.Model, req.Prompt, req.Prompt) {
 		return
 	}
 	if req.N == 0 {
@@ -147,7 +147,7 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Model = model
 	req.Size = normalizeImageTaskSize(req.Size)
-	if !s.checkContentPolicy(w, r, identity, "/v1/images/edits", req.Model, req.Prompt) {
+	if !s.checkContentPolicy(w, r, identity, "/v1/images/edits", req.Model, req.Prompt, req.Prompt) {
 		return
 	}
 	requestedFormat := normalizeImageResponseFormat(req.ResponseFormat)
@@ -304,7 +304,8 @@ func (s *Server) handleJSONOrStreamUpstream(
 		return
 	}
 	req["model"] = model
-	if !s.checkContentPolicy(w, r, identity, endpoint, model, requestText(req)) {
+	requestBodyText := requestText(req)
+	if !s.checkContentPolicy(w, r, identity, endpoint, model, requestBodyText, requestBodyText) {
 		return
 	}
 	if !boolFromAny(req["stream"]) {
