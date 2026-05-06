@@ -15,6 +15,7 @@ export type Account = {
   type: string;
   status: string;
   quota: number;
+  max_concurrency?: number;
   image_quota_unknown?: boolean;
   email?: string;
   user_id?: string;
@@ -23,6 +24,8 @@ export type Account = {
   restore_at?: string;
   success: number;
   fail: number;
+  active_requests?: number;
+  allowed_concurrency?: number;
   last_used_at?: string;
   created_at: string;
   updated_at: string;
@@ -104,6 +107,8 @@ export type AccountListSummary = {
   quota_total: number;
   quota_unknown: boolean;
   quota_unlimited: boolean;
+  active_requests?: number;
+  total_concurrency?: number;
 };
 
 export type ModelItem = {

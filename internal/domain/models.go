@@ -50,6 +50,7 @@ type Account struct {
 	Type              string          `json:"type"`
 	Status            string          `json:"status"`
 	Quota             int             `json:"quota"`
+	MaxConcurrency    int             `json:"max_concurrency"`
 	ImageQuotaUnknown bool            `json:"image_quota_unknown"`
 	Email             string          `json:"email,omitempty"`
 	UserID            string          `json:"user_id,omitempty"`
@@ -58,6 +59,8 @@ type Account struct {
 	RestoreAt         string          `json:"restore_at,omitempty"`
 	Success           int             `json:"success"`
 	Fail              int             `json:"fail"`
+	ActiveRequests    int             `json:"active_requests,omitempty"`
+	AllowedConcurrency int            `json:"allowed_concurrency,omitempty"`
 	LastUsedAt        string          `json:"last_used_at,omitempty"`
 	RawJSON           json.RawMessage `json:"-"`
 	CreatedAt         time.Time       `json:"created_at"`
