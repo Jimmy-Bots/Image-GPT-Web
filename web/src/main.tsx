@@ -1203,6 +1203,16 @@ function hasLogDetail(detail: unknown) {
   return !!detail && typeof detail === "object" && !Array.isArray(detail) && Object.keys(detail as Record<string, unknown>).length > 0;
 }
 
+function compareLogs(a: SystemLog, b: SystemLog) {
+  const byTime = a.time.localeCompare(b.time);
+  if (byTime !== 0) return byTime;
+  return a.id.localeCompare(b.id);
+}
+
+function sortLogs(items: SystemLog[]) {
+  return items.slice().sort(compareLogs);
+}
+
 function mergeLogs(current: SystemLog[], updates: SystemLog[]) {
   if (!updates.length) return current;
   const map = new Map(current.map((log) => [log.id, log]));
@@ -1210,7 +1220,7 @@ function mergeLogs(current: SystemLog[], updates: SystemLog[]) {
     const previous = map.get(log.id);
     map.set(log.id, previous ? { ...previous, ...log, detail: hasLogDetail(log.detail) ? log.detail : previous.detail } : log);
   });
-  return Array.from(map.values()).sort((a, b) => b.time.localeCompare(a.time));
+  return sortLogs(Array.from(map.values()));
 }
 
 function ActivityPanel({ token, tasks, setTasks, logs, setLogs, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; logs: SystemLog[]; setLogs: React.Dispatch<React.SetStateAction<SystemLog[]>>; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
@@ -1431,11 +1441,20 @@ function logDetail(log: SystemLog): Record<string, unknown> {
 
 function formatRegisterLogLine(log: SystemLog) {
   const detail = logDetail(log);
-  const parts = [String(log.summary || "").trim()].filter(Boolean);
+  const parts: string[] = [];
+  const thread = detail.thread;
+  if (typeof thread === "number" && Number.isFinite(thread)) {
+    parts.push(`thread=${thread}`);
+  } else if (typeof thread === "string" && thread.trim()) {
+    parts.push(`thread=${thread.trim()}`);
+  }
+  const summary = String(log.summary || "").trim().replace(/^\[[^\]]+\]\s*/, "");
+  if (summary) {
+    parts.push(summary);
+  }
   const fields = [
     ["email", detail.email],
     ["code", detail.code],
-    ["job", detail.job_id],
     ["status", detail.status],
     ["mode", detail.mode],
     ["threads", detail.threads],
@@ -1688,36 +1707,37 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
 function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { token: string; registerRuntime: RegisterRuntime | null; setRegisterRuntime: React.Dispatch<React.SetStateAction<RegisterRuntime | null>>; toast: (type: Toast["type"], message: string) => void }) {
   const registerConfig = registerRuntime?.state?.config;
   const registerMail = registerConfig?.mail || {};
+  const registerDomainsText = Array.isArray(registerMail.inbucket_domains) ? registerMail.inbucket_domains.join("\n") : "";
   const [registerLogs, setRegisterLogs] = useState<SystemLog[]>([]);
   const [registerLogsLoading, setRegisterLogsLoading] = useState(false);
   const [registerBusy, setRegisterBusy] = useState<"" | "save" | "start" | "stop" | "run-once" | "reload">("");
   const logViewportRef = useRef<HTMLDivElement | null>(null);
-  const [draft, setDraft] = useState({
-    proxy: String(registerConfig?.proxy || ""),
-    mode: String(registerConfig?.mode || "total"),
-    total: Number(registerConfig?.total || 10),
-    threads: Number(registerConfig?.threads || 3),
-    targetQuota: Number(registerConfig?.target_quota || 100),
-    targetAvailable: Number(registerConfig?.target_available || 10),
-    checkIntervalSeconds: parseCheckIntervalSeconds(registerConfig?.check_interval),
-    apiBase: String(registerMail.inbucket_api_base || ""),
-    domains: Array.isArray(registerMail.inbucket_domains) ? registerMail.inbucket_domains.join("\n") : "",
-    randomSubdomain: Boolean(registerMail.random_subdomain ?? true)
-  });
+  const [draftDirty, setDraftDirty] = useState(false);
+  function registerDraftFromRuntime(runtime: RegisterRuntime | null) {
+    const config = runtime?.state?.config;
+    const mail = config?.mail || {};
+    return {
+      proxy: String(config?.proxy || ""),
+      mode: String(config?.mode || "total"),
+      total: Number(config?.total || 10),
+      threads: Number(config?.threads || 3),
+      targetQuota: Number(config?.target_quota || 100),
+      targetAvailable: Number(config?.target_available || 10),
+      checkIntervalSeconds: parseCheckIntervalSeconds(config?.check_interval),
+      apiBase: String(mail.inbucket_api_base || ""),
+      domains: Array.isArray(mail.inbucket_domains) ? mail.inbucket_domains.join("\n") : "",
+      randomSubdomain: Boolean(mail.random_subdomain ?? true)
+    };
+  }
+  const [draft, setDraft] = useState(() => registerDraftFromRuntime(registerRuntime));
+  function updateDraft(patch: Partial<typeof draft>) {
+    setDraft((current) => ({ ...current, ...patch }));
+    setDraftDirty(true);
+  }
   useEffect(() => {
-    setDraft({
-      proxy: String(registerConfig?.proxy || ""),
-      mode: String(registerConfig?.mode || "total"),
-      total: Number(registerConfig?.total || 10),
-      threads: Number(registerConfig?.threads || 3),
-      targetQuota: Number(registerConfig?.target_quota || 100),
-      targetAvailable: Number(registerConfig?.target_available || 10),
-      checkIntervalSeconds: parseCheckIntervalSeconds(registerConfig?.check_interval),
-      apiBase: String(registerMail.inbucket_api_base || ""),
-      domains: Array.isArray(registerMail.inbucket_domains) ? registerMail.inbucket_domains.join("\n") : "",
-      randomSubdomain: Boolean(registerMail.random_subdomain ?? true)
-    });
-  }, [registerConfig?.proxy, registerConfig?.mode, registerConfig?.total, registerConfig?.threads, registerConfig?.target_quota, registerConfig?.target_available, registerConfig?.check_interval, registerMail.inbucket_api_base, registerMail.inbucket_domains, registerMail.random_subdomain]);
+    if (draftDirty) return;
+    setDraft(registerDraftFromRuntime(registerRuntime));
+  }, [draftDirty, registerRuntime, registerConfig?.proxy, registerConfig?.mode, registerConfig?.total, registerConfig?.threads, registerConfig?.target_quota, registerConfig?.target_available, registerConfig?.check_interval, registerMail.inbucket_api_base, registerDomainsText, registerMail.random_subdomain]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1725,7 +1745,7 @@ function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { 
     api.registerLogs(token)
       .then((data) => {
         if (cancelled) return;
-        setRegisterLogs(data.items || []);
+        setRegisterLogs(sortLogs(data.items || []));
       })
       .catch(() => {})
       .finally(() => {
@@ -1761,11 +1781,16 @@ function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { 
   }, [registerLogs]);
 
   async function reloadRegister() {
+    if (draftDirty && !window.confirm("刷新会丢弃当前未保存的注册配置修改，继续吗？")) {
+      return;
+    }
     setRegisterBusy("reload");
     try {
       const [runtime, logsData] = await Promise.all([api.registerState(token), api.registerLogs(token)]);
       setRegisterRuntime(runtime);
-      setRegisterLogs(logsData.items || []);
+      setDraft(registerDraftFromRuntime(runtime));
+      setDraftDirty(false);
+      setRegisterLogs(sortLogs(logsData.items || []));
     } finally {
       setRegisterBusy("");
     }
@@ -1787,8 +1812,11 @@ function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { 
           random_subdomain: draft.randomSubdomain
         }
       });
-      setRegisterRuntime((current) => current ? { ...current, state: data.state } : { state: data.state, running: false, last_error: "", last_result: null });
-      setRegisterLogs((await api.registerLogs(token)).items || []);
+      const nextRuntime = registerRuntime ? { ...registerRuntime, state: data.state } : { state: data.state, running: false, last_error: "", last_result: null };
+      setRegisterRuntime(nextRuntime);
+      setDraft(registerDraftFromRuntime(nextRuntime));
+      setDraftDirty(false);
+      setRegisterLogs(sortLogs((await api.registerLogs(token)).items || []));
       toast("success", "注册配置已保存");
     } finally {
       setRegisterBusy("");
@@ -1799,7 +1827,7 @@ function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { 
     try {
       const data = await api.startRegister(token);
       setRegisterRuntime(data);
-      setRegisterLogs((await api.registerLogs(token)).items || []);
+      setRegisterLogs(sortLogs((await api.registerLogs(token)).items || []));
       toast("success", "注册任务已启动");
     } finally {
       setRegisterBusy("");
@@ -1810,7 +1838,7 @@ function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { 
     try {
       const data = await api.stopRegister(token);
       setRegisterRuntime(data);
-      setRegisterLogs((await api.registerLogs(token)).items || []);
+      setRegisterLogs(sortLogs((await api.registerLogs(token)).items || []));
       toast("success", "注册任务已停止");
     } finally {
       setRegisterBusy("");
@@ -1821,7 +1849,7 @@ function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { 
     try {
       const data = await api.runRegisterOnce(token);
       setRegisterRuntime(data);
-      setRegisterLogs((await api.registerLogs(token)).items || []);
+      setRegisterLogs(sortLogs((await api.registerLogs(token)).items || []));
       toast("success", "单次注册已执行");
     } finally {
       setRegisterBusy("");
@@ -1831,14 +1859,14 @@ function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { 
   async function refreshRegisterLogs() {
     setRegisterLogsLoading(true);
     try {
-      setRegisterLogs((await api.registerLogs(token)).items || []);
+      setRegisterLogs(sortLogs((await api.registerLogs(token)).items || []));
     } finally {
       setRegisterLogsLoading(false);
     }
   }
   const registerRunning = Boolean(registerRuntime?.running);
   const registerBusyNow = registerBusy !== "";
-  return <div className="stack"><div className="register-layout"><section className="panel"><PanelHead title="注册配置" subtitle="inbucket 邮箱、并发和目标模式" action={<><button className="secondary small" disabled={registerBusyNow} onClick={() => reloadRegister().catch((error) => toast("error", error.message))}>{registerBusy === "reload" ? "刷新中" : "刷新"}</button><button className="secondary small" disabled={registerBusyNow || registerRunning} onClick={() => saveRegister().catch((error) => toast("error", error.message))}>{registerBusy === "save" ? "保存中" : "保存配置"}</button></>} /><div className="settings-form register-form"><label><span>Inbucket API Base</span><input value={draft.apiBase} onChange={(event) => setDraft({ ...draft, apiBase: event.target.value })} placeholder="http://127.0.0.1:9000" /></label><label><span>Register Proxy</span><input value={draft.proxy} onChange={(event) => setDraft({ ...draft, proxy: event.target.value })} placeholder="留空则继承全局 Proxy" /></label><label><span>模式</span><select value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value })}><option value="total">total</option><option value="quota">quota</option><option value="available">available</option></select></label><label><span>线程数</span><input type="number" value={draft.threads} onChange={(event) => setDraft({ ...draft, threads: Number(event.target.value) })} /></label><label><span>Total</span><input type="number" value={draft.total} onChange={(event) => setDraft({ ...draft, total: Number(event.target.value) })} /></label><label><span>Check Interval 秒</span><input type="number" value={draft.checkIntervalSeconds} onChange={(event) => setDraft({ ...draft, checkIntervalSeconds: Number(event.target.value) })} /></label><label><span>Target Quota</span><input type="number" value={draft.targetQuota} onChange={(event) => setDraft({ ...draft, targetQuota: Number(event.target.value) })} /></label><label><span>Target Available</span><input type="number" value={draft.targetAvailable} onChange={(event) => setDraft({ ...draft, targetAvailable: Number(event.target.value) })} /></label><label className="inline"><input type="checkbox" checked={draft.randomSubdomain} onChange={(event) => setDraft({ ...draft, randomSubdomain: event.target.checked })} /><span>随机子域名</span></label><label className="wide"><span>Inbucket Domains，每行一个</span><textarea value={draft.domains} onChange={(event) => setDraft({ ...draft, domains: event.target.value })} /></label></div></section><section className="panel"><PanelHead title="运行状态" subtitle="单次注册和批量注册控制" action={<div className="register-toolbar"><span className={classNames("badge", registerRuntime?.running ? "warn" : "ok")}>{registerRuntime?.running ? "running" : "idle"}</span></div>} /><div className="detail-grid register-stats"><DetailItem label="Success" value={String(Number(registerRuntime?.state?.stats?.success || 0))} /><DetailItem label="Fail" value={String(Number(registerRuntime?.state?.stats?.fail || 0))} /><DetailItem label="Done" value={String(Number(registerRuntime?.state?.stats?.done || 0))} /><DetailItem label="Running" value={String(Number(registerRuntime?.state?.stats?.running || 0))} /><DetailItem label="Quota" value={String(Number(registerRuntime?.state?.stats?.current_quota || 0))} /><DetailItem label="Available" value={String(Number(registerRuntime?.state?.stats?.current_available || 0))} /><DetailItem label="Started" value={fmtDate(registerRuntime?.state?.stats?.started_at)} /><DetailItem label="Updated" value={fmtDate(registerRuntime?.state?.stats?.updated_at)} /></div>{registerRuntime?.last_error ? <p className="detail-error">{registerRuntime.last_error}</p> : null}{registerRuntime?.last_result?.email ? <p className="register-last">last success: {registerRuntime.last_result.email} · {fmtDate(registerRuntime.last_result.created_at)}</p> : null}<div className="register-actions"><button disabled={registerBusyNow || registerRunning} onClick={() => runRegisterOnce().catch((error) => toast("error", error.message))}>{registerBusy === "run-once" ? "执行中" : "单次注册"}</button><button className="secondary" disabled={registerBusyNow || registerRunning} onClick={() => startRegister().catch((error) => toast("error", error.message))}>{registerBusy === "start" ? "启动中" : "启动批量"}</button><button className="secondary-danger" disabled={registerBusyNow || !registerRunning} onClick={() => stopRegister().catch((error) => toast("error", error.message))}>{registerBusy === "stop" ? "停止中" : "停止批量"}</button></div></section></div><section className="panel"><PanelHead title="注册流水日志" subtitle="像终端输出一样实时追踪注册每一步进度" action={<button className="secondary small" onClick={() => refreshRegisterLogs().catch((error) => toast("error", error.message))}>{registerLogsLoading ? "刷新中" : "刷新日志"}</button>} /><div ref={logViewportRef} className="terminal-log">{registerLogs.length ? registerLogs.slice().reverse().map((log) => {
+  return <div className="stack"><div className="register-layout"><section className="panel"><PanelHead title="注册配置" subtitle="inbucket 邮箱、并发和目标模式" action={<><span className={classNames("chip", draftDirty && "warn")}>{draftDirty ? "未保存" : "已保存"}</span><button className="secondary small" disabled={registerBusyNow} onClick={() => reloadRegister().catch((error) => toast("error", error.message))}>{registerBusy === "reload" ? "刷新中" : "刷新"}</button><button className="secondary small" disabled={registerBusyNow || registerRunning} onClick={() => saveRegister().catch((error) => toast("error", error.message))}>{registerBusy === "save" ? "保存中" : "保存配置"}</button></>} /><div className="settings-form register-form"><label><span>Inbucket API Base</span><input value={draft.apiBase} onChange={(event) => updateDraft({ apiBase: event.target.value })} placeholder="http://127.0.0.1:9000" /></label><label><span>Register Proxy</span><input value={draft.proxy} onChange={(event) => updateDraft({ proxy: event.target.value })} placeholder="留空则继承全局 Proxy" /></label><label><span>模式</span><select value={draft.mode} onChange={(event) => updateDraft({ mode: event.target.value })}><option value="total">total</option><option value="quota">quota</option><option value="available">available</option></select></label><label><span>线程数</span><input type="number" value={draft.threads} onChange={(event) => updateDraft({ threads: Number(event.target.value) })} /></label><label><span>Total</span><input type="number" value={draft.total} onChange={(event) => updateDraft({ total: Number(event.target.value) })} /></label><label><span>Check Interval 秒</span><input type="number" value={draft.checkIntervalSeconds} onChange={(event) => updateDraft({ checkIntervalSeconds: Number(event.target.value) })} /></label><label><span>Target Quota</span><input type="number" value={draft.targetQuota} onChange={(event) => updateDraft({ targetQuota: Number(event.target.value) })} /></label><label><span>Target Available</span><input type="number" value={draft.targetAvailable} onChange={(event) => updateDraft({ targetAvailable: Number(event.target.value) })} /></label><label className="inline"><input type="checkbox" checked={draft.randomSubdomain} onChange={(event) => updateDraft({ randomSubdomain: event.target.checked })} /><span>随机子域名</span></label><label className="wide"><span>Inbucket Domains，每行一个</span><textarea value={draft.domains} onChange={(event) => updateDraft({ domains: event.target.value })} /></label></div></section><section className="panel"><PanelHead title="运行状态" subtitle="单次注册和批量注册控制" action={<div className="register-toolbar"><span className={classNames("badge", registerRuntime?.running ? "warn" : "ok")}>{registerRuntime?.running ? "running" : "idle"}</span></div>} /><div className="detail-grid register-stats"><DetailItem label="Success" value={String(Number(registerRuntime?.state?.stats?.success || 0))} /><DetailItem label="Fail" value={String(Number(registerRuntime?.state?.stats?.fail || 0))} /><DetailItem label="Done" value={String(Number(registerRuntime?.state?.stats?.done || 0))} /><DetailItem label="Running" value={String(Number(registerRuntime?.state?.stats?.running || 0))} /><DetailItem label="Quota" value={String(Number(registerRuntime?.state?.stats?.current_quota || 0))} /><DetailItem label="Available" value={String(Number(registerRuntime?.state?.stats?.current_available || 0))} /><DetailItem label="Started" value={fmtDate(registerRuntime?.state?.stats?.started_at)} /><DetailItem label="Updated" value={fmtDate(registerRuntime?.state?.stats?.updated_at)} /></div>{registerRuntime?.last_error ? <p className="detail-error">{registerRuntime.last_error}</p> : null}{registerRuntime?.last_result?.email ? <p className="register-last">last success: {registerRuntime.last_result.email} · {fmtDate(registerRuntime.last_result.created_at)}</p> : null}<div className="register-actions"><button disabled={registerBusyNow || registerRunning} onClick={() => runRegisterOnce().catch((error) => toast("error", error.message))}>{registerBusy === "run-once" ? "执行中" : "单次注册"}</button><button className="secondary" disabled={registerBusyNow || registerRunning} onClick={() => startRegister().catch((error) => toast("error", error.message))}>{registerBusy === "start" ? "启动中" : "启动批量"}</button><button className="secondary-danger" disabled={registerBusyNow || !registerRunning} onClick={() => stopRegister().catch((error) => toast("error", error.message))}>{registerBusy === "stop" ? "停止中" : "停止批量"}</button></div></section></div><section className="panel"><PanelHead title="注册流水日志" subtitle="像终端输出一样实时追踪注册每一步进度" action={<button className="secondary small" onClick={() => refreshRegisterLogs().catch((error) => toast("error", error.message))}>{registerLogsLoading ? "刷新中" : "刷新日志"}</button>} /><div ref={logViewportRef} className="terminal-log">{registerLogs.length ? registerLogs.map((log) => {
     const detail = logDetail(log);
     const level = typeof detail.level === "string" ? detail.level : "";
     const lineClass = classNames("terminal-log-line", Boolean(detail.error) && "err", level === "warn" && "warn");
