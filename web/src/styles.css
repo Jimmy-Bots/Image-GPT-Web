@@ -18,6 +18,7 @@ button.ghost { background: transparent; border: 1px solid #d9e1ea; color: #44516
 button.danger, button.secondary-danger { background: #d94a4a; color: white; }
 button.secondary-danger { background: #fff0f0; color: #b73232; border: 1px solid #ffd5d5; }
 button.small { min-height: 32px; padding: 6px 10px; font-size: 12px; border-radius: 9px; }
+button.compact { min-height: 36px; padding: 7px 12px; font-size: 13px; border-radius: 12px; font-weight: 650; gap: 6px; }
 button.full { width: 100%; }
 input, textarea, select { width: 100%; min-height: 40px; border: 1px solid #dbe3ec; border-radius: 10px; background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%); color: #17202a; padding: 9px 11px; outline: none; transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease; }
 input:hover, textarea:hover, select:hover { border-color: #c8d3df; }
@@ -55,9 +56,10 @@ small { display: block; margin-top: 3px; color: #8792a2; font-size: 11px; }
 .form-error { margin: 0; padding: 8px 10px; border-radius: 7px; background: #fff0f0; color: #b73232; font-size: 12px; line-height: 1.5; }
 
 .home-shell { min-height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr); background: #f7f8fb; }
-.home-header { position: sticky; top: 0; z-index: 24; display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 64px; padding: 12px 18px; border-bottom: 1px solid #e5e9ef; background: rgba(255,255,255,.9); backdrop-filter: blur(14px); }
+.home-header { position: sticky; top: 0; z-index: 24; display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 60px; padding: 10px 18px; border-bottom: 1px solid #e5e9ef; background: rgba(255,255,255,.9); backdrop-filter: blur(14px); }
 .home-brand .brand-mark { background: #111923; }
 .home-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.home-actions .status-pill { min-height: 32px; padding: 4px 10px; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 230px minmax(0, 1fr); }
 .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 16px; padding: 16px; background: #111923; color: white; }
@@ -455,5 +457,5 @@ span.composer-pill { display: inline-flex; align-items: center; }
   .creation-grid { grid-template-columns: 1fr 1fr; }
   .prompt-bubble { max-width: 100%; }
   .composer-surface textarea { min-height: 92px; }
-  .home-actions .ghost, .home-actions .secondary { flex: 1; min-width: 120px; }
+  .home-actions .ghost, .home-actions .secondary, .home-actions .compact { flex: 1; min-width: 112px; }
 }

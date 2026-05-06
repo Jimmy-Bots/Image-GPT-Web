@@ -3,12 +3,24 @@ import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, ImageTa
 const storageKey = "gpt_image_web_token";
 
 export function getStoredToken() {
-  return sessionStorage.getItem(storageKey) || "";
+  const persisted = localStorage.getItem(storageKey) || "";
+  if (persisted) return persisted;
+  const sessionToken = sessionStorage.getItem(storageKey) || "";
+  if (sessionToken) {
+    localStorage.setItem(storageKey, sessionToken);
+    sessionStorage.removeItem(storageKey);
+  }
+  return sessionToken;
 }
 
 export function setStoredToken(token: string) {
-  if (token) sessionStorage.setItem(storageKey, token);
-  else sessionStorage.removeItem(storageKey);
+  if (token) {
+    localStorage.setItem(storageKey, token);
+    sessionStorage.removeItem(storageKey);
+    return;
+  }
+  localStorage.removeItem(storageKey);
+  sessionStorage.removeItem(storageKey);
 }
 
 export function authHeaders(token: string, extra: HeadersInit = {}) {
