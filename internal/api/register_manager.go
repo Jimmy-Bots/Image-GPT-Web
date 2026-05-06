@@ -1,0 +1,431 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"gpt-image-web/internal/config"
+	"gpt-image-web/internal/domain"
+	"gpt-image-web/internal/register"
+	"gpt-image-web/internal/storage"
+)
+
+type registerManager struct {
+	cfg     config.Config
+	store   *storage.Store
+	mu      sync.RWMutex
+	running bool
+	cancel  context.CancelFunc
+	state   register.BatchState
+	lastErr string
+	lastRun *register.RegisterResult
+}
+
+func newRegisterManager(cfg config.Config, store *storage.Store) *registerManager {
+	return &registerManager{
+		cfg:   cfg,
+		store: store,
+		state: register.BatchState{
+			Config: defaultRegisterBatchConfig(cfg),
+		},
+	}
+}
+
+func defaultRegisterBatchConfig(cfg config.Config) register.BatchConfig {
+	mode := register.RegisterMode(strings.TrimSpace(cfg.RegisterMode))
+	if mode == "" {
+		mode = register.RegisterModeTotal
+	}
+	return register.BatchConfig{
+		Proxy:           strings.TrimSpace(cfg.RegisterProxyURL),
+		Total:           maxInt(cfg.RegisterTotal, 1),
+		Threads:         maxInt(cfg.RegisterThreads, 1),
+		Mode:            mode,
+		TargetQuota:     maxInt(cfg.RegisterTargetQuota, 1),
+		TargetAvailable: maxInt(cfg.RegisterTargetAvailable, 1),
+		CheckInterval:   time.Duration(maxInt(cfg.RegisterCheckIntervalSeconds, 1)) * time.Second,
+		Mail: map[string]any{
+			"provider":          "inbucket",
+			"inbucket_api_base": strings.TrimSpace(cfg.RegisterInbucketAPIBase),
+			"inbucket_domains":  append([]string(nil), cfg.RegisterInbucketDomains...),
+			"random_subdomain":  cfg.RegisterInbucketRandomSubdomain,
+		},
+	}.WithDefaults()
+}
+
+func (m *registerManager) Runtime() map[string]any {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.runtimeLocked()
+}
+
+func (m *registerManager) SaveConfig(ctx context.Context, payload map[string]any) (register.BatchState, error) {
+	current, err := m.store.GetSettings(ctx)
+	if err != nil {
+		return register.BatchState{}, err
+	}
+	next := cloneMap(current)
+	next["register"] = payload
+	saved, err := m.store.SaveSettings(ctx, next)
+	if err != nil {
+		return register.BatchState{}, err
+	}
+	cfg := batchConfigFromSettings(m.cfg, saved)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.state.Config = cfg
+	return m.state.Clone(), nil
+}
+
+func (m *registerManager) Start(ctx context.Context) (map[string]any, error) {
+	m.mu.Lock()
+	if m.running {
+		out := m.runtimeLocked()
+		m.mu.Unlock()
+		return out, nil
+	}
+	cfg := m.state.Config
+	runCtx, cancel := context.WithCancel(context.Background())
+	m.running = true
+	m.cancel = cancel
+	m.lastErr = ""
+	m.state.Enabled = true
+	m.mu.Unlock()
+
+	go m.runBatch(runCtx, cfg)
+	return m.Runtime(), nil
+}
+
+func (m *registerManager) Stop() map[string]any {
+	m.mu.Lock()
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	m.running = false
+	m.state.Enabled = false
+	out := m.runtimeLocked()
+	m.mu.Unlock()
+	return out
+}
+
+func (m *registerManager) RunOnce(ctx context.Context) (map[string]any, error) {
+	m.mu.Lock()
+	if m.running {
+		m.mu.Unlock()
+		return nil, errors.New("register batch is already running")
+	}
+	cfg := m.state.Config
+	m.lastErr = ""
+	m.mu.Unlock()
+
+	registrar, err := m.newRegistrar(cfg)
+	if err != nil {
+		return nil, err
+	}
+	result, err := registrar.Register(ctx)
+	if err != nil {
+		m.mu.Lock()
+		m.lastErr = err.Error()
+		m.mu.Unlock()
+		m.addLog(ctx, "单次注册失败", map[string]any{"error": err.Error()})
+		return nil, err
+	}
+	copyResult := result
+	m.mu.Lock()
+	m.lastRun = &copyResult
+	m.lastErr = ""
+	m.mu.Unlock()
+	m.addLog(ctx, "单次注册成功", map[string]any{
+		"email":      result.Email,
+		"created_at": result.CreatedAt,
+	})
+	return m.Runtime(), nil
+}
+
+func (m *registerManager) runBatch(ctx context.Context, cfg register.BatchConfig) {
+	registrar, err := m.newRegistrar(cfg)
+	if err != nil {
+		m.finishBatch(register.BatchState{Config: cfg}, err)
+		return
+	}
+	runner, err := register.NewRunner(registrar, register.StorageAccountRepository{Store: m.store}, register.LoggerFunc(func(context.Context, string, string, ...any) {}), nil)
+	if err != nil {
+		m.finishBatch(register.BatchState{Config: cfg}, err)
+		return
+	}
+	state, err := runner.Run(ctx, cfg)
+	m.finishBatch(state, err)
+}
+
+func (m *registerManager) finishBatch(state register.BatchState, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.running = false
+	m.cancel = nil
+	m.state = state
+	m.state.Enabled = false
+	if err != nil && !errors.Is(err, context.Canceled) {
+		m.lastErr = err.Error()
+	}
+	go m.logBatchResult(context.Background(), state, err)
+}
+
+func (m *registerManager) newRegistrar(cfg register.BatchConfig) (*register.Registrar, error) {
+	provider, err := register.NewInbucketMailProvider(register.InbucketConfig{
+		APIBase:         stringMapValue(cfg.Mail, "inbucket_api_base"),
+		Domains:         stringSliceMapValue(cfg.Mail, "inbucket_domains"),
+		RandomSubdomain: boolMapValue(cfg.Mail, "random_subdomain"),
+		RequestTimeout:  30 * time.Second,
+		WaitTimeout:     30 * time.Second,
+		WaitInterval:    2 * time.Second,
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return register.New(register.Options{
+		Config: register.Config{
+			ProxyURL:             fallbackString(cfg.Proxy, m.cfg.ProxyURL),
+			RequestTimeout:       30 * time.Second,
+			SentinelTimeout:      20 * time.Second,
+			TokenExchangeTimeout: 60 * time.Second,
+			WaitTimeout:          30 * time.Second,
+			WaitInterval:         2 * time.Second,
+		},
+		MailProvider: provider,
+		AccountRepo:  register.StorageAccountRepository{Store: m.store},
+		LogSink:      register.StorageLogSink{Store: m.store},
+	})
+}
+
+func (m *registerManager) runtimeLocked() map[string]any {
+	state := m.state.Clone()
+	state.Enabled = m.running
+	out := map[string]any{
+		"state":       state,
+		"last_error":  m.lastErr,
+		"running":     m.running,
+		"last_result": nil,
+	}
+	if m.lastRun != nil {
+		out["last_result"] = m.lastRun
+	}
+	return out
+}
+
+func (m *registerManager) logBatchResult(ctx context.Context, state register.BatchState, err error) {
+	detail := map[string]any{
+		"mode":              state.Config.Mode,
+		"threads":           state.Config.Threads,
+		"total":             state.Config.Total,
+		"target_quota":      state.Config.TargetQuota,
+		"target_available":  state.Config.TargetAvailable,
+		"check_interval":    state.Config.CheckInterval.String(),
+		"success":           state.Stats.Success,
+		"fail":              state.Stats.Fail,
+		"done":              state.Stats.Done,
+		"running":           state.Stats.Running,
+		"current_quota":     state.Stats.CurrentQuota,
+		"current_available": state.Stats.CurrentAvailable,
+		"elapsed_seconds":   state.Stats.ElapsedSeconds,
+		"avg_seconds":       state.Stats.AvgSeconds,
+		"success_rate":      state.Stats.SuccessRate,
+		"job_id":            state.Stats.JobID,
+		"started_at":        state.Stats.StartedAt,
+		"updated_at":        state.Stats.UpdatedAt,
+		"finished_at":       state.Stats.FinishedAt,
+	}
+	switch {
+	case err == nil:
+		m.addLog(ctx, "注册批次完成", detail)
+	case errors.Is(err, context.Canceled):
+		detail["status"] = "canceled"
+		m.addLog(ctx, "注册批次已停止", detail)
+	default:
+		detail["status"] = "error"
+		detail["error"] = err.Error()
+		m.addLog(ctx, "注册批次失败", detail)
+	}
+}
+
+func (m *registerManager) addLog(ctx context.Context, summary string, detail map[string]any) {
+	if m.store == nil {
+		return
+	}
+	payload, _ := json.Marshal(detail)
+	_ = m.store.AddLog(ctx, domain.SystemLog{
+		ID:      randomLogID(),
+		Time:    time.Now().UTC(),
+		Type:    "register",
+		Summary: summary,
+		Detail:  payload,
+	})
+}
+
+func batchConfigFromSettings(cfg config.Config, settings map[string]any) register.BatchConfig {
+	out := defaultRegisterBatchConfig(cfg)
+	registerSettings := mapAnyValue(settings["register"])
+	if len(registerSettings) == 0 {
+		return out
+	}
+	if proxy := stringMapValue(registerSettings, "proxy"); proxy != "" {
+		out.Proxy = proxy
+	}
+	if total := intMapValue(registerSettings, "total"); total > 0 {
+		out.Total = total
+	}
+	if threads := intMapValue(registerSettings, "threads"); threads > 0 {
+		out.Threads = threads
+	}
+	if mode := strings.TrimSpace(anyString(registerSettings["mode"])); mode != "" {
+		out.Mode = register.RegisterMode(mode)
+	}
+	if quota := intMapValue(registerSettings, "target_quota"); quota > 0 {
+		out.TargetQuota = quota
+	}
+	if available := intMapValue(registerSettings, "target_available"); available > 0 {
+		out.TargetAvailable = available
+	}
+	if seconds := intMapValue(registerSettings, "check_interval_seconds"); seconds > 0 {
+		out.CheckInterval = time.Duration(seconds) * time.Second
+	}
+	mail := mapAnyValue(registerSettings["mail"])
+	if base := stringMapValue(mail, "inbucket_api_base"); base != "" {
+		out.Mail["inbucket_api_base"] = base
+	}
+	if domains := stringSliceMapValue(mail, "inbucket_domains"); len(domains) > 0 {
+		out.Mail["inbucket_domains"] = domains
+	}
+	if _, ok := mail["random_subdomain"]; ok {
+		out.Mail["random_subdomain"] = boolMapValue(mail, "random_subdomain")
+	}
+	return out.WithDefaults()
+}
+
+func cloneMap(src map[string]any) map[string]any {
+	out := make(map[string]any, len(src))
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
+}
+
+func mapAnyValue(value any) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	if out, ok := value.(map[string]any); ok && out != nil {
+		return out
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return map[string]any{}
+	}
+	return out
+}
+
+func stringMapValue(values map[string]any, key string) string {
+	return strings.TrimSpace(anyString(values[key]))
+}
+
+func stringSliceMapValue(values map[string]any, key string) []string {
+	return anySliceToStrings(values[key])
+}
+
+func boolMapValue(values map[string]any, key string) bool {
+	switch value := values[key].(type) {
+	case bool:
+		return value
+	case string:
+		value = strings.ToLower(strings.TrimSpace(value))
+		return value == "1" || value == "true" || value == "yes" || value == "on"
+	case float64:
+		return value != 0
+	default:
+		return false
+	}
+}
+
+func intMapValue(values map[string]any, key string) int {
+	switch value := values[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		number, _ := value.Int64()
+		return int(number)
+	case string:
+		number, _ := strconv.Atoi(strings.TrimSpace(value))
+		return number
+	default:
+		return 0
+	}
+}
+
+func anySliceToStrings(value any) []string {
+	switch raw := value.(type) {
+	case []string:
+		out := make([]string, 0, len(raw))
+		for _, item := range raw {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(raw))
+		for _, item := range raw {
+			text := strings.TrimSpace(anyString(item))
+			if text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func fallbackString(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return strings.TrimSpace(fallback)
+	}
+	return strings.TrimSpace(value)
+}
+
+func maxInt(value int, minimum int) int {
+	if value < minimum {
+		return minimum
+	}
+	return value
+}
+
+func anyString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	case json.Number:
+		return v.String()
+	default:
+		if value == nil {
+			return ""
+		}
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+}

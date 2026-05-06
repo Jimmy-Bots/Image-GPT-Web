@@ -46,6 +46,7 @@ type APIKey struct {
 
 type Account struct {
 	AccessToken       string          `json:"access_token"`
+	Password          string          `json:"password,omitempty"`
 	Type              string          `json:"type"`
 	Status            string          `json:"status"`
 	Quota             int             `json:"quota"`

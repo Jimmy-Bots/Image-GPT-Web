@@ -95,6 +95,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_api_keys_role ON api_keys(role)`,
 		`CREATE TABLE IF NOT EXISTS accounts (
 			access_token TEXT PRIMARY KEY,
+			password TEXT NOT NULL DEFAULT '',
 			type TEXT NOT NULL DEFAULT 'free',
 			status TEXT NOT NULL DEFAULT '正常',
 			quota INTEGER NOT NULL DEFAULT 0,
@@ -151,6 +152,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "accounts", "limits_progress_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "accounts", "password", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "image_tasks", "prompt", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -444,7 +448,7 @@ func (s *Store) TouchAPIKey(ctx context.Context, id string, at time.Time) error 
 func (s *Store) ListAccounts(ctx context.Context) ([]domain.Account, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
-		`SELECT access_token, type, status, quota, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
+		`SELECT access_token, password, type, status, quota, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
 		 restore_at, success, fail, last_used_at, raw_json, created_at, updated_at
 		 FROM accounts ORDER BY updated_at DESC`,
 	)
@@ -466,18 +470,23 @@ func (s *Store) ListAccounts(ctx context.Context) ([]domain.Account, error) {
 	return items, rows.Err()
 }
 
-func (s *Store) UpsertAccountToken(ctx context.Context, token string) (bool, error) {
+func (s *Store) UpsertAccountToken(ctx context.Context, token string, password string) (bool, error) {
 	token = strings.TrimSpace(token)
+	password = strings.TrimSpace(password)
 	if token == "" {
 		return false, nil
 	}
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO accounts (access_token, created_at, updated_at)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(access_token) DO NOTHING`,
+		`INSERT INTO accounts (access_token, password, created_at, updated_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(access_token) DO UPDATE SET
+		   password = excluded.password,
+		   updated_at = excluded.updated_at
+		 WHERE excluded.password != ''`,
 		token,
+		password,
 		formatTime(now),
 		formatTime(now),
 	)
@@ -507,9 +516,10 @@ func (s *Store) DeleteAccounts(ctx context.Context, tokens []string) (int, error
 }
 
 type AccountUpdate struct {
-	Type   *string
-	Status *string
-	Quota  *int
+	Type     *string
+	Status   *string
+	Quota    *int
+	Password *string
 }
 
 func (s *Store) UpdateAccount(ctx context.Context, accessToken string, update AccountUpdate) (domain.Account, error) {
@@ -526,13 +536,17 @@ func (s *Store) UpdateAccount(ctx context.Context, accessToken string, update Ac
 	if update.Quota != nil {
 		current.Quota = *update.Quota
 	}
+	if update.Password != nil {
+		current.Password = strings.TrimSpace(*update.Password)
+	}
 	current.UpdatedAt = time.Now().UTC()
 	_, err = s.db.ExecContext(
 		ctx,
-		`UPDATE accounts SET type = ?, status = ?, quota = ?, updated_at = ? WHERE access_token = ?`,
+		`UPDATE accounts SET type = ?, status = ?, quota = ?, password = ?, updated_at = ? WHERE access_token = ?`,
 		current.Type,
 		current.Status,
 		current.Quota,
+		current.Password,
 		formatTime(current.UpdatedAt),
 		accessToken,
 	)
@@ -545,7 +559,7 @@ func (s *Store) UpdateAccount(ctx context.Context, accessToken string, update Ac
 func (s *Store) GetAccount(ctx context.Context, accessToken string) (domain.Account, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT access_token, type, status, quota, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
+		`SELECT access_token, password, type, status, quota, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
 		 restore_at, success, fail, last_used_at, raw_json, created_at, updated_at
 		 FROM accounts WHERE access_token = ?`,
 		accessToken,
@@ -891,6 +905,20 @@ func defaultSettings() map[string]any {
 		"auto_remove_rate_limited_accounts": false,
 		"log_levels":                        []any{},
 		"ai_review":                         map[string]any{"enabled": false, "base_url": "", "api_key": "", "model": "", "prompt": ""},
+		"register": map[string]any{
+			"proxy":                  "",
+			"mode":                   "total",
+			"total":                  10,
+			"threads":                3,
+			"target_quota":           100,
+			"target_available":       10,
+			"check_interval_seconds": 5,
+			"mail": map[string]any{
+				"inbucket_api_base": "",
+				"inbucket_domains":  []any{},
+				"random_subdomain":  true,
+			},
+		},
 	}
 }
 
@@ -955,6 +983,7 @@ func scanAccount(row rowScanner) (domain.Account, error) {
 	var updatedAt string
 	err := row.Scan(
 		&item.AccessToken,
+		&item.Password,
 		&item.Type,
 		&item.Status,
 		&item.Quota,

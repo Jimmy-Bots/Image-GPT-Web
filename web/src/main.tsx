@@ -13,6 +13,7 @@ import {
   LayoutDashboard,
   LoaderCircle,
   LogOut,
+  MailPlus,
   MessageSquarePlus,
   Play,
   RefreshCw,
@@ -27,11 +28,11 @@ import {
   X
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
-import type { Account, Identity, ImageResult, ImageTask, ModelItem, ReferenceImage, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
+import type { Account, Identity, ImageResult, ImageTask, ModelItem, ReferenceImage, RegisterRuntime, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
 import { classNames, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatQuota, imageSrc, parseJSON, parseTaskData, quotaSummary, safeJSON, statusClass } from "./utils";
 import "./styles.css";
 
-type Tab = "dashboard" | "accounts" | "activity" | "images" | "playground" | "users" | "settings";
+type Tab = "dashboard" | "accounts" | "register" | "activity" | "images" | "playground" | "users" | "settings";
 type WorkbenchItem = {
   id: string;
   status: "queued" | "running" | "success" | "error";
@@ -70,6 +71,7 @@ const workbenchStoragePrefix = "gpt_image_web_workbench:";
 const navItems: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: "dashboard", label: "总览", icon: Activity },
   { id: "accounts", label: "账号池", icon: Users },
+  { id: "register", label: "注册", icon: MailPlus },
   { id: "activity", label: "任务日志", icon: LoaderCircle },
   { id: "images", label: "图片库", icon: ImageIcon },
   { id: "playground", label: "Playground", icon: Play },
@@ -80,6 +82,7 @@ const navItems: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
 const pageTitle: Record<Tab, string> = {
   dashboard: "总览",
   accounts: "账号池",
+  register: "注册",
   activity: "任务日志",
   images: "图片库",
   playground: "Playground",
@@ -107,6 +110,7 @@ function App() {
   const [tasks, setTasks] = useState<ImageTask[]>([]);
   const [images, setImages] = useState<StoredImage[]>([]);
   const [settings, setSettings] = useState<SettingsType>({});
+  const [registerRuntime, setRegisterRuntime] = useState<RegisterRuntime | null>(null);
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [storageStatus, setStorageStatus] = useState("-");
   const [busy, setBusy] = useState<string | null>(null);
@@ -155,6 +159,7 @@ function App() {
           api.users(currentToken).then((data) => setUsers(data.items || [])),
           api.images(currentToken).then((data) => setImages(data.items || [])),
           api.settings(currentToken).then((data) => setSettings(data.config || {})),
+          api.registerState(currentToken).then((data) => setRegisterRuntime(data)),
           api.logs(currentToken).then((data) => setLogs(data.items || [])),
           api.storage(currentToken).then((data) => setStorageStatus(`${data.backend.type} · ${data.health.status}`))
         ]
@@ -170,6 +175,14 @@ function App() {
       setIdentity(null);
     });
   }, []);
+
+  useEffect(() => {
+    if (!token || !isAdmin || !registerRuntime?.running) return;
+    const timer = window.setInterval(() => {
+      api.registerState(token).then(setRegisterRuntime).catch(() => {});
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [token, isAdmin, registerRuntime?.running]);
 
   async function handleLogin(email: string, password: string) {
     if (!email.trim() || !password.trim()) {
@@ -275,6 +288,7 @@ function App() {
 
         {activeTab === "dashboard" && isAdmin && <Dashboard accounts={accounts} models={models} tasks={tasks} storageStatus={storageStatus} onReloadModels={() => runBusy("models", async () => setModels((await api.models(token)).data || []))} />}
         {activeTab === "accounts" && isAdmin && <AccountsPanel token={token} accounts={accounts} setAccounts={setAccounts} toast={toast} busy={busy} runBusy={runBusy} />}
+        {activeTab === "register" && isAdmin && <RegisterPanel token={token} registerRuntime={registerRuntime} setRegisterRuntime={setRegisterRuntime} toast={toast} />}
         {activeTab === "activity" && isAdmin && <ActivityPanel token={token} tasks={tasks} setTasks={setTasks} logs={logs} setLogs={setLogs} openLightbox={(src, title) => setLightbox({ src, title })} toast={toast} />}
         {activeTab === "images" && isAdmin && <ImagesPanel token={token} images={images} setImages={setImages} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
         {activeTab === "playground" && <Playground token={token} models={models} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
@@ -448,7 +462,7 @@ function AccountsPanel({ token, accounts, setAccounts, toast, busy, runBusy }: {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return accounts.filter((item) => {
-      const text = `${item.email || ""} ${item.token_ref} ${item.access_token_masked} ${item.type}`.toLowerCase();
+      const text = `${item.email || ""} ${item.token_ref} ${item.access_token_masked} ${item.password || ""} ${item.type}`.toLowerCase();
       return (!q || text.includes(q)) && (!status || item.status === status) && (!type || (item.type || "Free") === type);
     });
   }, [accounts, query, status, type]);
@@ -478,7 +492,7 @@ function AccountsPanel({ token, accounts, setAccounts, toast, busy, runBusy }: {
     setSelected([]);
     toast("success", `已删除 ${data.removed} 个账号`);
   }
-  async function update(ref: string, body: { status?: string }) {
+  async function update(ref: string, body: { status?: string; password?: string }) {
     const data = await api.updateAccount(token, ref, body);
     setAccounts(data.items);
   }
@@ -488,7 +502,7 @@ function AccountsPanel({ token, accounts, setAccounts, toast, busy, runBusy }: {
       <PanelHead title="账号池" subtitle="导入、筛选、刷新和维护 ChatGPT access_token" action={<><button className="secondary" onClick={() => runBusy("refresh-all-accounts", () => refresh([]))}>刷新全部</button><button className="secondary-danger" onClick={() => runBusy("remove-bad", () => remove(accounts.filter((item) => item.status === "异常").map((item) => item.token_ref)))}>移除异常</button></>} />
       <div className="account-import"><textarea value={tokens} onChange={(event) => setTokens(event.target.value)} placeholder="每行一个 access_token，支持批量粘贴" /><button disabled={busy === "import"} onClick={() => runBusy("import", importTokens)}><Upload size={16} />导入账号</button></div>
       <div className="filters">
-        <div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱、token ref、类型" /></div>
+        <div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱、token ref、密码、类型" /></div>
         <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>正常</option><option>限流</option><option>异常</option><option>禁用</option></select>
         <select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option>{types.map((item) => <option key={item}>{item}</option>)}</select>
         <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select>
@@ -505,7 +519,7 @@ function AccountsPanel({ token, accounts, setAccounts, toast, busy, runBusy }: {
       <datalist id="account-type-options">{types.map((value) => <option key={value}>{value}</option>)}</datalist>
       <div className="table-wrap">
         <table className="accounts-table">
-          <thead><tr><th></th><th>Token</th><th>Email</th><th>类型</th><th>状态</th><th>额度</th><th>恢复</th><th>成功/失败</th><th>最近使用</th><th></th></tr></thead>
+          <thead><tr><th></th><th>Token</th><th>Email</th><th>密码</th><th>类型</th><th>状态</th><th>额度</th><th>恢复</th><th>成功/失败</th><th>最近使用</th><th></th></tr></thead>
           <tbody>{current.map((item) => (
             <AccountRow
               key={item.token_ref}
@@ -520,6 +534,7 @@ function AccountsPanel({ token, accounts, setAccounts, toast, busy, runBusy }: {
                 setAccounts(data.items);
                 toast("success", "账号已更新");
               }}
+              toast={toast}
             />
           ))}</tbody>
         </table>
@@ -529,17 +544,18 @@ function AccountsPanel({ token, accounts, setAccounts, toast, busy, runBusy }: {
   );
 }
 
-function AccountRow({ item, selected, onSelect, onRefresh, onToggle, onDelete, onSave }: { item: Account; selected: boolean; onSelect: (checked: boolean) => void; onRefresh: () => void; onToggle: () => void; onDelete: () => void; onSave: (body: { type?: string; status?: string; quota?: number }) => Promise<void> }) {
+function AccountRow({ item, selected, onSelect, onRefresh, onToggle, onDelete, onSave, toast }: { item: Account; selected: boolean; onSelect: (checked: boolean) => void; onRefresh: () => void; onToggle: () => void; onDelete: () => void; onSave: (body: { type?: string; status?: string; quota?: number; password?: string }) => Promise<void>; toast: (type: Toast["type"], message: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [draft, setDraft] = useState({ type: item.type || "Free", status: item.status || "正常", quota: String(item.quota ?? 0) });
+  const [revealPassword, setRevealPassword] = useState(false);
+  const [draft, setDraft] = useState({ type: item.type || "Free", status: item.status || "正常", quota: String(item.quota ?? 0), password: item.password || "" });
   useEffect(() => {
-    if (!editing) setDraft({ type: item.type || "Free", status: item.status || "正常", quota: String(item.quota ?? 0) });
-  }, [editing, item.type, item.status, item.quota]);
+    if (!editing) setDraft({ type: item.type || "Free", status: item.status || "正常", quota: String(item.quota ?? 0), password: item.password || "" });
+  }, [editing, item.type, item.status, item.quota, item.password]);
   async function save() {
     setSaving(true);
     try {
-      await onSave({ type: draft.type.trim() || "Free", status: draft.status, quota: Number(draft.quota) || 0 });
+      await onSave({ type: draft.type.trim() || "Free", status: draft.status, quota: Number(draft.quota) || 0, password: draft.password.trim() });
       setEditing(false);
     } finally {
       setSaving(false);
@@ -550,6 +566,24 @@ function AccountRow({ item, selected, onSelect, onRefresh, onToggle, onDelete, o
       <td><input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)} /></td>
       <td><code>{item.access_token_masked || item.token_ref}</code><small>{item.token_ref}</small></td>
       <td>{item.email || "-"}</td>
+      <td>
+        {editing ? (
+          <div className="account-password-cell">
+            <input className="cell-input password-cell" type={revealPassword ? "text" : "password"} value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} placeholder="password" />
+            <IconButton title={revealPassword ? "隐藏密码" : "显示密码"} onClick={() => setRevealPassword((value) => !value)}>{revealPassword ? <EyeOff size={15} /> : <Eye size={15} />}</IconButton>
+          </div>
+        ) : (
+          <div className="account-password-cell">
+            <code>{item.password ? (revealPassword ? item.password : "••••••••") : "-"}</code>
+            {item.password ? (
+              <>
+                <IconButton title={revealPassword ? "隐藏密码" : "显示密码"} onClick={() => setRevealPassword((value) => !value)}>{revealPassword ? <EyeOff size={15} /> : <Eye size={15} />}</IconButton>
+                <IconButton title="复制密码" onClick={() => copyText(item.password || "").then(() => toast("success", "已复制密码"))}><Copy size={15} /></IconButton>
+              </>
+            ) : null}
+          </div>
+        )}
+      </td>
       <td>{editing ? <input className="cell-input" list="account-type-options" value={draft.type} onChange={(event) => setDraft({ ...draft, type: event.target.value })} /> : (item.type || "Free")}</td>
       <td>{editing ? <select className="cell-input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}><option>正常</option><option>限流</option><option>异常</option><option>禁用</option></select> : <Badge value={item.status} />}</td>
       <td>{editing ? <input className="cell-input" type="number" min={0} value={draft.quota} onChange={(event) => setDraft({ ...draft, quota: event.target.value })} /> : formatQuota(item)}</td>
@@ -1297,7 +1331,7 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
     <>
       <div className="filters activity-filters">
         <div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索日志内容、接口、模型" /></div>
-        <select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="account">账号</option></select>
+        <select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="account">账号</option><option value="register">注册</option></select>
         <button className="secondary" onClick={() => load().catch((error) => toast("error", error.message))}>刷新日志</button>
         <button className="danger" disabled={!selected.length} onClick={() => clear().catch((error) => toast("error", error.message))}>清理选中</button>
       </div>
@@ -1567,6 +1601,167 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
   function updateField(key: string, value: unknown) { setSettings({ ...settings, [key]: value }); }
   async function save(next = settings) { const data = await api.saveSettings(token, next); setSettings(data.config || {}); toast("success", "设置已保存"); }
   return <div className="settings-layout"><section className="panel"><PanelHead title="常用设置" subtitle="保存后会同步写入配置表" action={<button onClick={() => save().catch((error) => toast("error", error.message))}>保存</button>} /><div className="settings-form"><label><span>Proxy</span><input value={String(settings.proxy || "")} onChange={(event) => updateField("proxy", event.target.value)} /></label><label><span>Base URL</span><input value={String(settings.base_url || "")} onChange={(event) => updateField("base_url", event.target.value)} /></label><label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label><label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label><label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label><label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label><label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label></div></section><section className="panel"><PanelHead title="原始 JSON" subtitle="高级设置可以直接编辑" action={<button className="secondary" onClick={() => { const parsed = parseJSON(json) as SettingsType; save(parsed).catch((error) => toast("error", error.message)); }}>保存 JSON</button>} /><textarea className="json-editor settings-json" value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} /></section></div>;
+}
+
+function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { token: string; registerRuntime: RegisterRuntime | null; setRegisterRuntime: React.Dispatch<React.SetStateAction<RegisterRuntime | null>>; toast: (type: Toast["type"], message: string) => void }) {
+  const registerConfig = registerRuntime?.state?.config;
+  const registerMail = registerConfig?.mail || {};
+  const [registerLogs, setRegisterLogs] = useState<SystemLog[]>([]);
+  const [registerLogsExpanded, setRegisterLogsExpanded] = useState<string | null>(null);
+  const [registerLogsLoading, setRegisterLogsLoading] = useState(false);
+  const [registerLogDetailLoading, setRegisterLogDetailLoading] = useState<string | null>(null);
+  const [draft, setDraft] = useState({
+    proxy: String(registerConfig?.proxy || ""),
+    mode: String(registerConfig?.mode || "total"),
+    total: Number(registerConfig?.total || 10),
+    threads: Number(registerConfig?.threads || 3),
+    targetQuota: Number(registerConfig?.target_quota || 100),
+    targetAvailable: Number(registerConfig?.target_available || 10),
+    checkIntervalSeconds: parseCheckIntervalSeconds(registerConfig?.check_interval),
+    apiBase: String(registerMail.inbucket_api_base || ""),
+    domains: Array.isArray(registerMail.inbucket_domains) ? registerMail.inbucket_domains.join("\n") : "",
+    randomSubdomain: Boolean(registerMail.random_subdomain ?? true)
+  });
+  useEffect(() => {
+    setDraft({
+      proxy: String(registerConfig?.proxy || ""),
+      mode: String(registerConfig?.mode || "total"),
+      total: Number(registerConfig?.total || 10),
+      threads: Number(registerConfig?.threads || 3),
+      targetQuota: Number(registerConfig?.target_quota || 100),
+      targetAvailable: Number(registerConfig?.target_available || 10),
+      checkIntervalSeconds: parseCheckIntervalSeconds(registerConfig?.check_interval),
+      apiBase: String(registerMail.inbucket_api_base || ""),
+      domains: Array.isArray(registerMail.inbucket_domains) ? registerMail.inbucket_domains.join("\n") : "",
+      randomSubdomain: Boolean(registerMail.random_subdomain ?? true)
+    });
+  }, [registerConfig?.proxy, registerConfig?.mode, registerConfig?.total, registerConfig?.threads, registerConfig?.target_quota, registerConfig?.target_available, registerConfig?.check_interval, registerMail.inbucket_api_base, registerMail.inbucket_domains, registerMail.random_subdomain]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRegisterLogsLoading(true);
+    api.logs(token, "register")
+      .then((data) => {
+        if (cancelled) return;
+        setRegisterLogs(data.items || []);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (cancelled) return;
+        setRegisterLogsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    if (!registerRuntime?.running) return;
+    const timer = window.setInterval(() => {
+      api.logs(token, "register")
+        .then((data) => setRegisterLogs((current) => mergeLogs(current, data.items || [])))
+        .catch(() => {});
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [token, registerRuntime?.running]);
+
+  async function reloadRegister() {
+    const [runtime, logsData] = await Promise.all([api.registerState(token), api.logs(token, "register")]);
+    setRegisterRuntime(runtime);
+    setRegisterLogs(logsData.items || []);
+  }
+  async function saveRegister() {
+    const data = await api.saveRegisterConfig(token, {
+      proxy: draft.proxy,
+      mode: draft.mode as "total" | "quota" | "available",
+      total: Number(draft.total || 1),
+      threads: Number(draft.threads || 1),
+      target_quota: Number(draft.targetQuota || 1),
+      target_available: Number(draft.targetAvailable || 1),
+      check_interval_seconds: Number(draft.checkIntervalSeconds || 1),
+      mail: {
+        inbucket_api_base: draft.apiBase,
+        inbucket_domains: draft.domains.split("\n").map((item) => item.trim()).filter(Boolean),
+        random_subdomain: draft.randomSubdomain
+      }
+    });
+    setRegisterRuntime((current) => current ? { ...current, state: data.state } : { state: data.state, running: false, last_error: "", last_result: null });
+    setRegisterLogs((await api.logs(token, "register")).items || []);
+    toast("success", "注册配置已保存");
+  }
+  async function startRegister() {
+    const data = await api.startRegister(token);
+    setRegisterRuntime(data);
+    setRegisterLogs((await api.logs(token, "register")).items || []);
+    toast("success", "注册任务已启动");
+  }
+  async function stopRegister() {
+    const data = await api.stopRegister(token);
+    setRegisterRuntime(data);
+    setRegisterLogs((await api.logs(token, "register")).items || []);
+    toast("success", "注册任务已停止");
+  }
+  async function runRegisterOnce() {
+    const data = await api.runRegisterOnce(token);
+    setRegisterRuntime(data);
+    setRegisterLogs((await api.logs(token, "register")).items || []);
+    toast("success", "单次注册已执行");
+  }
+
+  async function refreshRegisterLogs() {
+    setRegisterLogsLoading(true);
+    try {
+      setRegisterLogs((await api.logs(token, "register")).items || []);
+    } finally {
+      setRegisterLogsLoading(false);
+    }
+  }
+
+  async function toggleRegisterLogDetail(log: SystemLog) {
+    if (registerLogsExpanded === log.id) {
+      setRegisterLogsExpanded(null);
+      return;
+    }
+    setRegisterLogsExpanded(log.id);
+    if (Object.keys(logDetail(log)).length > 0) return;
+    setRegisterLogDetailLoading(log.id);
+    try {
+      const data = await api.logs(token, "register", [log.id]);
+      setRegisterLogs((current) => mergeLogs(current, data.items || []));
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "读取注册日志详情失败");
+    } finally {
+      setRegisterLogDetailLoading(null);
+    }
+  }
+
+  return <div className="stack"><div className="register-layout"><section className="panel"><PanelHead title="注册配置" subtitle="inbucket 邮箱、并发和目标模式" action={<><button className="secondary small" onClick={() => reloadRegister().catch((error) => toast("error", error.message))}>刷新</button><button className="secondary small" onClick={() => saveRegister().catch((error) => toast("error", error.message))}>保存配置</button></>} /><div className="settings-form register-form"><label><span>Inbucket API Base</span><input value={draft.apiBase} onChange={(event) => setDraft({ ...draft, apiBase: event.target.value })} placeholder="http://127.0.0.1:9000" /></label><label><span>Register Proxy</span><input value={draft.proxy} onChange={(event) => setDraft({ ...draft, proxy: event.target.value })} placeholder="留空则继承全局 Proxy" /></label><label><span>模式</span><select value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value })}><option value="total">total</option><option value="quota">quota</option><option value="available">available</option></select></label><label><span>线程数</span><input type="number" value={draft.threads} onChange={(event) => setDraft({ ...draft, threads: Number(event.target.value) })} /></label><label><span>Total</span><input type="number" value={draft.total} onChange={(event) => setDraft({ ...draft, total: Number(event.target.value) })} /></label><label><span>Check Interval 秒</span><input type="number" value={draft.checkIntervalSeconds} onChange={(event) => setDraft({ ...draft, checkIntervalSeconds: Number(event.target.value) })} /></label><label><span>Target Quota</span><input type="number" value={draft.targetQuota} onChange={(event) => setDraft({ ...draft, targetQuota: Number(event.target.value) })} /></label><label><span>Target Available</span><input type="number" value={draft.targetAvailable} onChange={(event) => setDraft({ ...draft, targetAvailable: Number(event.target.value) })} /></label><label className="inline"><input type="checkbox" checked={draft.randomSubdomain} onChange={(event) => setDraft({ ...draft, randomSubdomain: event.target.checked })} /><span>随机子域名</span></label><label className="wide"><span>Inbucket Domains，每行一个</span><textarea value={draft.domains} onChange={(event) => setDraft({ ...draft, domains: event.target.value })} /></label></div></section><section className="panel"><PanelHead title="运行状态" subtitle="单次注册和批量注册控制" action={<div className="register-toolbar"><span className={classNames("badge", registerRuntime?.running ? "warn" : "ok")}>{registerRuntime?.running ? "running" : "idle"}</span></div>} /><div className="detail-grid register-stats"><DetailItem label="Success" value={String(Number(registerRuntime?.state?.stats?.success || 0))} /><DetailItem label="Fail" value={String(Number(registerRuntime?.state?.stats?.fail || 0))} /><DetailItem label="Done" value={String(Number(registerRuntime?.state?.stats?.done || 0))} /><DetailItem label="Running" value={String(Number(registerRuntime?.state?.stats?.running || 0))} /><DetailItem label="Quota" value={String(Number(registerRuntime?.state?.stats?.current_quota || 0))} /><DetailItem label="Available" value={String(Number(registerRuntime?.state?.stats?.current_available || 0))} /><DetailItem label="Started" value={fmtDate(registerRuntime?.state?.stats?.started_at)} /><DetailItem label="Updated" value={fmtDate(registerRuntime?.state?.stats?.updated_at)} /></div>{registerRuntime?.last_error ? <p className="detail-error">{registerRuntime.last_error}</p> : null}{registerRuntime?.last_result?.email ? <p className="register-last">last success: {registerRuntime.last_result.email} · {fmtDate(registerRuntime.last_result.created_at)}</p> : null}<div className="register-actions"><button onClick={() => runRegisterOnce().catch((error) => toast("error", error.message))}>单次注册</button><button className="secondary" onClick={() => startRegister().catch((error) => toast("error", error.message))}>启动批量</button><button className="secondary-danger" onClick={() => stopRegister().catch((error) => toast("error", error.message))}>停止批量</button></div></section></div><section className="panel"><PanelHead title="最近注册日志" subtitle="只显示 register 类型，方便直接排查当前注册流程" action={<button className="secondary small" onClick={() => refreshRegisterLogs().catch((error) => toast("error", error.message))}>{registerLogsLoading ? "刷新中" : "刷新日志"}</button>} /><div className="table-wrap"><table className="activity-table log-table register-log-table"><thead><tr><th>Time</th><th>Summary</th><th>Status</th><th>Email</th><th>Error</th><th></th></tr></thead><tbody>{registerLogs.length ? registerLogs.slice(0, 30).map((log) => {
+    const detail = logDetail(log);
+    const open = registerLogsExpanded === log.id;
+    return (
+      <React.Fragment key={log.id}>
+        <tr>
+          <td>{fmtDate(log.time)}</td>
+          <td>{log.summary}</td>
+          <td>{detail.status ? <Badge value={String(detail.status)} /> : /成功|完成|success/i.test(log.summary) ? <Badge value="success" /> : /失败|error/i.test(log.summary) ? <Badge value="error" /> : "-"}</td>
+          <td>{String(detail.email || "-")}</td>
+          <td className={detail.error ? "error-cell" : ""}>{String(detail.error || "-")}</td>
+          <td><button className="ghost small" onClick={() => toggleRegisterLogDetail(log)}>{registerLogDetailLoading === log.id ? "加载" : open ? "收起" : "详情"}</button></td>
+        </tr>
+        {open ? <tr className="detail-row"><td colSpan={6}>{registerLogDetailLoading === log.id ? <div className="detail-panel">加载详情中...</div> : <LogDetail log={log} />}</td></tr> : null}
+      </React.Fragment>
+    );
+  }) : <tr><td colSpan={6}><div className="register-log-empty">{registerLogsLoading ? "日志加载中..." : "暂无注册日志"}</div></td></tr>}</tbody></table></div></section></div>;
+}
+
+function parseCheckIntervalSeconds(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(1, Math.round(value / 1_000_000_000));
+  if (typeof value === "string") {
+    if (/^\d+$/.test(value.trim())) return Number(value.trim());
+    const matched = value.match(/(\d+)/);
+    if (matched) return Number(matched[1]);
+  }
+  return 5;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

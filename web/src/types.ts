@@ -11,6 +11,7 @@ export type Identity = {
 export type Account = {
   token_ref: string;
   access_token_masked: string;
+  password?: string;
   type: string;
   status: string;
   quota: number;
@@ -92,6 +93,64 @@ export type ModelItem = {
 };
 
 export type Settings = Record<string, unknown>;
+
+export type RegisterConfig = {
+  proxy?: string;
+  mode?: "total" | "quota" | "available";
+  total?: number;
+  threads?: number;
+  target_quota?: number;
+  target_available?: number;
+  check_interval_seconds?: number;
+  mail?: {
+    inbucket_api_base?: string;
+    inbucket_domains?: string[];
+    random_subdomain?: boolean;
+  };
+};
+
+export type RegisterState = {
+  config: {
+    proxy?: string;
+    total: number;
+    threads: number;
+    mode: "total" | "quota" | "available";
+    target_quota: number;
+    target_available: number;
+    check_interval: number | string;
+    mail?: {
+      inbucket_api_base?: string;
+      inbucket_domains?: string[];
+      random_subdomain?: boolean;
+    };
+  };
+  enabled: boolean;
+  stats?: {
+    success?: number;
+    fail?: number;
+    done?: number;
+    running?: number;
+    threads?: number;
+    elapsed_seconds?: number;
+    avg_seconds?: number;
+    success_rate?: number;
+    current_quota?: number;
+    current_available?: number;
+    started_at?: string;
+    updated_at?: string;
+    finished_at?: string;
+  };
+};
+
+export type RegisterRuntime = {
+  state: RegisterState;
+  last_error?: string;
+  running: boolean;
+  last_result?: {
+    email?: string;
+    created_at?: string;
+  } | null;
+};
 
 export type Toast = {
   id: string;

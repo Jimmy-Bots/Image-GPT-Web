@@ -11,58 +11,78 @@ import (
 )
 
 type Config struct {
-	Addr                    string
-	AppVersion              string
-	DataDir                 string
-	WebDir                  string
-	ImagesDir               string
-	DatabasePath            string
-	DBMaxOpenConns          int
-	ProxyURL                string
-	BaseURL                 string
-	LogLevel                string
-	CORSAllowedOrigins      []string
-	MaxRequestBodyBytes     int64
-	LoginRateLimitMax       int
-	LoginRateLimitWindowSec int
-	LegacyAdminKey          string
-	SessionSecret           string
-	SessionTTLHours         int
-	AdminEmail              string
-	AdminPassword           string
-	AllowPublicRegistration bool
-	ImageWorkerCount        int
-	ImageQueueSize          int
-	ImageAccountConcurrency int
+	Addr                            string
+	AppVersion                      string
+	DataDir                         string
+	WebDir                          string
+	ImagesDir                       string
+	DatabasePath                    string
+	DBMaxOpenConns                  int
+	ProxyURL                        string
+	BaseURL                         string
+	LogLevel                        string
+	CORSAllowedOrigins              []string
+	MaxRequestBodyBytes             int64
+	LoginRateLimitMax               int
+	LoginRateLimitWindowSec         int
+	LegacyAdminKey                  string
+	SessionSecret                   string
+	SessionTTLHours                 int
+	AdminEmail                      string
+	AdminPassword                   string
+	AllowPublicRegistration         bool
+	ImageWorkerCount                int
+	ImageQueueSize                  int
+	ImageAccountConcurrency         int
+	RegisterInbucketAPIBase         string
+	RegisterInbucketDomains         []string
+	RegisterInbucketRandomSubdomain bool
+	RegisterProxyURL                string
+	RegisterMode                    string
+	RegisterTotal                   int
+	RegisterThreads                 int
+	RegisterTargetQuota             int
+	RegisterTargetAvailable         int
+	RegisterCheckIntervalSeconds    int
 }
 
 func Load() (Config, error) {
 	dataDir := envString("CHATGPT2API_DATA_DIR", "./data")
 	dbPath := envString("CHATGPT2API_DB_PATH", filepath.Join(dataDir, "app.db"))
 	cfg := Config{
-		Addr:                    envString("CHATGPT2API_ADDR", ":3000"),
-		AppVersion:              envString("CHATGPT2API_VERSION", "0.1.0-go"),
-		DataDir:                 dataDir,
-		WebDir:                  envString("CHATGPT2API_WEB_DIR", "./web/dist"),
-		ImagesDir:               envString("CHATGPT2API_IMAGES_DIR", filepath.Join(dataDir, "images")),
-		DatabasePath:            dbPath,
-		DBMaxOpenConns:          envInt("CHATGPT2API_DB_MAX_OPEN_CONNS", 16, 1),
-		ProxyURL:                envString("CHATGPT2API_PROXY_URL", ""),
-		BaseURL:                 strings.TrimRight(envString("CHATGPT2API_BASE_URL", ""), "/"),
-		LogLevel:                normalizeLogLevel(envString("CHATGPT2API_LOG_LEVEL", "info")),
-		CORSAllowedOrigins:      envList("CHATGPT2API_CORS_ALLOWED_ORIGINS"),
-		MaxRequestBodyBytes:     int64(envInt("CHATGPT2API_MAX_REQUEST_BODY_MB", 80, 1)) << 20,
-		LoginRateLimitMax:       envInt("CHATGPT2API_LOGIN_RATE_LIMIT_MAX", 8, 1),
-		LoginRateLimitWindowSec: envInt("CHATGPT2API_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300, 1),
-		LegacyAdminKey:          strings.TrimSpace(os.Getenv("CHATGPT2API_AUTH_KEY")),
-		SessionSecret:           strings.TrimSpace(os.Getenv("CHATGPT2API_SESSION_SECRET")),
-		SessionTTLHours:         envInt("CHATGPT2API_SESSION_TTL_HOURS", 24*14, 1),
-		AdminEmail:              envString("CHATGPT2API_ADMIN_EMAIL", "admin@example.com"),
-		AdminPassword:           strings.TrimSpace(os.Getenv("CHATGPT2API_ADMIN_PASSWORD")),
-		AllowPublicRegistration: envBool("CHATGPT2API_ALLOW_REGISTRATION", false),
-		ImageWorkerCount:        envInt("CHATGPT2API_IMAGE_WORKERS", 4, 1),
-		ImageQueueSize:          envInt("CHATGPT2API_IMAGE_QUEUE_SIZE", 128, 1),
-		ImageAccountConcurrency: envInt("CHATGPT2API_IMAGE_ACCOUNT_CONCURRENCY", 1, 1),
+		Addr:                            envString("CHATGPT2API_ADDR", ":3000"),
+		AppVersion:                      envString("CHATGPT2API_VERSION", "0.1.0-go"),
+		DataDir:                         dataDir,
+		WebDir:                          envString("CHATGPT2API_WEB_DIR", "./web/dist"),
+		ImagesDir:                       envString("CHATGPT2API_IMAGES_DIR", filepath.Join(dataDir, "images")),
+		DatabasePath:                    dbPath,
+		DBMaxOpenConns:                  envInt("CHATGPT2API_DB_MAX_OPEN_CONNS", 16, 1),
+		ProxyURL:                        envString("CHATGPT2API_PROXY_URL", ""),
+		BaseURL:                         strings.TrimRight(envString("CHATGPT2API_BASE_URL", ""), "/"),
+		LogLevel:                        normalizeLogLevel(envString("CHATGPT2API_LOG_LEVEL", "info")),
+		CORSAllowedOrigins:              envList("CHATGPT2API_CORS_ALLOWED_ORIGINS"),
+		MaxRequestBodyBytes:             int64(envInt("CHATGPT2API_MAX_REQUEST_BODY_MB", 80, 1)) << 20,
+		LoginRateLimitMax:               envInt("CHATGPT2API_LOGIN_RATE_LIMIT_MAX", 8, 1),
+		LoginRateLimitWindowSec:         envInt("CHATGPT2API_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300, 1),
+		LegacyAdminKey:                  strings.TrimSpace(os.Getenv("CHATGPT2API_AUTH_KEY")),
+		SessionSecret:                   strings.TrimSpace(os.Getenv("CHATGPT2API_SESSION_SECRET")),
+		SessionTTLHours:                 envInt("CHATGPT2API_SESSION_TTL_HOURS", 24*14, 1),
+		AdminEmail:                      envString("CHATGPT2API_ADMIN_EMAIL", "admin@example.com"),
+		AdminPassword:                   strings.TrimSpace(os.Getenv("CHATGPT2API_ADMIN_PASSWORD")),
+		AllowPublicRegistration:         envBool("CHATGPT2API_ALLOW_REGISTRATION", false),
+		ImageWorkerCount:                envInt("CHATGPT2API_IMAGE_WORKERS", 4, 1),
+		ImageQueueSize:                  envInt("CHATGPT2API_IMAGE_QUEUE_SIZE", 128, 1),
+		ImageAccountConcurrency:         envInt("CHATGPT2API_IMAGE_ACCOUNT_CONCURRENCY", 1, 1),
+		RegisterInbucketAPIBase:         strings.TrimSpace(os.Getenv("CHATGPT2API_REGISTER_INBUCKET_API_BASE")),
+		RegisterInbucketDomains:         envList("CHATGPT2API_REGISTER_INBUCKET_DOMAINS"),
+		RegisterInbucketRandomSubdomain: envBool("CHATGPT2API_REGISTER_INBUCKET_RANDOM_SUBDOMAIN", true),
+		RegisterProxyURL:                strings.TrimSpace(os.Getenv("CHATGPT2API_REGISTER_PROXY_URL")),
+		RegisterMode:                    envString("CHATGPT2API_REGISTER_MODE", "total"),
+		RegisterTotal:                   envInt("CHATGPT2API_REGISTER_TOTAL", 10, 1),
+		RegisterThreads:                 envInt("CHATGPT2API_REGISTER_THREADS", 3, 1),
+		RegisterTargetQuota:             envInt("CHATGPT2API_REGISTER_TARGET_QUOTA", 100, 1),
+		RegisterTargetAvailable:         envInt("CHATGPT2API_REGISTER_TARGET_AVAILABLE", 10, 1),
+		RegisterCheckIntervalSeconds:    envInt("CHATGPT2API_REGISTER_CHECK_INTERVAL_SECONDS", 5, 1),
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create data dir: %w", err)

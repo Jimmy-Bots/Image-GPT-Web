@@ -21,6 +21,7 @@ This version intentionally removes the old register/register-machine module. The
 - Sensitive-word filtering and optional OpenAI-compatible AI review before upstream calls.
 - Async image task queue with bounded workers for generation and edit tasks.
 - Outbound proxy support through `CHATGPT2API_PROXY_URL`.
+- Optional OpenAI account register workflow with `inbucket` mailbox provider.
 
 The ChatGPT Web reverse adapter is isolated in `internal/upstream/chatgpt` and uses a browser-like TLS client for endpoints that are sensitive to standard Go HTTP fingerprints.
 
@@ -79,6 +80,16 @@ Useful environment variables:
 - `CHATGPT2API_MAX_REQUEST_BODY_MB`: request body cap, default `80`.
 - `CHATGPT2API_LOGIN_RATE_LIMIT_MAX`: login attempts per IP/email window, default `8`.
 - `CHATGPT2API_LOGIN_RATE_LIMIT_WINDOW_SECONDS`: login rate-limit window, default `300`.
+- `CHATGPT2API_REGISTER_INBUCKET_API_BASE`: inbucket API base URL.
+- `CHATGPT2API_REGISTER_INBUCKET_DOMAINS`: comma-separated base domains for generated mailboxes.
+- `CHATGPT2API_REGISTER_INBUCKET_RANDOM_SUBDOMAIN`: whether to generate random subdomains, default `true`.
+- `CHATGPT2API_REGISTER_PROXY_URL`: optional dedicated register proxy; empty falls back to global proxy.
+- `CHATGPT2API_REGISTER_MODE`: `total`, `quota`, or `available`.
+- `CHATGPT2API_REGISTER_TOTAL`: target count for `total` mode.
+- `CHATGPT2API_REGISTER_THREADS`: concurrent register workers.
+- `CHATGPT2API_REGISTER_TARGET_QUOTA`: target quota for `quota` mode.
+- `CHATGPT2API_REGISTER_TARGET_AVAILABLE`: target account count for `available` mode.
+- `CHATGPT2API_REGISTER_CHECK_INTERVAL_SECONDS`: polling interval for target-based batch mode.
 
 ## Main Endpoints
 
@@ -91,6 +102,11 @@ Useful environment variables:
 - `GET|POST|DELETE /api/accounts`: account pool management.
 - `POST /api/accounts/refresh`: refresh account profile, plan, model, and image quota state.
 - `GET|POST /api/settings`: system settings.
+- `GET /api/register/state`: current register runtime and last result.
+- `POST /api/register/config`: save register config.
+- `POST /api/register/start`: start batch register.
+- `POST /api/register/stop`: stop batch register.
+- `POST /api/register/run-once`: run one register attempt immediately.
 - `GET /api/storage/info`: storage status.
 - `GET /api/images`, `POST /api/images/delete`: local image archive management.
 - `GET /v1/models`: OpenAI-compatible model list.

@@ -18,6 +18,7 @@ coverage.out
 
 # Go
 *.test
+.gocache
 
 # SQLite
 *.db

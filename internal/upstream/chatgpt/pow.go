@@ -62,6 +62,10 @@ func buildProofToken(seed string, difficulty string, userAgent string, scriptSou
 	return "gAAAAAB" + answer, nil
 }
 
+func BuildProofToken(seed string, difficulty string, userAgent string) (string, error) {
+	return buildProofToken(seed, difficulty, userAgent, nil, "")
+}
+
 func buildPOWConfig(userAgent string, scriptSources []string, dataBuild string) []any {
 	if len(scriptSources) == 0 {
 		scriptSources = []string{defaultPOWScript}

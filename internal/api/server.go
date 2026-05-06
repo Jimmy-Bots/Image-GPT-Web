@@ -27,6 +27,7 @@ type Server struct {
 	pool     *AccountPool
 	tasks    *TaskQueue
 	limiter  *loginLimiter
+	register *registerManager
 }
 
 func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
@@ -39,6 +40,7 @@ func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
 		limiter:  newLoginLimiter(cfg.LoginRateLimitMax, time.Duration(cfg.LoginRateLimitWindowSec)*time.Second),
 	}
 	s.upstream = NewChatGPTUpstream(store, pool, cfg.ProxyURL)
+	s.register = newRegisterManager(cfg, store)
 	if err := s.bootstrap(context.Background()); err != nil {
 		return nil, err
 	}
@@ -85,6 +87,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/accounts/refresh", s.handleRefreshAccounts)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
+	mux.HandleFunc("GET /api/register/state", s.handleGetRegisterState)
+	mux.HandleFunc("POST /api/register/config", s.handleSaveRegisterConfig)
+	mux.HandleFunc("POST /api/register/start", s.handleStartRegister)
+	mux.HandleFunc("POST /api/register/stop", s.handleStopRegister)
+	mux.HandleFunc("POST /api/register/run-once", s.handleRunRegisterOnce)
 	mux.HandleFunc("GET /api/storage/info", s.handleStorageInfo)
 	mux.HandleFunc("GET /api/logs", s.handleListLogs)
 	mux.HandleFunc("POST /api/logs/delete", s.handleDeleteLogs)
