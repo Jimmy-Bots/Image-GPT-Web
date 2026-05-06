@@ -49,9 +49,13 @@ type Config struct {
 func Load() (Config, error) {
 	dataDir := envString("CHATGPT2API_DATA_DIR", "./data")
 	dbPath := envString("CHATGPT2API_DB_PATH", filepath.Join(dataDir, "app.db"))
+	appVersion := strings.TrimSpace(os.Getenv("CHATGPT2API_VERSION"))
+	if appVersion == "" {
+		appVersion = readVersionFile("VERSION", "0.1.0-go")
+	}
 	cfg := Config{
 		Addr:                            envString("CHATGPT2API_ADDR", ":3000"),
-		AppVersion:                      envString("CHATGPT2API_VERSION", "0.1.0-go"),
+		AppVersion:                      appVersion,
 		DataDir:                         dataDir,
 		WebDir:                          envString("CHATGPT2API_WEB_DIR", "./web/dist"),
 		ImagesDir:                       envString("CHATGPT2API_IMAGES_DIR", filepath.Join(dataDir, "images")),
@@ -163,4 +167,16 @@ func randomSecret() string {
 		return "dev-session-secret"
 	}
 	return base64.RawURLEncoding.EncodeToString(buf)
+}
+
+func readVersionFile(path string, fallback string) string {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fallback
+	}
+	value := strings.TrimSpace(string(content))
+	if value == "" {
+		return fallback
+	}
+	return value
 }

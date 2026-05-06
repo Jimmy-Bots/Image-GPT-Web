@@ -64,6 +64,7 @@ Vite proxies `/api`, `/auth`, `/v1`, and `/images` to the Go server on `127.0.0.
 
 Useful environment variables:
 
+- `VERSION`: repository-root version file, used as the default app version when `CHATGPT2API_VERSION` is not set.
 - `CHATGPT2API_AUTH_KEY`: optional legacy admin bearer key for compatibility API calls, not web login.
 - `CHATGPT2API_ADMIN_EMAIL`: bootstrap admin email.
 - `CHATGPT2API_ADMIN_PASSWORD`: bootstrap admin password.

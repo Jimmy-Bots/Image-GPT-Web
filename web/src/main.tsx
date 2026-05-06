@@ -364,24 +364,25 @@ function App() {
           token={token}
           identity={identity}
           user={currentUser}
+          version={version}
           modelPolicy={modelPolicy}
           isAdmin={Boolean(isAdmin)}
-        quotaLabel={quotaLabelFromUser(currentUser)}
-        refreshUserState={refreshCurrentUser}
-        setTasks={setTasks}
-        setTaskTotal={setTaskTotal}
-        setImages={setImages}
-        toast={toast}
-        logout={logout}
-        openAdmin={() => {
-          setActiveTab("dashboard");
-          setAdminMode(true);
-        }}
-        openLightbox={(src, title) => setLightbox({ src, title })}
-        toasts={toasts}
-        lightbox={lightbox}
-        closeLightbox={() => setLightbox(null)}
-      />
+          quotaLabel={quotaLabelFromUser(currentUser)}
+          refreshUserState={refreshCurrentUser}
+          setTasks={setTasks}
+          setTaskTotal={setTaskTotal}
+          setImages={setImages}
+          toast={toast}
+          logout={logout}
+          openAdmin={() => {
+            setActiveTab("dashboard");
+            setAdminMode(true);
+          }}
+          openLightbox={(src, title) => setLightbox({ src, title })}
+          toasts={toasts}
+          lightbox={lightbox}
+          closeLightbox={() => setLightbox(null)}
+        />
     );
   }
 
@@ -489,6 +490,7 @@ function ImageHome({
   token,
   identity,
   user,
+  version,
   modelPolicy,
   isAdmin,
   quotaLabel,
@@ -507,6 +509,7 @@ function ImageHome({
   token: string;
   identity: Identity;
   user: User | null;
+  version: string;
   modelPolicy: ModelPolicy;
   isAdmin: boolean;
   quotaLabel: string;
@@ -529,13 +532,13 @@ function ImageHome({
           <div className="brand-mark">GI</div>
           <div>
             <strong>GPT Image Web</strong>
-            <span>{identity.name || "User"} · {identity.role}</span>
+            <span>{identity.name || "User"} · {identity.role} · {version}</span>
           </div>
         </div>
         <div className="home-actions">
           <span className="status-pill">online</span>
-          {isAdmin ? <button className="secondary" onClick={openAdmin}><LayoutDashboard size={16} />管理后台</button> : null}
-          <button className="ghost" onClick={logout}><LogOut size={16} />退出</button>
+          {isAdmin ? <button className="secondary compact" onClick={openAdmin}><LayoutDashboard size={15} />管理后台</button> : null}
+          <button className="ghost compact" onClick={logout}><LogOut size={15} />退出</button>
         </div>
       </header>
 
@@ -1337,9 +1340,9 @@ function workbenchLoadingLabel(item: WorkbenchItem, index: number) {
   }
   const steps = item.status === "queued"
     ? [
-      "正在为你整理画面意图",
-      "当前请求较多，正在排队进入绘制",
-      "正在等待可用绘图额度"
+      "正在为你分析画面需求",
+      "正在准备进入绘制流程",
+      "正在等待第一版画面生成"
     ]
     : [
       "正在分析画面需求",
@@ -1353,7 +1356,7 @@ function workbenchLoadingLabel(item: WorkbenchItem, index: number) {
     return steps[index % steps.length];
   }
   const elapsed = Math.max(0, Date.now() - started);
-  const stepIndex = Math.min(steps.length - 1, Math.floor(elapsed / 3500));
+  const stepIndex = Math.min(steps.length - 1, Math.floor(elapsed / 12000));
   return steps[stepIndex];
 }
 
@@ -1362,8 +1365,9 @@ function workbenchWaitingHint(item: WorkbenchItem) {
   const started = Date.parse(item.startedAt || "");
   if (!Number.isFinite(started)) return "";
   const elapsed = Date.now() - started;
-  if (elapsed < 12000) return "";
-  return "当前高峰，正在等待空闲并发，请耐心等待。";
+  if (elapsed < 12000) return "通常会在 1 分钟左右开始处理。";
+  if (elapsed < 45000) return "当前高峰，通常会在 1 分钟左右开始处理，请耐心等待。";
+  return "当前高峰，已经排队一会儿了，通常仍会在约 1 分钟内进入处理。";
 }
 
 function sizeAspectClass(size?: string) {
