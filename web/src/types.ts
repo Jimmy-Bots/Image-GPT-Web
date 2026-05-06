@@ -15,6 +15,14 @@ export type ModelPolicy = {
   is_admin?: boolean;
 };
 
+export type AuthResponse = {
+  token: string;
+  role: string;
+  name: string;
+  version: string;
+  user?: User;
+};
+
 export type Account = {
   token_ref: string;
   access_token_masked: string;

@@ -68,6 +68,14 @@ func quotaDayString(now time.Time) string {
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if identity, ok := s.sessionIdentityFromRequest(r); ok {
+		s.addLog(r, "auth", "会话验证成功", map[string]any{
+			"status":    "session_ok",
+			"user_id":   identity.ID,
+			"name":      identity.Name,
+			"role":      identity.Role,
+			"auth_type": identity.AuthType,
+			"ip":        loginClientIP(r),
+		})
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":         true,
 			"version":    s.cfg.AppVersion,
@@ -84,25 +92,62 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Email = strings.TrimSpace(req.Email)
 	if req.Email == "" || strings.TrimSpace(req.Password) == "" {
+		s.addLog(r, "auth", "登录失败", map[string]any{
+			"status": "bad_request",
+			"email":  req.Email,
+			"ip":     loginClientIP(r),
+			"reason": "missing_email_or_password",
+		})
 		writeError(w, http.StatusBadRequest, "bad_request", "email and password are required")
 		return
 	}
 	limitKey := remoteAddr(r) + "|" + strings.ToLower(strings.TrimSpace(req.Email))
 	if !s.limiter.Allow(limitKey, time.Now().UTC()) {
+		s.addLog(r, "auth", "登录限流", map[string]any{
+			"status": "rate_limited",
+			"email":  req.Email,
+			"ip":     loginClientIP(r),
+		})
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many login attempts")
 		return
 	}
 	user, err := s.store.GetUserByEmail(r.Context(), req.Email)
 	if err != nil || user.Status != domain.UserStatusActive || !auth.VerifyPassword(user.PasswordHash, req.Password) {
+		status := "invalid_credentials"
+		if err == nil && user.Status != domain.UserStatusActive {
+			status = "user_not_active"
+		}
+		s.addLog(r, "auth", "登录失败", map[string]any{
+			"status": status,
+			"email":  req.Email,
+			"ip":     loginClientIP(r),
+		})
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
 		return
 	}
 	token, expiresAt, err := s.sessions.Sign(user.ID, user.Role)
 	if err != nil {
+		s.addLog(r, "auth", "登录失败", map[string]any{
+			"status":  "session_error",
+			"email":   req.Email,
+			"user_id": user.ID,
+			"role":    user.Role,
+			"ip":      loginClientIP(r),
+			"error":   err.Error(),
+		})
 		writeError(w, http.StatusInternalServerError, "session_error", err.Error())
 		return
 	}
 	_ = s.store.TouchUserLogin(r.Context(), user.ID, time.Now().UTC())
+	s.addLog(r, "auth", "登录成功", map[string]any{
+		"status":    "success",
+		"email":     user.Email,
+		"user_id":   user.ID,
+		"name":      user.Name,
+		"role":      user.Role,
+		"auth_type": "session",
+		"ip":        loginClientIP(r),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"version":    s.cfg.AppVersion,
@@ -113,6 +158,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"token":      token,
 		"expires_at": expiresAt,
 	})
+}
+
+func loginClientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr)); err == nil && host != "" {
+		return host
+	}
+	return strings.TrimSpace(r.RemoteAddr)
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {

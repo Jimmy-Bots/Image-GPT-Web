@@ -1,4 +1,4 @@
-import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, Settings, StoredImage, SystemLog, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, Settings, StoredImage, SystemLog, User } from "./types";
 
 const storageKey = "gpt_image_web_token";
 
@@ -86,11 +86,18 @@ function withQuery(path: string, params: Record<string, string | number | boolea
 }
 
 export const api = {
+  health: () => request<{ ok: boolean; version?: string }>("", "/healthz"),
   loginWithPassword: (email: string, password: string) =>
-    request<{ token: string; role: string; name: string; version: string; user?: User }>("", "/auth/login", {
+    request<AuthResponse>("", "/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password })
+    }),
+  registerWithPassword: (body: { email: string; name?: string; password: string }) =>
+    request<{ user: User; token: string; expires_at?: string }>("", "/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
     }),
   me: (token: string) => request<MeResponse>(token, "/api/me"),
   version: (token: string) => request<{ version: string }>(token, "/version"),
