@@ -173,6 +173,10 @@ function SearchControl({ label = "搜索", value, onChange, placeholder }: { lab
   return <ControlField label={label} className="control-field-search"><div className="searchbox"><Search size={16} /><input value={value} onChange={onChange} placeholder={placeholder} /></div></ControlField>;
 }
 
+function ScrollableTable({ tableRef, className, height = "medium", children }: { tableRef: React.RefObject<HTMLDivElement | null>; className?: string; height?: "medium" | "large" | "tall"; children: React.ReactNode }) {
+  return <div ref={tableRef} className={classNames("table-wrap", "table-scroll-shell", className, `table-height-${height}`)}>{children}</div>;
+}
+
 function App() {
   const [token, setToken] = useState(getStoredToken());
   const [identity, setIdentity] = useState<Identity | null>(null);
@@ -591,10 +595,32 @@ function useHorizontalWheelScroll(ref: React.RefObject<HTMLDivElement | null>) {
     const element = ref.current;
     if (!element) return;
     const handleWheel = (event: WheelEvent) => {
-      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-      if (element.scrollWidth <= element.clientWidth) return;
-      event.preventDefault();
-      element.scrollLeft += event.deltaY;
+      const canScrollX = element.scrollWidth > element.clientWidth;
+      const canScrollY = element.scrollHeight > element.clientHeight;
+      if (!canScrollX) return;
+
+      const primaryDelta = Math.abs(event.deltaX) > 0 ? event.deltaX : event.deltaY;
+      const wantsHorizontal = event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY);
+      if (wantsHorizontal) {
+        event.preventDefault();
+        element.scrollLeft += primaryDelta;
+        return;
+      }
+
+      if (!canScrollY || event.deltaY === 0) {
+        event.preventDefault();
+        element.scrollLeft += primaryDelta;
+        return;
+      }
+
+      const atTop = element.scrollTop <= 0;
+      const atBottom = Math.ceil(element.scrollTop + element.clientHeight) >= element.scrollHeight;
+      const pushingPastTop = event.deltaY < 0 && atTop;
+      const pushingPastBottom = event.deltaY > 0 && atBottom;
+      if (pushingPastTop || pushingPastBottom) {
+        event.preventDefault();
+        element.scrollLeft += event.deltaY;
+      }
     };
     element.addEventListener("wheel", handleWheel, { passive: false });
     return () => element.removeEventListener("wheel", handleWheel);
@@ -736,7 +762,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
         <button className="danger small" disabled={!selected.length || busy === "delete-selected"} onClick={() => runBusy("delete-selected", () => remove(selected))}>删除选中</button>
       </div>
       <datalist id="account-type-options">{types.map((value) => <option key={value}>{value}</option>)}</datalist>
-      <div ref={tableWrapRef} className="table-wrap account-table-wrap">
+      <ScrollableTable tableRef={tableWrapRef} className="account-table-wrap" height="large">
         <table className="accounts-table">
           <thead><tr><th></th><th>Email</th><th>Token</th><th>密码</th><th>类型</th><th>状态</th><th>额度</th><th>图片并发</th><th>恢复</th><th>预计下次刷新</th><th>成功/失败</th><th>最近使用</th><th></th></tr></thead>
           <tbody>{accounts.map((item) => (
@@ -758,7 +784,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
             />
           ))}</tbody>
         </table>
-      </div>
+      </ScrollableTable>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
     </section>
   );
@@ -1555,7 +1581,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
         <div className="filter-actions"><button className="secondary" onClick={() => api.tasks(token, [], { page, pageSize, query, status }).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
       </div>
-      <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
+      <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
         const first = parseTaskData(task.data)[0];
         const src = first ? imageSrc(first) : "";
         const canPreview = Boolean(src) || task.status === "success";
@@ -1574,7 +1600,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
             <td><button className="ghost small" onClick={() => openDetail(task)}>{loadingDetail === task.id ? "加载" : "详情"}</button></td>
           </tr>
         );
-      })}</tbody></table></div>
+      })}</tbody></table></ScrollableTable>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
       <DetailModal title={detailTask ? `任务详情 · ${detailTask.id}` : "任务详情"} open={Boolean(detailTaskID)} onClose={() => setDetailTaskID(null)}>
         {loadingDetail === detailTaskID || !detailTask ? <div className="detail-panel detail-panel-plain">加载详情中...</div> : <TaskDetail task={detailTask} openLightbox={openLightbox} />}
@@ -1681,7 +1707,7 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
         <div className="filter-actions"><button className="secondary" onClick={() => load().catch((error) => toast("error", error.message))}>刷新日志</button><button className="danger" disabled={!selected.length} onClick={() => clear().catch((error) => toast("error", error.message))}>清理选中</button></div>
       </div>
-      <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="activity-table log-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前日志" /></th><th>Time</th><th>Type</th><th>Status</th><th>Endpoint</th><th>Model</th><th>耗时</th><th>Summary</th><th></th></tr></thead><tbody>{rows.map((log) => {
+      <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table log-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前日志" /></th><th>Time</th><th>Type</th><th>Status</th><th>Endpoint</th><th>Model</th><th>耗时</th><th>Summary</th><th></th></tr></thead><tbody>{rows.map((log) => {
         const detail = logDetail(log);
         return (
           <tr key={log.id}>
@@ -1696,7 +1722,7 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
             <td><button className="ghost small" onClick={() => openDetail(log)}>{loadingDetail === log.id ? "加载" : "详情"}</button></td>
           </tr>
         );
-      })}</tbody></table></div>
+      })}</tbody></table></ScrollableTable>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
       <DetailModal title={detailLog ? `日志详情 · ${detailLog.id}` : "日志详情"} open={Boolean(detailLogID)} onClose={() => setDetailLogID(null)}>
         {loadingDetail === detailLogID || !detailLog ? <div className="detail-panel detail-panel-plain">加载详情中...</div> : <LogDetail log={detailLog} />}
@@ -2099,9 +2125,9 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
         <button className="danger small" disabled={!selected.length || batchBusy === "delete"} onClick={() => runBatch("delete", { successMessage: "已删除选中用户", confirmText: `删除 ${selected.length} 个用户？` }).catch((error) => toast("error", error.message))}>删除选中</button>
       </div>
       {newKey ? <div className="notice"><span>新 API Key 只显示一次：</span><code>{newKey}</code><IconButton title="复制" onClick={() => copyText(newKey).then(() => toast("success", "已复制"))}><Copy size={14} /></IconButton><IconButton title="隐藏" onClick={() => setNewKey("")}><EyeOff size={14} /></IconButton></div> : null}
-      <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="users-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => {
+      <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="large"><table className="users-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => {
         setSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...users.map((item) => item.id)])) : prev.filter((id) => !users.some((item) => item.id === id)));
-      }} aria-label="选择当前用户" /></th><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>可用额度</th><th>额度明细</th><th>API Key</th><th>Last login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} selected={selectedSet.has(user.id)} onSelect={(checked) => setSelected((prev) => checked ? [...prev, user.id] : prev.filter((id) => id !== user.id))} />)}</tbody></table></div>
+      }} aria-label="选择当前用户" /></th><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>可用额度</th><th>额度明细</th><th>API Key</th><th>Last login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} selected={selectedSet.has(user.id)} onSelect={(checked) => setSelected((prev) => checked ? [...prev, user.id] : prev.filter((id) => id !== user.id))} />)}</tbody></table></ScrollableTable>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
       <DetailModal title="创建用户" open={createOpen} onClose={() => setCreateOpen(false)}>
         <div className="detail-panel">
