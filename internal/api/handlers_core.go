@@ -158,6 +158,33 @@ func (s *Server) handleRefreshAccounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"refreshed": refreshed, "errors": publicRefreshErrors(errorsList)})
 }
 
+func (s *Server) handleRefreshDueAccounts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	settings, err := s.store.GetSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	intervalMinutes := intMapValue(settings, "refresh_account_interval_minute")
+	if intervalMinutes < 1 {
+		intervalMinutes = defaultAutoRefreshIntervalMinutes
+	}
+	accounts, err := s.store.ListAccounts(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	tokens := dueRefreshTokens(accounts, intervalMinutes, time.Now())
+	refreshed, errorsList := s.upstream.RefreshAccounts(r.Context(), tokens)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"selected":  len(tokens),
+		"refreshed": refreshed,
+		"errors":    publicRefreshErrors(errorsList),
+	})
+}
+
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return

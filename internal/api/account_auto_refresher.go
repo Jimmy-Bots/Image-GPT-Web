@@ -38,6 +38,7 @@ type accountAutoRefreshState struct {
 	IntervalMinutes int    `json:"interval_minutes"`
 	Concurrency     int    `json:"concurrency"`
 	NormalBatchSize int    `json:"normal_batch_size"`
+	DueCount        int    `json:"due_count"`
 	NextRunAt       string `json:"next_run_at,omitempty"`
 	LastStartedAt   string `json:"last_started_at,omitempty"`
 	LastFinishedAt  string `json:"last_finished_at,omitempty"`
@@ -208,6 +209,33 @@ func (r *accountAutoRefresher) pickTokens(accounts []domain.Account) ([]string, 
 	return compactStrings(selected), len(limited), batch
 }
 
+func dueRefreshTokens(accounts []domain.Account, intervalMinutes int, now time.Time) []string {
+	if intervalMinutes < 1 {
+		intervalMinutes = defaultAutoRefreshIntervalMinutes
+	}
+	interval := time.Duration(intervalMinutes) * time.Minute
+	candidates := make([]domain.Account, 0, len(accounts))
+	for _, item := range accounts {
+		if item.AccessToken == "" || item.Status == "禁用" || item.Status == "异常" {
+			continue
+		}
+		if item.UpdatedAt.IsZero() || !item.UpdatedAt.Add(interval).After(now) {
+			candidates = append(candidates, item)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].UpdatedAt.Equal(candidates[j].UpdatedAt) {
+			return candidates[i].AccessToken < candidates[j].AccessToken
+		}
+		return candidates[i].UpdatedAt.Before(candidates[j].UpdatedAt)
+	})
+	tokens := make([]string, 0, len(candidates))
+	for _, item := range candidates {
+		tokens = append(tokens, item.AccessToken)
+	}
+	return compactStrings(tokens)
+}
+
 func (r *accountAutoRefresher) Status(ctx context.Context) accountAutoRefreshState {
 	state := accountAutoRefreshState{
 		IntervalMinutes: defaultAutoRefreshIntervalMinutes,
@@ -227,6 +255,9 @@ func (r *accountAutoRefresher) Status(ctx context.Context) accountAutoRefreshSta
 		if batch := intMapValue(settings, "refresh_account_normal_batch_size"); batch > 0 {
 			state.NormalBatchSize = batch
 		}
+	}
+	if accounts, err := r.store.ListAccounts(ctx); err == nil {
+		state.DueCount = len(dueRefreshTokens(accounts, state.IntervalMinutes, time.Now()))
 	}
 	r.runMu.Lock()
 	state.Running = r.running
