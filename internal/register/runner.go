@@ -9,15 +9,37 @@ import (
 )
 
 type Runner struct {
-	registrar *Registrar
-	repo      AccountRepository
-	logger    Logger
-	now       func() time.Time
+	register func(context.Context) (RegisterResult, error)
+	repo     AccountRepository
+	logger   Logger
+	now      func() time.Time
 }
 
 func NewRunner(registrar *Registrar, repo AccountRepository, logger Logger, now func() time.Time) (*Runner, error) {
 	if registrar == nil {
 		return nil, errors.New("registrar is required")
+	}
+	return newRunnerWithRegisterFunc(func(ctx context.Context) (RegisterResult, error) {
+		return registrar.Register(ctx)
+	}, repo, logger, now)
+}
+
+func NewRunnerFactory(factory func() (*Registrar, error), repo AccountRepository, logger Logger, now func() time.Time) (*Runner, error) {
+	if factory == nil {
+		return nil, errors.New("registrar factory is required")
+	}
+	return newRunnerWithRegisterFunc(func(ctx context.Context) (RegisterResult, error) {
+		registrar, err := factory()
+		if err != nil {
+			return RegisterResult{}, err
+		}
+		return registrar.Register(ctx)
+	}, repo, logger, now)
+}
+
+func newRunnerWithRegisterFunc(registerFn func(context.Context) (RegisterResult, error), repo AccountRepository, logger Logger, now func() time.Time) (*Runner, error) {
+	if registerFn == nil {
+		return nil, errors.New("register func is required")
 	}
 	if repo == nil {
 		return nil, ErrAccountRepoRequired
@@ -28,7 +50,7 @@ func NewRunner(registrar *Registrar, repo AccountRepository, logger Logger, now 
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Runner{registrar: registrar, repo: repo, logger: logger, now: now}, nil
+	return &Runner{register: registerFn, repo: repo, logger: logger, now: now}, nil
 }
 
 func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
@@ -107,7 +129,7 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 			defer func() { slots <- slotID }()
 			workerCtx := WithThread(batchCtx, slotID)
 			r.logger.Printf(workerCtx, "info", "start attempt=%d", attempt)
-			_, err := r.registrar.Register(workerCtx)
+			_, err := r.register(workerCtx)
 			if err != nil {
 				r.logger.Printf(workerCtx, "error", "failed attempt=%d: %v", attempt, err)
 			} else {
