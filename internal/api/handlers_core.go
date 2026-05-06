@@ -64,6 +64,17 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": publicAccounts(items)})
 }
 
+func (s *Server) handleGetAccountRefreshStatus(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if s.autoRef == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": accountAutoRefreshState{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": s.autoRef.Status(r.Context())})
+}
+
 func (s *Server) handleCreateAccounts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return

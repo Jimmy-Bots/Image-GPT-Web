@@ -28,6 +28,7 @@ type Server struct {
 	tasks    *TaskQueue
 	limiter  *loginLimiter
 	register *registerManager
+	autoRef  *accountAutoRefresher
 }
 
 func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
@@ -45,10 +46,15 @@ func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
 		return nil, err
 	}
 	s.tasks = NewTaskQueue(store, s.upstream, cfg.ImagesDir, cfg.BaseURL, cfg.ImageWorkerCount, cfg.ImageQueueSize)
+	s.autoRef = newAccountAutoRefresher(store, s.upstream)
+	s.autoRef.Start()
 	return s, nil
 }
 
 func (s *Server) Close() {
+	if s.autoRef != nil {
+		s.autoRef.Close()
+	}
 	if s.tasks != nil {
 		s.tasks.Close()
 	}
@@ -81,6 +87,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/users/{user_id}", s.handleDeleteUser)
 	mux.HandleFunc("POST /api/users/{user_id}/api-key/reset", s.handleResetUserAPIKey)
 	mux.HandleFunc("GET /api/accounts", s.handleListAccounts)
+	mux.HandleFunc("GET /api/accounts/refresh-status", s.handleGetAccountRefreshStatus)
 	mux.HandleFunc("POST /api/accounts", s.handleCreateAccounts)
 	mux.HandleFunc("DELETE /api/accounts", s.handleDeleteAccounts)
 	mux.HandleFunc("POST /api/accounts/update", s.handleUpdateAccount)

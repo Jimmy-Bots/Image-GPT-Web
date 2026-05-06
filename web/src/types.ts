@@ -164,3 +164,20 @@ export type ReferenceImage = {
   file: File;
   dataUrl: string;
 };
+
+export type AccountRefreshStatus = {
+  running: boolean;
+  interval_minutes: number;
+  concurrency: number;
+  normal_batch_size: number;
+  next_run_at?: string;
+  last_started_at?: string;
+  last_finished_at?: string;
+  last_duration_ms?: number;
+  last_selected: number;
+  last_limited: number;
+  last_normal: number;
+  last_refreshed: number;
+  last_failed: number;
+  last_error?: string;
+};

@@ -1,4 +1,4 @@
-import type { Account, ApiKey, ImageTask, ModelItem, RegisterConfig, RegisterRuntime, Settings, StoredImage, SystemLog, User } from "./types";
+import type { Account, AccountRefreshStatus, ApiKey, ImageTask, ModelItem, RegisterConfig, RegisterRuntime, Settings, StoredImage, SystemLog, User } from "./types";
 
 const storageKey = "gpt_image_web_token";
 
@@ -60,6 +60,7 @@ export const api = {
   version: (token: string) => request<{ version: string }>(token, "/version"),
   models: (token: string) => request<{ data: ModelItem[] }>(token, "/v1/models"),
   accounts: (token: string) => request<{ items: Account[] }>(token, "/api/accounts"),
+  accountRefreshStatus: (token: string) => request<{ status: AccountRefreshStatus }>(token, "/api/accounts/refresh-status"),
   addAccounts: (token: string, tokens: string[]) =>
     request<{ added: number; skipped: number; items: Account[] }>(token, "/api/accounts", {
       method: "POST",
