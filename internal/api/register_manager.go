@@ -26,21 +26,23 @@ type registerLogEntry struct {
 }
 
 type registerManager struct {
-	cfg     config.Config
-	store   *storage.Store
-	mu      sync.RWMutex
-	running bool
-	cancel  context.CancelFunc
-	state   register.BatchState
-	lastErr string
-	lastRun *register.RegisterResult
-	logs    []registerLogEntry
+	cfg      config.Config
+	store    *storage.Store
+	upstream Upstream
+	mu       sync.RWMutex
+	running  bool
+	cancel   context.CancelFunc
+	state    register.BatchState
+	lastErr  string
+	lastRun  *register.RegisterResult
+	logs     []registerLogEntry
 }
 
-func newRegisterManager(cfg config.Config, store *storage.Store) *registerManager {
+func newRegisterManager(cfg config.Config, store *storage.Store, upstream Upstream) *registerManager {
 	manager := &registerManager{
-		cfg:   cfg,
-		store: store,
+		cfg:      cfg,
+		store:    store,
+		upstream: upstream,
 		state: register.BatchState{
 			Config: defaultRegisterBatchConfig(cfg),
 		},
@@ -187,8 +189,9 @@ func (m *registerManager) runBatch(ctx context.Context, cfg register.BatchConfig
 		m.addLog(ctx, level, message, map[string]any{"level": level})
 	})
 	runner, err := register.NewRunner(registrar, register.StorageAccountRepository{
-		Store:    m.store,
-		ProxyURL: fallbackString(cfg.Proxy, m.cfg.ProxyURL),
+		Store:       m.store,
+		ProxyURL:    fallbackString(cfg.Proxy, m.cfg.ProxyURL),
+		RefreshFunc: m.refreshAccountLikePool,
 	}, logger, nil)
 	if err != nil {
 		m.finishBatch(register.BatchState{Config: cfg}, err)
@@ -234,8 +237,9 @@ func (m *registerManager) newRegistrar(cfg register.BatchConfig) (*register.Regi
 		},
 		MailProvider: provider,
 		AccountRepo: register.StorageAccountRepository{
-			Store:    m.store,
-			ProxyURL: fallbackString(cfg.Proxy, m.cfg.ProxyURL),
+			Store:       m.store,
+			ProxyURL:    fallbackString(cfg.Proxy, m.cfg.ProxyURL),
+			RefreshFunc: m.refreshAccountLikePool,
 		},
 		LogSink: register.LogSinkFunc(func(ctx context.Context, level string, summary string, detail map[string]any) error {
 			m.addLog(ctx, level, summary, detail)
@@ -249,6 +253,21 @@ func (m *registerManager) newRegistrar(cfg register.BatchConfig) (*register.Regi
 			m.addLog(ctx, level, message, map[string]any{"level": level})
 		}),
 	})
+}
+
+func (m *registerManager) refreshAccountLikePool(ctx context.Context, token string) error {
+	if m.upstream == nil {
+		repo := register.StorageAccountRepository{
+			Store:    m.store,
+			ProxyURL: strings.TrimSpace(m.cfg.ProxyURL),
+		}
+		return repo.RefreshAccount(ctx, token)
+	}
+	_, errorsList := m.upstream.RefreshAccounts(ctx, []string{token})
+	if len(errorsList) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s", strings.TrimSpace(errorsList[0]["error"]))
 }
 
 func (m *registerManager) runtimeLocked() map[string]any {

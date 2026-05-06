@@ -41,7 +41,7 @@ func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
 		limiter:  newLoginLimiter(cfg.LoginRateLimitMax, time.Duration(cfg.LoginRateLimitWindowSec)*time.Second),
 	}
 	s.upstream = NewChatGPTUpstream(store, pool, cfg.ProxyURL)
-	s.register = newRegisterManager(cfg, store)
+	s.register = newRegisterManager(cfg, store, s.upstream)
 	if err := s.bootstrap(context.Background()); err != nil {
 		return nil, err
 	}

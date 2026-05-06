@@ -99,6 +99,7 @@ small { display: block; margin-top: 3px; color: #8792a2; font-size: 11px; }
 .inline span { margin: 0; color: inherit; font-size: 13px; }
 
 .table-wrap { overflow: auto; border: 1px solid #edf2f7; border-radius: 8px; }
+.account-table-wrap { overscroll-behavior-x: contain; }
 table { width: 100%; min-width: 1280px; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 13px; }
 th, td { padding: 10px; border-bottom: 1px solid #edf2f7; text-align: left; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 th { position: sticky; top: 0; z-index: 2; background: #fbfcfe; color: #6d7888; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
@@ -115,7 +116,7 @@ tbody tr:hover { background: #fbfcfe; }
 .accounts-table th:nth-child(9), .accounts-table td:nth-child(9) { width: 170px; min-width: 170px; }
 .accounts-table th:nth-child(10), .accounts-table td:nth-child(10) { width: 100px; min-width: 100px; }
 .accounts-table th:nth-child(11), .accounts-table td:nth-child(11) { width: 140px; min-width: 140px; }
-.accounts-table th:nth-child(12), .accounts-table td:nth-child(12) { position: sticky; right: 0; z-index: 4; width: 170px; min-width: 170px; background: inherit; box-shadow: -1px 0 0 #edf2f7; }
+.accounts-table th:nth-child(12), .accounts-table td:nth-child(12) { position: sticky; right: 0; z-index: 5; width: 170px; min-width: 170px; background: inherit; box-shadow: -1px 0 0 #edf2f7; }
 .accounts-table tbody td:nth-child(1),
 .accounts-table tbody td:nth-child(2),
 .accounts-table tbody td:nth-child(12) { background: #fff; }
@@ -127,6 +128,7 @@ tbody tr:hover { background: #fbfcfe; }
 .accounts-table thead th:nth-child(12) { background: #fbfcfe; }
 .account-password-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .account-password-cell code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.accounts-actions-cell { overflow: visible; }
 .row-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .cell-input { height: 30px; padding: 5px 7px; font-size: 12px; }
 .password-cell { width: 130px; }

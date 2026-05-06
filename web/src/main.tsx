@@ -481,7 +481,21 @@ function AccountsPanel({ token, accounts, refreshIntervalMinutes, refreshStatus,
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const current = filtered.slice((page - 1) * pageSize, page * pageSize);
   const selectedSet = new Set(selected);
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => setPage(1), [query, status, type, pageSize]);
+  useEffect(() => {
+    const element = tableWrapRef.current;
+    if (!element) return;
+    const handleWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      const canScrollX = element.scrollWidth > element.clientWidth;
+      if (!canScrollX) return;
+      event.preventDefault();
+      element.scrollLeft += event.deltaY;
+    };
+    element.addEventListener("wheel", handleWheel, { passive: false });
+    return () => element.removeEventListener("wheel", handleWheel);
+  }, []);
 
   async function importTokens() {
     const values = tokens.split(/\s+/).map((item) => item.trim()).filter(Boolean);
@@ -541,7 +555,7 @@ function AccountsPanel({ token, accounts, refreshIntervalMinutes, refreshStatus,
         <button className="danger small" disabled={!selected.length || busy === "delete-selected"} onClick={() => runBusy("delete-selected", () => remove(selected))}>删除选中</button>
       </div>
       <datalist id="account-type-options">{types.map((value) => <option key={value}>{value}</option>)}</datalist>
-      <div className="table-wrap">
+      <div ref={tableWrapRef} className="table-wrap account-table-wrap">
         <table className="accounts-table">
           <thead><tr><th></th><th>Email</th><th>Token</th><th>密码</th><th>类型</th><th>状态</th><th>额度</th><th>恢复</th><th>预计下次刷新</th><th>成功/失败</th><th>最近使用</th><th></th></tr></thead>
           <tbody>{current.map((item) => (
@@ -613,11 +627,11 @@ function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefres
       <td>{editing ? <input className="cell-input" list="account-type-options" value={draft.type} onChange={(event) => setDraft({ ...draft, type: event.target.value })} /> : (item.type || "Free")}</td>
       <td>{editing ? <select className="cell-input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}><option>正常</option><option>限流</option><option>异常</option><option>禁用</option></select> : <Badge value={item.status} />}</td>
       <td>{editing ? <input className="cell-input" type="number" min={0} value={draft.quota} onChange={(event) => setDraft({ ...draft, quota: event.target.value })} /> : formatQuota(item)}</td>
-      <td>{formatRestoreCountdown(item.restore_at)}</td>
-      <td>{formatNextAutoRefresh(item.updated_at, refreshIntervalMinutes)}</td>
+      <td title={item.restore_at ? fmtDate(item.restore_at) : "-"}>{formatRestoreCountdown(item.restore_at)}</td>
+      <td title={formatNextAutoRefreshTitle(item.updated_at, refreshIntervalMinutes)}>{formatNextAutoRefresh(item.updated_at, refreshIntervalMinutes)}</td>
       <td>{item.success}/{item.fail}</td>
       <td>{fmtDate(item.last_used_at)}</td>
-      <td className="row-actions">
+      <td className="accounts-actions-cell"><div className="row-actions">
         {editing ? (
           <>
             <button className="secondary small" disabled={saving} onClick={save}>{saving ? "保存中" : "保存"}</button>
@@ -631,7 +645,7 @@ function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefres
             <IconButton title="删除" className="danger-icon" disabled={busy === "delete-one"} onClick={onDelete}><Trash2 size={15} /></IconButton>
           </>
         )}
-      </td>
+      </div></td>
     </tr>
   );
 }
@@ -1447,6 +1461,13 @@ function formatRestoreCountdown(value?: string | null) {
 
 function formatNextAutoRefresh(updatedAt?: string | null, intervalMinutes = 5) {
   return formatNextRefreshTime(updatedAt, intervalMinutes);
+}
+
+function formatNextAutoRefreshTitle(updatedAt?: string | null, intervalMinutes = 5) {
+  if (!updatedAt) return "-";
+  const date = new Date(updatedAt);
+  if (Number.isNaN(date.getTime())) return "-";
+  return fmtDate(new Date(date.getTime() + Math.max(1, intervalMinutes) * 60000).toISOString());
 }
 
 function taskDuration(task: ImageTask) {

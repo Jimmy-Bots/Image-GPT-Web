@@ -13,7 +13,7 @@ export function formatRemainingTime(value?: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   const diff = date.getTime() - Date.now();
-  if (diff <= 0) return `已到期 · ${fmtDate(value)}`;
+  if (diff <= 0) return "已到期";
   const totalMinutes = Math.ceil(diff / 60000);
   const days = Math.floor(totalMinutes / 1440);
   const hours = Math.floor((totalMinutes % 1440) / 60);
@@ -22,7 +22,7 @@ export function formatRemainingTime(value?: string | null) {
   if (days > 0) parts.push(`${days}天`);
   if (hours > 0) parts.push(`${hours}小时`);
   if (minutes > 0 || parts.length === 0) parts.push(`${minutes}分钟`);
-  return `${parts.join("")}后 · ${fmtDate(value)}`;
+  return `${parts.join("")}后`;
 }
 
 export function formatNextRefreshTime(updatedAt?: string | null, intervalMinutes = 5) {
@@ -31,9 +31,9 @@ export function formatNextRefreshTime(updatedAt?: string | null, intervalMinutes
   if (Number.isNaN(date.getTime())) return "-";
   const next = new Date(date.getTime() + Math.max(1, intervalMinutes) * 60000);
   const remaining = next.getTime() - Date.now();
-  if (remaining <= 0) return `待刷新 · ${fmtDate(next.toISOString())}`;
+  if (remaining <= 0) return "待刷新";
   const minutes = Math.ceil(remaining / 60000);
-  return `${minutes}分钟后 · ${fmtDate(next.toISOString())}`;
+  return `${minutes}分钟后`;
 }
 
 export function fmtBytes(value: number) {

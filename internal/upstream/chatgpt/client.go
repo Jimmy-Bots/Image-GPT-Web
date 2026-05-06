@@ -114,6 +114,9 @@ func (c *Client) UserInfo(ctx context.Context) (domain.Account, error) {
 	ch := make(chan result, 3)
 	go func() {
 		data, err := c.getJSON(ctx, "/backend-api/me", nil)
+		if err != nil {
+			err = fmt.Errorf("/backend-api/me: %w", err)
+		}
 		ch <- result{name: "me", data: data, err: err}
 	}()
 	go func() {
@@ -123,6 +126,9 @@ func (c *Client) UserInfo(ctx context.Context) (domain.Account, error) {
 			"conversation_id":         nil,
 			"timezone_offset_min":     -480,
 		}, nil)
+		if err != nil {
+			err = fmt.Errorf("/backend-api/conversation/init: %w", err)
+		}
 		ch <- result{name: "init", data: data, err: err}
 	}()
 	go func() {
@@ -130,6 +136,9 @@ func (c *Client) UserInfo(ctx context.Context) (domain.Account, error) {
 			"X-OpenAI-Target-Path":  "/backend-api/accounts/check/v4-2023-04-27",
 			"X-OpenAI-Target-Route": "/backend-api/accounts/check/v4-2023-04-27",
 		})
+		if err != nil {
+			err = fmt.Errorf("/backend-api/accounts/check/v4-2023-04-27: %w", err)
+		}
 		ch <- result{name: "account", data: data, err: err}
 	}()
 
