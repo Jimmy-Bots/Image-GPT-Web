@@ -2,8 +2,7 @@ name: Release On Version Change
 
 on:
   push:
-    branches:
-      - "**"
+    branches: [main]
 
 concurrency:
   group: release-on-version-${{ github.ref }}
@@ -22,7 +21,6 @@ jobs:
       tag: ${{ steps.detect.outputs.tag }}
       image_name: ${{ steps.detect.outputs.image_name }}
       ghcr_image: ${{ steps.detect.outputs.ghcr_image }}
-      default_branch_only: ${{ steps.detect.outputs.default_branch_only }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,18 +28,10 @@ jobs:
 
       - id: detect
         env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          REF_NAME: ${{ github.ref_name }}
           BEFORE_SHA: ${{ github.event.before }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-
-          if [[ "${REF_NAME}" != "${DEFAULT_BRANCH}" ]]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "default_branch_only=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
 
           if [[ ! -f VERSION ]]; then
             echo "VERSION file not found" >&2
@@ -77,16 +67,41 @@ jobs:
           echo "tag=v${version}" >> "$GITHUB_OUTPUT"
           echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
           echo "ghcr_image=ghcr.io/${owner_repo}" >> "$GITHUB_OUTPUT"
-          echo "default_branch_only=false" >> "$GITHUB_OUTPUT"
 
   release:
     needs: detect
-    if: needs.detect.outputs.changed == 'true'
+    if: ${{ needs.detect.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+      REGISTRY_NAMESPACE: ${{ secrets.REGISTRY_NAMESPACE }}
+      REGISTRY_IMAGE_NAME: ${{ secrets.REGISTRY_IMAGE_NAME }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - id: registry-flags
+        name: Resolve registry flags
+        run: |
+          set -euo pipefail
+          dockerhub_enabled=false
+          custom_registry_enabled=false
+
+          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+            dockerhub_enabled=true
+          fi
+
+          if [[ -n "${REGISTRY_HOST}" && -n "${REGISTRY_USERNAME}" && -n "${REGISTRY_PASSWORD}" ]]; then
+            custom_registry_enabled=true
+          fi
+
+          echo "dockerhub_enabled=${dockerhub_enabled}" >> "$GITHUB_OUTPUT"
+          echo "custom_registry_enabled=${custom_registry_enabled}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -102,63 +117,67 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        if: ${{ steps.registry-flags.outputs.dockerhub_enabled == 'true' }}
         uses: docker/login-action@v3
         with:
           registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
 
       - name: Log in to custom OCI registry
-        if: ${{ secrets.REGISTRY_HOST != '' && secrets.REGISTRY_USERNAME != '' && secrets.REGISTRY_PASSWORD != '' }}
+        if: ${{ steps.registry-flags.outputs.custom_registry_enabled == 'true' }}
         uses: docker/login-action@v3
         with:
-          registry: ${{ secrets.REGISTRY_HOST }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
+          registry: ${{ env.REGISTRY_HOST }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ env.REGISTRY_PASSWORD }}
 
       - id: image-meta
         env:
           VERSION: ${{ needs.detect.outputs.version }}
           IMAGE_NAME: ${{ needs.detect.outputs.image_name }}
           GHCR_IMAGE: ${{ needs.detect.outputs.ghcr_image }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
-          REGISTRY_NAMESPACE: ${{ secrets.REGISTRY_NAMESPACE }}
-          REGISTRY_IMAGE_NAME: ${{ secrets.REGISTRY_IMAGE_NAME }}
         run: |
           set -euo pipefail
 
           image_name="${REGISTRY_IMAGE_NAME:-${IMAGE_NAME}}"
-          tags="${GHCR_IMAGE}:${VERSION}
-${GHCR_IMAGE}:latest"
-          images="${GHCR_IMAGE}:${VERSION}
-${GHCR_IMAGE}:latest"
+          tags=(
+            "${GHCR_IMAGE}:${VERSION}"
+            "${GHCR_IMAGE}:latest"
+          )
+          images=(
+            "${GHCR_IMAGE}:${VERSION}"
+            "${GHCR_IMAGE}:latest"
+          )
 
           if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
-            tags="${tags}
-docker.io/${DOCKERHUB_USERNAME}/${image_name}:${VERSION}
-docker.io/${DOCKERHUB_USERNAME}/${image_name}:latest"
-            images="${images}
-docker.io/${DOCKERHUB_USERNAME}/${image_name}:${VERSION}
-docker.io/${DOCKERHUB_USERNAME}/${image_name}:latest"
+            tags+=(
+              "docker.io/${DOCKERHUB_USERNAME}/${image_name}:${VERSION}"
+              "docker.io/${DOCKERHUB_USERNAME}/${image_name}:latest"
+            )
+            images+=(
+              "docker.io/${DOCKERHUB_USERNAME}/${image_name}:${VERSION}"
+              "docker.io/${DOCKERHUB_USERNAME}/${image_name}:latest"
+            )
           fi
 
           if [[ -n "${REGISTRY_HOST}" && -n "${REGISTRY_NAMESPACE}" ]]; then
-            tags="${tags}
-${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:${VERSION}
-${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:latest"
-            images="${images}
-${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:${VERSION}
-${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:latest"
+            tags+=(
+              "${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:${VERSION}"
+              "${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:latest"
+            )
+            images+=(
+              "${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:${VERSION}"
+              "${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/${image_name}:latest"
+            )
           fi
 
           {
             echo "tags<<EOF"
-            echo "${tags}"
+            printf '%s\n' "${tags[@]}"
             echo "EOF"
             echo "images<<EOF"
-            echo "${images}"
+            printf '%s\n' "${images[@]}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
