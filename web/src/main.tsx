@@ -28,7 +28,7 @@ import {
   X
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
-import type { Account, Identity, ImageResult, ImageTask, ModelItem, ReferenceImage, RegisterRuntime, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
+import type { Account, AccountRefreshStatus, Identity, ImageResult, ImageTask, ModelItem, ReferenceImage, RegisterRuntime, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
 import { classNames, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imageSrc, parseJSON, parseTaskData, quotaSummary, safeJSON, statusClass } from "./utils";
 import "./styles.css";
 
@@ -111,6 +111,7 @@ function App() {
   const [images, setImages] = useState<StoredImage[]>([]);
   const [settings, setSettings] = useState<SettingsType>({});
   const [registerRuntime, setRegisterRuntime] = useState<RegisterRuntime | null>(null);
+  const [accountRefreshStatus, setAccountRefreshStatus] = useState<AccountRefreshStatus | null>(null);
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [storageStatus, setStorageStatus] = useState("-");
   const [busy, setBusy] = useState<string | null>(null);
@@ -159,6 +160,7 @@ function App() {
           api.users(currentToken).then((data) => setUsers(data.items || [])),
           api.images(currentToken).then((data) => setImages(data.items || [])),
           api.settings(currentToken).then((data) => setSettings(data.config || {})),
+          api.accountRefreshStatus(currentToken).then((data) => setAccountRefreshStatus(data.status || null)),
           api.registerState(currentToken).then((data) => setRegisterRuntime(data)),
           api.logs(currentToken).then((data) => setLogs(data.items || [])),
           api.storage(currentToken).then((data) => setStorageStatus(`${data.backend.type} · ${data.health.status}`))
@@ -183,6 +185,16 @@ function App() {
     }, 3000);
     return () => window.clearInterval(timer);
   }, [token, isAdmin, registerRuntime?.running]);
+
+  useEffect(() => {
+    if (!token || !isAdmin || activeTab !== "accounts") return;
+    const poll = () => {
+      api.accountRefreshStatus(token).then((data) => setAccountRefreshStatus(data.status || null)).catch(() => {});
+    };
+    poll();
+    const timer = window.setInterval(poll, 3000);
+    return () => window.clearInterval(timer);
+  }, [token, isAdmin, activeTab]);
 
   async function handleLogin(email: string, password: string) {
     if (!email.trim() || !password.trim()) {
@@ -287,7 +299,7 @@ function App() {
         </header>
 
         {activeTab === "dashboard" && isAdmin && <Dashboard accounts={accounts} models={models} tasks={tasks} storageStatus={storageStatus} onReloadModels={() => runBusy("models", async () => setModels((await api.models(token)).data || []))} />}
-        {activeTab === "accounts" && isAdmin && <AccountsPanel token={token} accounts={accounts} refreshIntervalMinutes={Number(settings.refresh_account_interval_minute || 5)} setAccounts={setAccounts} toast={toast} busy={busy} runBusy={runBusy} />}
+        {activeTab === "accounts" && isAdmin && <AccountsPanel token={token} accounts={accounts} refreshIntervalMinutes={Number(settings.refresh_account_interval_minute || 5)} refreshStatus={accountRefreshStatus} setAccounts={setAccounts} toast={toast} busy={busy} runBusy={runBusy} />}
         {activeTab === "register" && isAdmin && <RegisterPanel token={token} registerRuntime={registerRuntime} setRegisterRuntime={setRegisterRuntime} toast={toast} />}
         {activeTab === "activity" && isAdmin && <ActivityPanel token={token} tasks={tasks} setTasks={setTasks} logs={logs} setLogs={setLogs} openLightbox={(src, title) => setLightbox({ src, title })} toast={toast} />}
         {activeTab === "images" && isAdmin && <ImagesPanel token={token} images={images} setImages={setImages} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
@@ -449,7 +461,7 @@ function PanelHead({ title, subtitle, action }: { title: string; subtitle?: stri
   );
 }
 
-function AccountsPanel({ token, accounts, refreshIntervalMinutes, setAccounts, toast, busy, runBusy }: { token: string; accounts: Account[]; refreshIntervalMinutes: number; setAccounts: (items: Account[]) => void; toast: (type: Toast["type"], message: string) => void; busy: string | null; runBusy: (id: string, fn: () => Promise<void>) => Promise<void> }) {
+function AccountsPanel({ token, accounts, refreshIntervalMinutes, refreshStatus, setAccounts, toast, busy, runBusy }: { token: string; accounts: Account[]; refreshIntervalMinutes: number; refreshStatus: AccountRefreshStatus | null; setAccounts: (items: Account[]) => void; toast: (type: Toast["type"], message: string) => void; busy: string | null; runBusy: (id: string, fn: () => Promise<void>) => Promise<void> }) {
   const [tokens, setTokens] = useState("");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
@@ -499,6 +511,19 @@ function AccountsPanel({ token, accounts, refreshIntervalMinutes, setAccounts, t
   return (
     <section className="panel">
       <PanelHead title="账号池" subtitle={`导入、筛选、刷新和维护 ChatGPT access_token · 自动刷新间隔 ${refreshIntervalMinutes} 分钟`} action={<><button className="secondary" disabled={busy === "refresh-all-accounts"} onClick={() => runBusy("refresh-all-accounts", () => refresh([]))}>刷新全部</button><button className="secondary-danger" disabled={busy === "remove-bad"} onClick={() => runBusy("remove-bad", () => remove(accounts.filter((item) => item.status === "异常").map((item) => item.token_ref)))}>移除异常</button></>} />
+      <div className="auto-refresh-bar">
+        <span className={classNames("badge", refreshStatus?.running ? "warn" : "ok")}>{refreshStatus?.running ? "自动刷新中" : "自动刷新空闲"}</span>
+        <span className="chip">并发 {Number(refreshStatus?.concurrency || 0)}</span>
+        <span className="chip">正常轮转批量 {Number(refreshStatus?.normal_batch_size || 0)}</span>
+        <span className="chip">间隔 {Number(refreshStatus?.interval_minutes || refreshIntervalMinutes || 0)} 分钟</span>
+        <span className="chip">下次 {fmtDate(refreshStatus?.next_run_at)}</span>
+        <span className="chip">上次刷新 {Number(refreshStatus?.last_refreshed || 0)}</span>
+        <span className="chip">上次失败 {Number(refreshStatus?.last_failed || 0)}</span>
+        <span className="chip">本轮选择 {Number(refreshStatus?.last_selected || 0)}</span>
+        <span className="chip">限流 {Number(refreshStatus?.last_limited || 0)} / 正常 {Number(refreshStatus?.last_normal || 0)}</span>
+        <span className="chip">耗时 {formatDuration(refreshStatus?.last_duration_ms)}</span>
+      </div>
+      {refreshStatus?.last_error ? <p className="detail-error">{refreshStatus.last_error}</p> : null}
       <div className="account-import"><textarea value={tokens} onChange={(event) => setTokens(event.target.value)} placeholder="每行一个 access_token，支持批量粘贴" /><button disabled={busy === "import"} onClick={() => runBusy("import", importTokens)}><Upload size={16} />导入账号</button></div>
       <div className="filters">
         <div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱、token ref、密码、类型" /></div>
@@ -518,7 +543,7 @@ function AccountsPanel({ token, accounts, refreshIntervalMinutes, setAccounts, t
       <datalist id="account-type-options">{types.map((value) => <option key={value}>{value}</option>)}</datalist>
       <div className="table-wrap">
         <table className="accounts-table">
-          <thead><tr><th></th><th>Token</th><th>Email</th><th>密码</th><th>类型</th><th>状态</th><th>额度</th><th>恢复</th><th>预计下次刷新</th><th>成功/失败</th><th>最近使用</th><th></th></tr></thead>
+          <thead><tr><th></th><th>Email</th><th>Token</th><th>密码</th><th>类型</th><th>状态</th><th>额度</th><th>恢复</th><th>预计下次刷新</th><th>成功/失败</th><th>最近使用</th><th></th></tr></thead>
           <tbody>{current.map((item) => (
             <AccountRow
               key={item.token_ref}
@@ -565,8 +590,8 @@ function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefres
   return (
     <tr>
       <td><input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)} /></td>
-      <td><code>{item.access_token_masked || item.token_ref}</code><small>{item.token_ref}</small></td>
       <td>{item.email || "-"}</td>
+      <td><code>{item.access_token_masked || item.token_ref}</code><small>{item.token_ref}</small></td>
       <td>
         {editing ? (
           <div className="account-password-cell">
@@ -1636,7 +1661,7 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
   const aiReview = settings.ai_review && typeof settings.ai_review === "object" ? settings.ai_review as Record<string, unknown> : {};
   function updateField(key: string, value: unknown) { setSettings({ ...settings, [key]: value }); }
   async function save(next = settings) { const data = await api.saveSettings(token, next); setSettings(data.config || {}); toast("success", "设置已保存"); }
-  return <div className="settings-layout"><section className="panel"><PanelHead title="常用设置" subtitle="保存后会同步写入配置表" action={<button onClick={() => save().catch((error) => toast("error", error.message))}>保存</button>} /><div className="settings-form"><label><span>Proxy</span><input value={String(settings.proxy || "")} onChange={(event) => updateField("proxy", event.target.value)} /></label><label><span>Base URL</span><input value={String(settings.base_url || "")} onChange={(event) => updateField("base_url", event.target.value)} /></label><label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label><label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label><label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label><label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label><label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label></div></section><section className="panel"><PanelHead title="原始 JSON" subtitle="高级设置可以直接编辑" action={<button className="secondary" onClick={() => { const parsed = parseJSON(json) as SettingsType; save(parsed).catch((error) => toast("error", error.message)); }}>保存 JSON</button>} /><textarea className="json-editor settings-json" value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} /></section></div>;
+  return <div className="settings-layout"><section className="panel"><PanelHead title="常用设置" subtitle="保存后会同步写入配置表" action={<button onClick={() => save().catch((error) => toast("error", error.message))}>保存</button>} /><div className="settings-form"><label><span>Proxy</span><input value={String(settings.proxy || "")} onChange={(event) => updateField("proxy", event.target.value)} /></label><label><span>Base URL</span><input value={String(settings.base_url || "")} onChange={(event) => updateField("base_url", event.target.value)} /></label><label><span>账号自动刷新间隔（分钟）</span><input type="number" min={1} value={Number(settings.refresh_account_interval_minute || 5)} onChange={(event) => updateField("refresh_account_interval_minute", Number(event.target.value))} /></label><label><span>账号刷新并发（自动刷新/手动刷新共用）</span><input type="number" min={1} value={Number(settings.refresh_account_concurrency || 4)} onChange={(event) => updateField("refresh_account_concurrency", Number(event.target.value))} /></label><label><span>正常账号轮转批大小</span><input type="number" min={1} value={Number(settings.refresh_account_normal_batch_size || 8)} onChange={(event) => updateField("refresh_account_normal_batch_size", Number(event.target.value))} /></label><label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label><label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label><label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label><label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label><label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label></div></section><section className="panel"><PanelHead title="原始 JSON" subtitle="高级设置可以直接编辑" action={<button className="secondary" onClick={() => { const parsed = parseJSON(json) as SettingsType; save(parsed).catch((error) => toast("error", error.message)); }}>保存 JSON</button>} /><textarea className="json-editor settings-json" value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} /></section></div>;
 }
 
 function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { token: string; registerRuntime: RegisterRuntime | null; setRegisterRuntime: React.Dispatch<React.SetStateAction<RegisterRuntime | null>>; toast: (type: Toast["type"], message: string) => void }) {

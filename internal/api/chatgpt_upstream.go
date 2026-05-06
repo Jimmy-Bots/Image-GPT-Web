@@ -20,6 +20,8 @@ type ChatGPTUpstream struct {
 	store      *storage.Store
 	pool       *AccountPool
 	httpClient chatgpt.HTTPDoer
+	refreshMu  sync.Mutex
+	refreshSem chan struct{}
 	textMu     sync.Mutex
 	textIndex  int
 }
@@ -33,7 +35,20 @@ func NewChatGPTUpstream(store *storage.Store, pool *AccountPool, proxyURL string
 		store:      store,
 		pool:       pool,
 		httpClient: httpClient,
+		refreshSem: make(chan struct{}, defaultAutoRefreshConcurrency),
 	}
+}
+
+func (u *ChatGPTUpstream) ensureRefreshConcurrency(limit int) {
+	if limit < 1 {
+		limit = defaultAutoRefreshConcurrency
+	}
+	u.refreshMu.Lock()
+	defer u.refreshMu.Unlock()
+	if u.refreshSem != nil && cap(u.refreshSem) == limit {
+		return
+	}
+	u.refreshSem = make(chan struct{}, limit)
 }
 
 func (u *ChatGPTUpstream) ListModels(ctx context.Context) (map[string]any, error) {
@@ -446,14 +461,21 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 	if len(tokens) == 0 {
 		return 0, []map[string]string{}
 	}
-	const maxWorkers = 10
+	workerCount := defaultAutoRefreshConcurrency
+	settings, err := u.store.GetSettings(ctx)
+	if err == nil {
+		workerCount = intMapValue(settings, "refresh_account_concurrency")
+		u.ensureRefreshConcurrency(workerCount)
+	}
+	if workerCount < 1 {
+		workerCount = defaultAutoRefreshConcurrency
+	}
 	type jobResult struct {
 		token string
 		err   error
 	}
 	jobs := make(chan string)
 	results := make(chan jobResult, len(tokens))
-	workerCount := maxWorkers
 	if len(tokens) < workerCount {
 		workerCount = len(tokens)
 	}
@@ -463,7 +485,14 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 		go func() {
 			defer wg.Done()
 			for token := range jobs {
+				select {
+				case <-ctx.Done():
+					results <- jobResult{token: token, err: ctx.Err()}
+					continue
+				case u.refreshSem <- struct{}{}:
+				}
 				info, err := chatgpt.NewClient(token, chatgpt.WithHTTPClient(u.httpClient)).UserInfo(ctx)
+				<-u.refreshSem
 				if err == nil {
 					_, err = u.store.UpdateAccountRemoteInfo(ctx, token, info)
 				}

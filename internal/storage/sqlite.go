@@ -898,6 +898,8 @@ func defaultSettings() map[string]any {
 		"global_system_prompt":              "",
 		"sensitive_words":                   []any{},
 		"refresh_account_interval_minute":   5,
+		"refresh_account_concurrency":       4,
+		"refresh_account_normal_batch_size": 8,
 		"image_retention_days":              30,
 		"image_poll_timeout_secs":           120,
 		"image_account_concurrency":         1,
