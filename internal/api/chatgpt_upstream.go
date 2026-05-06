@@ -525,9 +525,11 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 		return 0, []map[string]string{}
 	}
 	workerCount := defaultAutoRefreshConcurrency
+	autoRemoveInvalid := false
 	settings, err := u.store.GetSettings(ctx)
 	if err == nil {
 		workerCount = intMapValue(settings, "refresh_account_concurrency")
+		autoRemoveInvalid = boolMapValue(settings, "auto_remove_invalid_accounts")
 		u.ensureRefreshConcurrency(workerCount)
 	}
 	if workerCount < 1 {
@@ -610,6 +612,27 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 							"account":   maskToken(token),
 							"error":     reloginErr.Error(),
 						})
+						if autoRemoveInvalid {
+							removed, removeErr := u.store.DeleteAccounts(jobCtx, []string{token})
+							if removeErr != nil {
+								emitStructuredLog(jobCtx, "自动移除异常账号失败", map[string]any{
+									"status":    "auto_remove_failed",
+									"token_ref": accountTokenRef(token),
+									"account":   maskToken(token),
+									"error":     removeErr.Error(),
+									"reason":    "relogin_failed",
+								})
+							} else if removed > 0 {
+								emitStructuredLog(jobCtx, "自动移除异常账号", map[string]any{
+									"status":    "auto_removed",
+									"token_ref": accountTokenRef(token),
+									"account":   maskToken(token),
+									"removed":   removed,
+									"reason":    "relogin_failed",
+									"error":     reloginErr.Error(),
+								})
+							}
+						}
 						err = reloginErr
 					}
 				}

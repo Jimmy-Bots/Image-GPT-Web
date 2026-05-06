@@ -1368,6 +1368,16 @@ function mergeLogs(current: SystemLog[], updates: SystemLog[]) {
   return Array.from(map.values()).sort((a, b) => b.time.localeCompare(a.time) || b.id.localeCompare(a.id));
 }
 
+function mergeRegisterLogs(current: SystemLog[], updates: SystemLog[]) {
+  if (!updates.length) return current;
+  const map = new Map(current.map((log) => [log.id, log]));
+  updates.forEach((log) => {
+    const previous = map.get(log.id);
+    map.set(log.id, previous ? { ...previous, ...log, detail: hasLogDetail(log.detail) ? log.detail : previous.detail } : log);
+  });
+  return Array.from(map.values()).sort(compareLogs);
+}
+
 function ActivityPanel({ token, tasks, setTasks, setTaskTotal, logs, setLogs, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; logs: SystemLog[]; setLogs: React.Dispatch<React.SetStateAction<SystemLog[]>>; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
   const [view, setView] = useState<"tasks" | "logs">("tasks");
   async function refresh() {
@@ -2193,7 +2203,7 @@ function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { 
         const logResult = results[0];
         const stateResult = results[1];
         if (logResult.status === "fulfilled") {
-          setRegisterLogs((current) => mergeLogs(current, logResult.value.items || []));
+          setRegisterLogs((current) => mergeRegisterLogs(current, logResult.value.items || []));
         }
         if (stateResult.status === "fulfilled") {
           setRegisterRuntime(stateResult.value);
