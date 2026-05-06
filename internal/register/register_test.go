@@ -197,23 +197,30 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestInbucketMailProviderCreatesMailboxAndWaitsForCode(t *testing.T) {
 	var requestedPaths []string
+	var requestedMethods []string
 	client := &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			requestedPaths = append(requestedPaths, r.URL.Path)
+			requestedMethods = append(requestedMethods, r.Method)
 			var body string
 			status := http.StatusOK
 			switch r.URL.Path {
 			case "/api/v1/mailbox/aaaaa0a":
 				body = `[{"id":"msg-1","date":"2026-05-05T10:00:00Z","subject":"Verify","from":"no-reply@openai.com"}]`
 			case "/api/v1/mailbox/aaaaa0a/msg-1":
-				body = `{
-					"id":"msg-1",
-					"date":"2026-05-05T10:00:00Z",
-					"subject":"OpenAI Verification code",
-					"from":"no-reply@openai.com",
-					"header":{"To":"aaaaa0a@aaaa.example.com"},
-					"body":{"text":"Your Verification code: 123456","html":"<p>123456</p>"}
-				}`
+				if r.Method == http.MethodDelete {
+					status = http.StatusNoContent
+					body = ``
+				} else {
+					body = `{
+						"id":"msg-1",
+						"date":"2026-05-05T10:00:00Z",
+						"subject":"OpenAI Verification code",
+						"from":"no-reply@openai.com",
+						"header":{"To":"aaaaa0a@aaaa.example.com"},
+						"body":{"text":"Your Verification code: 123456","html":"<p>123456</p>"}
+					}`
+				}
 			default:
 				status = http.StatusNotFound
 				body = `{"error":"not found"}`
@@ -258,5 +265,9 @@ func TestInbucketMailProviderCreatesMailboxAndWaitsForCode(t *testing.T) {
 	joined := strings.Join(requestedPaths, ",")
 	if !strings.Contains(joined, "/api/v1/mailbox/aaaaa0a") || !strings.Contains(joined, "/api/v1/mailbox/aaaaa0a/msg-1") {
 		t.Fatalf("unexpected requested paths: %s", joined)
+	}
+	methods := strings.Join(requestedMethods, ",")
+	if !strings.Contains(methods, http.MethodDelete) {
+		t.Fatalf("expected delete request after consuming code, methods=%s", methods)
 	}
 }
