@@ -58,6 +58,15 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	}
 	user, receipt, err := s.reserveImageQuota(r.Context(), identity, req.N)
 	if err != nil {
+		s.logCall(r, identity, "/v1/images/generations", req.Model, "failed", "insufficient quota", map[string]any{
+			"size":            req.Size,
+			"n":               req.N,
+			"requested_count": req.N,
+			"quota_used":      0,
+			"quota_reserved":  0,
+			"available_quota": 0,
+			"error_code":      "quota_exceeded",
+		})
 		writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
 		return
 	}
@@ -68,18 +77,15 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	if s.cfg.DebugLogging() {
 		log.Printf("image_generation debug prompt_chars=%d prompt_preview=%q", utf8.RuneCountInString(req.Prompt), truncateForLog(req.Prompt, 120))
 	}
-	ctx := withStructuredLog(r.Context(), s.addLogContext, "call", map[string]any{
-		"subject_id":       identity.ID,
-		"key_id":           identity.KeyID,
-		"name":             identity.Name,
-		"role":             identity.Role,
-		"endpoint":         "/v1/images/generations",
-		"model":            req.Model,
-		"size":             req.Size,
-		"n":                req.N,
-		"requested_format": requestedFormat,
-		"log_kind":         "image_attempt",
-	})
+	baseLog := identityLogFields(identity)
+	baseLog["endpoint"] = "/v1/images/generations"
+	baseLog["model"] = req.Model
+	baseLog["size"] = req.Size
+	baseLog["n"] = req.N
+	baseLog["requested_count"] = req.N
+	baseLog["requested_format"] = requestedFormat
+	baseLog["log_kind"] = "image_request"
+	ctx := withStructuredLog(r.Context(), s.addLogContext, "call", baseLog)
 	result, err := s.upstream.GenerateImage(ctx, req)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
@@ -90,6 +96,11 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 			"requested_format": requestedFormat,
 			"size":             req.Size,
 			"n":                req.N,
+			"requested_count":  req.N,
+			"quota_reserved":   receipt.Total,
+			"quota_used":       0,
+			"available_quota":  user.AvailableQuota,
+			"attempts":         logAttempts(ctx),
 		})
 		s.writeUpstreamError(w, err)
 		return
@@ -109,10 +120,13 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		"requested_format": requestedFormat,
 		"size":             req.Size,
 		"n":                req.N,
+		"requested_count":  req.N,
 		"items":            count,
 		"archived":         saved,
+		"quota_reserved":   receipt.Total,
 		"quota_used":       count,
 		"available_quota":  finalUser.AvailableQuota,
+		"attempts":         logAttempts(ctx),
 	})
 	writeJSON(w, http.StatusOK, result)
 }
@@ -140,6 +154,16 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	req.ResponseFormat = "b64_json"
 	user, receipt, err := s.reserveImageQuota(r.Context(), identity, req.N)
 	if err != nil {
+		s.logCall(r, identity, "/v1/images/edits", req.Model, "failed", "insufficient quota", map[string]any{
+			"size":            req.Size,
+			"n":               req.N,
+			"requested_count": req.N,
+			"input_images":    len(req.Images),
+			"quota_used":      0,
+			"quota_reserved":  0,
+			"available_quota": 0,
+			"error_code":      "quota_exceeded",
+		})
 		writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
 		return
 	}
@@ -148,19 +172,16 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.DebugLogging() {
 		log.Printf("image_edit debug prompt_chars=%d prompt_preview=%q", utf8.RuneCountInString(req.Prompt), truncateForLog(req.Prompt, 120))
 	}
-	ctx := withStructuredLog(r.Context(), s.addLogContext, "call", map[string]any{
-		"subject_id":       identity.ID,
-		"key_id":           identity.KeyID,
-		"name":             identity.Name,
-		"role":             identity.Role,
-		"endpoint":         "/v1/images/edits",
-		"model":            req.Model,
-		"size":             req.Size,
-		"n":                req.N,
-		"input_images":     len(req.Images),
-		"requested_format": requestedFormat,
-		"log_kind":         "image_attempt",
-	})
+	baseLog := identityLogFields(identity)
+	baseLog["endpoint"] = "/v1/images/edits"
+	baseLog["model"] = req.Model
+	baseLog["size"] = req.Size
+	baseLog["n"] = req.N
+	baseLog["requested_count"] = req.N
+	baseLog["input_images"] = len(req.Images)
+	baseLog["requested_format"] = requestedFormat
+	baseLog["log_kind"] = "image_request"
+	ctx := withStructuredLog(r.Context(), s.addLogContext, "call", baseLog)
 	result, err := s.upstream.EditImage(ctx, req)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
@@ -171,7 +192,12 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 			"requested_format": requestedFormat,
 			"size":             req.Size,
 			"n":                req.N,
+			"requested_count":  req.N,
 			"input_images":     len(req.Images),
+			"quota_reserved":   receipt.Total,
+			"quota_used":       0,
+			"available_quota":  user.AvailableQuota,
+			"attempts":         logAttempts(ctx),
 		})
 		s.writeUpstreamError(w, err)
 		return
@@ -191,11 +217,14 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		"requested_format": requestedFormat,
 		"size":             req.Size,
 		"n":                req.N,
+		"requested_count":  req.N,
 		"input_images":     len(req.Images),
 		"items":            count,
 		"archived":         saved,
+		"quota_reserved":   receipt.Total,
 		"quota_used":       count,
 		"available_quota":  finalUser.AvailableQuota,
+		"attempts":         logAttempts(ctx),
 	})
 	writeJSON(w, http.StatusOK, result)
 }

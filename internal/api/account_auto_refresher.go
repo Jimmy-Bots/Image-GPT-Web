@@ -131,6 +131,20 @@ func (r *accountAutoRefresher) runOnce() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	startedAt := time.Now().UTC()
+	if applied, err := r.store.ApplyDailyTemporaryQuota(ctx, time.Now()); err != nil {
+		log.Printf("account_auto_refresh apply_daily_user_quota_failed err=%v", err)
+		r.emitLog(ctx, "每日临时额度发放失败", map[string]any{
+			"status":     "failed",
+			"error":      err.Error(),
+			"started_at": startedAt.Format(time.RFC3339),
+		})
+	} else if applied > 0 {
+		r.emitLog(ctx, "每日临时额度已发放", map[string]any{
+			"status":      "success",
+			"applied":     applied,
+			"started_at":  startedAt.Format(time.RFC3339),
+		})
+	}
 
 	accounts, err := r.store.ListAccounts(ctx)
 	if err != nil {

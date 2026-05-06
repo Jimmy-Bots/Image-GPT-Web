@@ -50,6 +50,7 @@ export type User = {
   permanent_quota: number;
   temporary_quota: number;
   temporary_quota_date?: string;
+  daily_temporary_quota?: number;
   available_quota: number;
   api_key?: ApiKey;
   created_at: string;

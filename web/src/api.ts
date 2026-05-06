@@ -129,9 +129,15 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     }),
-  updateUser: (token: string, id: string, body: Partial<Pick<User, "email" | "name" | "role" | "status" | "quota_unlimited" | "permanent_quota" | "temporary_quota" | "temporary_quota_date">> & { password?: string }) =>
+  updateUser: (token: string, id: string, body: Partial<Pick<User, "email" | "name" | "role" | "status" | "quota_unlimited" | "permanent_quota" | "temporary_quota" | "temporary_quota_date">> & { password?: string; add_permanent_quota?: number }) =>
     request<{ item: User }>(token, `/api/users/${encodeURIComponent(id)}`, {
       method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }),
+  batchUsers: (token: string, body: { ids: string[]; action: "enable" | "disable" | "delete" | "grant_temporary_quota" | "grant_permanent_quota" | "set_temporary_quota"; status?: string; temporary_quota?: number; permanent_quota?: number }) =>
+    request<{ updated: number; items: User[] }>(token, "/api/users/batch", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     }),

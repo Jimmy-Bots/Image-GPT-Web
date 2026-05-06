@@ -79,6 +79,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			permanent_quota INTEGER NOT NULL DEFAULT 0,
 			temporary_quota INTEGER NOT NULL DEFAULT 0,
 			temporary_quota_date TEXT NOT NULL DEFAULT '',
+			daily_temporary_quota INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			last_login_at TEXT
@@ -187,6 +188,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.addColumnIfMissing(ctx, "users", "temporary_quota_date", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing(ctx, "users", "daily_temporary_quota", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := s.addColumnIfMissing(ctx, "image_tasks", "prompt", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
@@ -253,7 +257,7 @@ func (s *Store) CreateUser(ctx context.Context, user domain.User) error {
 	_, err := s.db.ExecContext(
 		ctx,
 		`INSERT INTO users (id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, created_at, updated_at, last_login_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		user.ID,
 		normalizeEmail(user.Email),
 		user.Name,
@@ -264,6 +268,7 @@ func (s *Store) CreateUser(ctx context.Context, user domain.User) error {
 		user.PermanentQuota,
 		user.TemporaryQuota,
 		strings.TrimSpace(user.TemporaryQuotaDate),
+		user.DailyTemporaryQuota,
 		formatTime(user.CreatedAt),
 		formatTime(user.UpdatedAt),
 		formatTimePtr(user.LastLoginAt),
@@ -274,7 +279,7 @@ func (s *Store) CreateUser(ctx context.Context, user domain.User) error {
 func (s *Store) ListUsers(ctx context.Context) ([]domain.User, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
-		`SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, created_at, updated_at, last_login_at
+		`SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, daily_temporary_quota, created_at, updated_at, last_login_at
 		 FROM users WHERE status != 'deleted' ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -316,7 +321,7 @@ func (s *Store) ListUsersWithAPIKeys(ctx context.Context) ([]domain.User, error)
 func (s *Store) GetUserByID(ctx context.Context, id string) (domain.User, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, created_at, updated_at, last_login_at
+		`SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, daily_temporary_quota, created_at, updated_at, last_login_at
 		 FROM users WHERE id = ? AND status != 'deleted'`,
 		id,
 	)
@@ -326,7 +331,7 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (domain.User, error)
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, created_at, updated_at, last_login_at
+		`SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, daily_temporary_quota, created_at, updated_at, last_login_at
 		 FROM users WHERE email = ? AND status != 'deleted'`,
 		normalizeEmail(email),
 	)
@@ -348,6 +353,8 @@ type UserUpdate struct {
 	PermanentQuota     *int
 	TemporaryQuota     *int
 	TemporaryQuotaDate *string
+	DailyTemporaryQuota *int
+	AddPermanentQuota   *int
 }
 
 func (s *Store) UpdateUser(ctx context.Context, id string, update UserUpdate) (domain.User, error) {
@@ -376,10 +383,14 @@ func (s *Store) UpdateUser(ctx context.Context, id string, update UserUpdate) (d
 	if update.PermanentQuota != nil {
 		current.PermanentQuota = maxInt(0, *update.PermanentQuota)
 	}
+	if update.AddPermanentQuota != nil {
+		current.PermanentQuota = maxInt(0, current.PermanentQuota+maxInt(0, *update.AddPermanentQuota))
+	}
 	if update.TemporaryQuota != nil {
 		current.TemporaryQuota = maxInt(0, *update.TemporaryQuota)
+		current.DailyTemporaryQuota = current.TemporaryQuota
 		if current.TemporaryQuota > 0 {
-			current.TemporaryQuotaDate = time.Now().UTC().Format("2006-01-02")
+			current.TemporaryQuotaDate = quotaDayString(time.Now())
 		} else {
 			current.TemporaryQuotaDate = ""
 		}
@@ -387,13 +398,16 @@ func (s *Store) UpdateUser(ctx context.Context, id string, update UserUpdate) (d
 	if update.TemporaryQuotaDate != nil && update.TemporaryQuota == nil {
 		current.TemporaryQuotaDate = strings.TrimSpace(*update.TemporaryQuotaDate)
 	}
+	if update.DailyTemporaryQuota != nil {
+		current.DailyTemporaryQuota = maxInt(0, *update.DailyTemporaryQuota)
+	}
 	if current.Status != domain.UserStatusActive && current.Status != domain.UserStatusDisabled && current.Status != domain.UserStatusDeleted {
 		return domain.User{}, fmt.Errorf("invalid user status")
 	}
 	current.UpdatedAt = time.Now().UTC()
 	_, err = s.db.ExecContext(
 		ctx,
-		`UPDATE users SET email = ?, name = ?, password_hash = ?, role = ?, status = ?, quota_unlimited = ?, permanent_quota = ?, temporary_quota = ?, temporary_quota_date = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE users SET email = ?, name = ?, password_hash = ?, role = ?, status = ?, quota_unlimited = ?, permanent_quota = ?, temporary_quota = ?, temporary_quota_date = ?, daily_temporary_quota = ?, updated_at = ? WHERE id = ?`,
 		current.Email,
 		current.Name,
 		current.PasswordHash,
@@ -403,6 +417,7 @@ func (s *Store) UpdateUser(ctx context.Context, id string, update UserUpdate) (d
 		current.PermanentQuota,
 		current.TemporaryQuota,
 		current.TemporaryQuotaDate,
+		current.DailyTemporaryQuota,
 		formatTime(current.UpdatedAt),
 		id,
 	)
@@ -412,15 +427,59 @@ func (s *Store) UpdateUser(ctx context.Context, id string, update UserUpdate) (d
 	return current, nil
 }
 
+func quotaDayString(now time.Time) string {
+	return now.Format("2006-01-02")
+}
+
+func applyDailyTemporaryQuota(user *domain.User, now time.Time) {
+	if user == nil || user.QuotaUnlimited {
+		return
+	}
+	today := quotaDayString(now)
+	if strings.TrimSpace(user.TemporaryQuotaDate) == today {
+		return
+	}
+	if user.DailyTemporaryQuota > 0 {
+		user.TemporaryQuota = maxInt(0, user.DailyTemporaryQuota)
+		user.TemporaryQuotaDate = today
+		return
+	}
+	user.TemporaryQuota = 0
+	user.TemporaryQuotaDate = ""
+}
+
 func availableUserQuota(user domain.User, now time.Time) int {
 	if user.QuotaUnlimited {
 		return -1
 	}
+	applyDailyTemporaryQuota(&user, now)
 	total := maxInt(0, user.PermanentQuota)
-	if strings.TrimSpace(user.TemporaryQuotaDate) == now.UTC().Format("2006-01-02") {
+	if strings.TrimSpace(user.TemporaryQuotaDate) == quotaDayString(now) {
 		total += maxInt(0, user.TemporaryQuota)
 	}
 	return total
+}
+
+func (s *Store) applyDailyTemporaryQuotaIfNeeded(ctx context.Context, user *domain.User, now time.Time) error {
+	if user == nil || user.QuotaUnlimited {
+		return nil
+	}
+	beforeQuota := user.TemporaryQuota
+	beforeDate := strings.TrimSpace(user.TemporaryQuotaDate)
+	applyDailyTemporaryQuota(user, now)
+	if user.TemporaryQuota == beforeQuota && strings.TrimSpace(user.TemporaryQuotaDate) == beforeDate {
+		return nil
+	}
+	user.UpdatedAt = now.UTC()
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE users SET temporary_quota = ?, temporary_quota_date = ?, updated_at = ? WHERE id = ?`,
+		user.TemporaryQuota,
+		user.TemporaryQuotaDate,
+		formatTime(user.UpdatedAt),
+		user.ID,
+	)
+	return err
 }
 
 func (s *Store) ReserveUserQuota(ctx context.Context, userID string, amount int) (domain.User, domain.UserQuotaReceipt, error) {
@@ -433,7 +492,7 @@ func (s *Store) ReserveUserQuota(ctx context.Context, userID string, amount int)
 		return domain.User{}, domain.UserQuotaReceipt{}, err
 	}
 	defer tx.Rollback()
-	user, err := scanUser(tx.QueryRowContext(ctx, `SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, created_at, updated_at, last_login_at FROM users WHERE id = ? AND status != 'deleted'`, userID))
+	user, err := scanUser(tx.QueryRowContext(ctx, `SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, daily_temporary_quota, created_at, updated_at, last_login_at FROM users WHERE id = ? AND status != 'deleted'`, userID))
 	if err != nil {
 		return domain.User{}, domain.UserQuotaReceipt{}, err
 	}
@@ -443,8 +502,11 @@ func (s *Store) ReserveUserQuota(ctx context.Context, userID string, amount int)
 		}
 		return user, domain.UserQuotaReceipt{}, nil
 	}
-	now := time.Now().UTC()
-	today := now.Format("2006-01-02")
+	now := time.Now()
+	if err := s.applyDailyTemporaryQuotaIfNeeded(ctx, &user, now); err != nil {
+		return domain.User{}, domain.UserQuotaReceipt{}, err
+	}
+	today := quotaDayString(now)
 	temporary := 0
 	if strings.TrimSpace(user.TemporaryQuotaDate) == today {
 		temporary = maxInt(0, user.TemporaryQuota)
@@ -490,7 +552,7 @@ func (s *Store) RefundUserQuota(ctx context.Context, userID string, receipt doma
 		return domain.User{}, err
 	}
 	defer tx.Rollback()
-	user, err := scanUser(tx.QueryRowContext(ctx, `SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, created_at, updated_at, last_login_at FROM users WHERE id = ? AND status != 'deleted'`, userID))
+	user, err := scanUser(tx.QueryRowContext(ctx, `SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, daily_temporary_quota, created_at, updated_at, last_login_at FROM users WHERE id = ? AND status != 'deleted'`, userID))
 	if err != nil {
 		return domain.User{}, err
 	}
@@ -500,14 +562,17 @@ func (s *Store) RefundUserQuota(ctx context.Context, userID string, receipt doma
 		}
 		return user, nil
 	}
-	now := time.Now().UTC()
+	now := time.Now()
+	if err := s.applyDailyTemporaryQuotaIfNeeded(ctx, &user, now); err != nil {
+		return domain.User{}, err
+	}
 	permanent := maxInt(0, user.PermanentQuota) + maxInt(0, receipt.Permanent)
 	temporary := maxInt(0, user.TemporaryQuota)
 	temporaryDate := strings.TrimSpace(user.TemporaryQuotaDate)
 	if maxInt(0, receipt.Temporary) > 0 {
 		targetDate := strings.TrimSpace(receipt.TemporaryDate)
 		if targetDate == "" {
-			targetDate = now.Format("2006-01-02")
+			targetDate = quotaDayString(now)
 		}
 		if temporaryDate == "" || temporaryDate != targetDate {
 			temporary = 0
@@ -528,6 +593,38 @@ func (s *Store) RefundUserQuota(ctx context.Context, userID string, receipt doma
 	user.UpdatedAt = now
 	user.AvailableQuota = availableUserQuota(user, now)
 	return user, nil
+}
+
+func (s *Store) ApplyDailyTemporaryQuota(ctx context.Context, now time.Time) (int, error) {
+	users, err := s.ListUsers(ctx)
+	if err != nil {
+		return 0, err
+	}
+	applied := 0
+	for _, user := range users {
+		if user.QuotaUnlimited || user.DailyTemporaryQuota < 1 {
+			continue
+		}
+		beforeQuota := user.TemporaryQuota
+		beforeDate := strings.TrimSpace(user.TemporaryQuotaDate)
+		applyDailyTemporaryQuota(&user, now)
+		if user.TemporaryQuota == beforeQuota && strings.TrimSpace(user.TemporaryQuotaDate) == beforeDate {
+			continue
+		}
+		user.UpdatedAt = now.UTC()
+		if _, err := s.db.ExecContext(
+			ctx,
+			`UPDATE users SET temporary_quota = ?, temporary_quota_date = ?, updated_at = ? WHERE id = ?`,
+			user.TemporaryQuota,
+			user.TemporaryQuotaDate,
+			formatTime(user.UpdatedAt),
+			user.ID,
+		); err != nil {
+			return applied, err
+		}
+		applied++
+	}
+	return applied, nil
 }
 
 func (s *Store) UpsertUserAPIKey(ctx context.Context, item domain.APIKey) error {
@@ -1226,7 +1323,7 @@ func scanUser(row rowScanner) (domain.User, error) {
 	var createdAt string
 	var updatedAt string
 	var lastLogin sql.NullString
-	err := row.Scan(&user.ID, &user.Email, &user.Name, &user.PasswordHash, &role, &status, &quotaUnlimited, &user.PermanentQuota, &user.TemporaryQuota, &user.TemporaryQuotaDate, &createdAt, &updatedAt, &lastLogin)
+	err := row.Scan(&user.ID, &user.Email, &user.Name, &user.PasswordHash, &role, &status, &quotaUnlimited, &user.PermanentQuota, &user.TemporaryQuota, &user.TemporaryQuotaDate, &user.DailyTemporaryQuota, &createdAt, &updatedAt, &lastLogin)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.User{}, ErrNotFound
 	}
@@ -1238,7 +1335,9 @@ func scanUser(row rowScanner) (domain.User, error) {
 	user.QuotaUnlimited = quotaUnlimited == 1
 	user.CreatedAt = parseTime(createdAt)
 	user.UpdatedAt = parseTime(updatedAt)
-	user.AvailableQuota = availableUserQuota(user, time.Now().UTC())
+	now := time.Now()
+	applyDailyTemporaryQuota(&user, now)
+	user.AvailableQuota = availableUserQuota(user, now)
 	if lastLogin.Valid && lastLogin.String != "" {
 		value := parseTime(lastLogin.String)
 		user.LastLoginAt = &value

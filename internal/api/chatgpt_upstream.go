@@ -122,7 +122,7 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 			attempted[account.AccessToken] = struct{}{}
 			lastErr = err
 			u.markImageResult(ctx, account.AccessToken, false)
-			emitStructuredLog(ctx, "图片尝试失败，切换账号", map[string]any{
+			appendStructuredLogAttempt(ctx, map[string]any{
 				"status":      "attempt_failed",
 				"mode":        "generate",
 				"attempt":     index + 1,
@@ -144,17 +144,16 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 		}
 		duration := time.Since(start).Milliseconds()
 		log.Printf("upstream_image generate_success index=%d account=%s results=%d duration_ms=%d", index+1, maskToken(account.AccessToken), len(imageResults), duration)
-		if len(attempted) > 0 {
-			emitStructuredLog(ctx, "图片切号后成功", map[string]any{
-				"status":      "recovered_success",
-				"mode":        "generate",
-				"attempt":     index + 1,
-				"token_ref":   accountTokenRef(account.AccessToken),
-				"account":     maskToken(account.AccessToken),
-				"duration_ms": duration,
-				"items":       len(imageResults),
-			})
-		}
+		appendStructuredLogAttempt(ctx, map[string]any{
+			"status":      len(attempted) > 0 && index > 0,
+			"mode":        "generate",
+			"attempt":     index + 1,
+			"token_ref":   accountTokenRef(account.AccessToken),
+			"account":     maskToken(account.AccessToken),
+			"duration_ms": duration,
+			"items":       len(imageResults),
+			"success":     true,
+		})
 		u.markImageResult(ctx, account.AccessToken, true)
 		for _, item := range imageResults {
 			result := map[string]any{"revised_prompt": item.RevisedPrompt}
@@ -234,7 +233,7 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 			attempted[account.AccessToken] = struct{}{}
 			lastErr = err
 			u.markImageResult(ctx, account.AccessToken, false)
-			emitStructuredLog(ctx, "图片尝试失败，切换账号", map[string]any{
+			appendStructuredLogAttempt(ctx, map[string]any{
 				"status":      "attempt_failed",
 				"mode":        "edit",
 				"attempt":     index + 1,
@@ -256,17 +255,16 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 		}
 		duration := time.Since(start).Milliseconds()
 		log.Printf("upstream_image edit_success index=%d account=%s results=%d duration_ms=%d", index+1, maskToken(account.AccessToken), len(imageResults), duration)
-		if len(attempted) > 0 {
-			emitStructuredLog(ctx, "图片切号后成功", map[string]any{
-				"status":      "recovered_success",
-				"mode":        "edit",
-				"attempt":     index + 1,
-				"token_ref":   accountTokenRef(account.AccessToken),
-				"account":     maskToken(account.AccessToken),
-				"duration_ms": duration,
-				"items":       len(imageResults),
-			})
-		}
+		appendStructuredLogAttempt(ctx, map[string]any{
+			"status":      len(attempted) > 0 && index > 0,
+			"mode":        "edit",
+			"attempt":     index + 1,
+			"token_ref":   accountTokenRef(account.AccessToken),
+			"account":     maskToken(account.AccessToken),
+			"duration_ms": duration,
+			"items":       len(imageResults),
+			"success":     true,
+		})
 		u.markImageResult(ctx, account.AccessToken, true)
 		for _, item := range imageResults {
 			result := map[string]any{"revised_prompt": item.RevisedPrompt}
