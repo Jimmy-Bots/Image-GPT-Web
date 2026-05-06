@@ -10,24 +10,24 @@ import (
 )
 
 type AccountListQuery struct {
-	Page     int
-	PageSize int
-	Query    string
-	Status   string
-	Type     string
+	Page       int
+	PageSize   int
+	Query      string
+	Status     string
+	Type       string
 	ActiveOnly bool
 }
 
 type AccountListSummary struct {
-	Total          int  `json:"total"`
-	Normal         int  `json:"normal"`
-	Success        int  `json:"success"`
-	Fail           int  `json:"fail"`
-	QuotaTotal     int  `json:"quota_total"`
-	QuotaUnknown   bool `json:"quota_unknown"`
-	QuotaUnlimited bool `json:"quota_unlimited"`
-	ActiveRequests int  `json:"active_requests"`
-	TotalConcurrency int `json:"total_concurrency"`
+	Total            int  `json:"total"`
+	Normal           int  `json:"normal"`
+	Success          int  `json:"success"`
+	Fail             int  `json:"fail"`
+	QuotaTotal       int  `json:"quota_total"`
+	QuotaUnknown     bool `json:"quota_unknown"`
+	QuotaUnlimited   bool `json:"quota_unlimited"`
+	ActiveRequests   int  `json:"active_requests"`
+	TotalConcurrency int  `json:"total_concurrency"`
 }
 
 type UserListQuery struct {
@@ -113,7 +113,7 @@ func (s *Store) ListUsersWithAPIKeysPage(ctx context.Context, query UserListQuer
 		return nil, 0, err
 	}
 
-	itemsQuery := `SELECT id, email, name, password_hash, role, status, created_at, updated_at, last_login_at
+	itemsQuery := `SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, created_at, updated_at, last_login_at
 		FROM users` + where + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, itemsQuery, itemsArgs...)
@@ -189,7 +189,7 @@ func (s *Store) ListImageTasksPage(ctx context.Context, ownerID string, query Im
 		return nil, 0, err
 	}
 
-	itemsQuery := `SELECT owner_id, id, status, mode, model, size, prompt, NULL, error, created_at, updated_at
+	itemsQuery := `SELECT owner_id, id, status, mode, model, size, prompt, requested_count, reserved_quota_json, NULL, error, created_at, updated_at
 		FROM image_tasks` + where + ` ORDER BY updated_at DESC LIMIT ? OFFSET ?`
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, itemsQuery, itemsArgs...)

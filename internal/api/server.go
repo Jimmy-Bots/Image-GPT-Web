@@ -190,14 +190,15 @@ func (s *Server) bootstrap(ctx context.Context) error {
 	}
 	now := time.Now().UTC()
 	admin := domain.User{
-		ID:           auth.RandomID(18),
-		Email:        s.cfg.AdminEmail,
-		Name:         "Administrator",
-		PasswordHash: passwordHash,
-		Role:         domain.RoleAdmin,
-		Status:       domain.UserStatusActive,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:             auth.RandomID(18),
+		Email:          s.cfg.AdminEmail,
+		Name:           "Administrator",
+		PasswordHash:   passwordHash,
+		Role:           domain.RoleAdmin,
+		Status:         domain.UserStatusActive,
+		QuotaUnlimited: true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if err := s.store.CreateUser(ctx, admin); err != nil {
 		return err

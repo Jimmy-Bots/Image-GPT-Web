@@ -38,6 +38,7 @@ type taskJob struct {
 	OwnerID string
 	TaskID  string
 	Mode    string
+	Receipt domain.UserQuotaReceipt
 	Gen     ImageGenerationPayload
 	Edit    ImageEditPayload
 }
@@ -118,6 +119,9 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		}
 	}
 	if err != nil {
+		if job.Receipt.Total > 0 {
+			_, _ = q.store.RefundUserQuota(context.Background(), job.OwnerID, job.Receipt)
+		}
 		log.Printf("image_task failed id=%s owner=%s mode=%s err=%v", job.TaskID, job.OwnerID, job.Mode, err)
 		_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskError, jsonData([]any{}), err.Error())
 		return
@@ -128,7 +132,11 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	}
 	saved := persistImageResultItems(q.imagesDir, q.baseURL, result, prompt)
 	shapeImageResponseForClient(result, "url")
-	log.Printf("image_task success id=%s owner=%s mode=%s items=%d archived=%d base_url_configured=%t", job.TaskID, job.OwnerID, job.Mode, imageResultCount(result), saved, q.baseURL != "")
+	count := imageResultCount(result)
+	if refund := job.Receipt.Total - count; refund > 0 {
+		_, _ = q.store.RefundUserQuota(context.Background(), job.OwnerID, quotaRefundPortion(job.Receipt, refund))
+	}
+	log.Printf("image_task success id=%s owner=%s mode=%s items=%d archived=%d base_url_configured=%t", job.TaskID, job.OwnerID, job.Mode, count, saved, q.baseURL != "")
 	data := result["data"]
 	_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskSuccess, jsonData(data), "")
 }
@@ -247,19 +255,28 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 	if !s.checkContentPolicy(w, r, identity, "/api/image-tasks/generations", req.Model, req.Prompt) {
 		return
 	}
+	requestedCount := clampImageTaskCountWithLimit(req.N, s.imageMaxCount(r.Context()))
+	_, receipt, err := s.reserveImageQuota(r.Context(), identity, requestedCount)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
+		return
+	}
 	now := time.Now().UTC()
 	task := domain.ImageTask{
-		ID:        taskID,
-		OwnerID:   identity.ID,
-		Status:    taskQueued,
-		Mode:      "generate",
-		Model:     req.Model,
-		Size:      req.Size,
-		Prompt:    req.Prompt,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:             taskID,
+		OwnerID:        identity.ID,
+		Status:         taskQueued,
+		Mode:           "generate",
+		Model:          req.Model,
+		Size:           req.Size,
+		Prompt:         req.Prompt,
+		RequestedCount: requestedCount,
+		ReservedQuota:  jsonData(receipt),
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if err := s.store.CreateImageTask(r.Context(), task); err != nil {
+		s.refundImageQuota(r.Context(), identity, receipt)
 		if strings.Contains(err.Error(), "UNIQUE") {
 			items, _ := s.store.ListImageTasks(r.Context(), identity.ID, []string{taskID}, true)
 			if len(items) > 0 {
@@ -274,15 +291,17 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 		OwnerID: identity.ID,
 		TaskID:  taskID,
 		Mode:    "generate",
+		Receipt: receipt,
 		Gen: ImageGenerationPayload{
 			Prompt:         req.Prompt,
 			Model:          req.Model,
-			N:              clampImageTaskCountWithLimit(req.N, s.imageMaxCount(r.Context())),
+			N:              requestedCount,
 			Size:           req.Size,
 			ResponseFormat: "b64_json",
 		},
 	})
 	if err != nil {
+		s.refundImageQuota(r.Context(), identity, receipt)
 		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, jsonData([]any{}), err.Error())
 		writeError(w, http.StatusServiceUnavailable, "task_queue_full", err.Error())
 		return
@@ -306,6 +325,7 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Model = model
 	req.Size = normalizeImageTaskSize(req.Size)
+	req.N = clampImageTaskCountWithLimit(req.N, s.imageMaxCount(r.Context()))
 	if !s.checkContentPolicy(w, r, identity, "/api/image-tasks/edits", req.Model, req.Prompt) {
 		return
 	}
@@ -314,23 +334,32 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "client_task_id is required")
 		return
 	}
+	_, receipt, err := s.reserveImageQuota(r.Context(), identity, req.N)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
+		return
+	}
 	now := time.Now().UTC()
 	task := domain.ImageTask{
-		ID:        taskID,
-		OwnerID:   identity.ID,
-		Status:    taskQueued,
-		Mode:      "edit",
-		Model:     req.Model,
-		Size:      req.Size,
-		Prompt:    req.Prompt,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:             taskID,
+		OwnerID:        identity.ID,
+		Status:         taskQueued,
+		Mode:           "edit",
+		Model:          req.Model,
+		Size:           req.Size,
+		Prompt:         req.Prompt,
+		RequestedCount: req.N,
+		ReservedQuota:  jsonData(receipt),
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if err := s.store.CreateImageTask(r.Context(), task); err != nil {
+		s.refundImageQuota(r.Context(), identity, receipt)
 		writeError(w, http.StatusInternalServerError, "task_create_failed", err.Error())
 		return
 	}
-	if err := s.tasks.Submit(taskJob{OwnerID: identity.ID, TaskID: taskID, Mode: "edit", Edit: req}); err != nil {
+	if err := s.tasks.Submit(taskJob{OwnerID: identity.ID, TaskID: taskID, Mode: "edit", Receipt: receipt, Edit: req}); err != nil {
+		s.refundImageQuota(r.Context(), identity, receipt)
 		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, jsonData([]any{}), err.Error())
 		writeError(w, http.StatusServiceUnavailable, "task_queue_full", err.Error())
 		return

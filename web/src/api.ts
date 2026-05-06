@@ -53,6 +53,7 @@ export type MeResponse = {
     allowed_public_models?: string[];
     is_admin?: boolean;
   };
+  user?: User;
 };
 
 function withQuery(path: string, params: Record<string, string | number | boolean | undefined | null>) {
@@ -67,7 +68,7 @@ function withQuery(path: string, params: Record<string, string | number | boolea
 
 export const api = {
   loginWithPassword: (email: string, password: string) =>
-    request<{ token: string; role: string; name: string; version: string }>("", "/auth/login", {
+    request<{ token: string; role: string; name: string; version: string; user?: User }>("", "/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password })
@@ -115,13 +116,13 @@ export const api = {
       status: params.status,
       role: params.role
     })),
-  createUser: (token: string, body: { email: string; name?: string; password: string; role: string }) =>
+  createUser: (token: string, body: { email: string; name?: string; password: string; role: string; quota_unlimited?: boolean; permanent_quota?: number; temporary_quota?: number; temporary_quota_date?: string }) =>
     request<{ item: User; api_key?: ApiKey; key?: string }>(token, "/api/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     }),
-  updateUser: (token: string, id: string, body: Partial<Pick<User, "email" | "name" | "role" | "status">> & { password?: string }) =>
+  updateUser: (token: string, id: string, body: Partial<Pick<User, "email" | "name" | "role" | "status" | "quota_unlimited" | "permanent_quota" | "temporary_quota" | "temporary_quota_date">> & { password?: string }) =>
     request<{ item: User }>(token, `/api/users/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },

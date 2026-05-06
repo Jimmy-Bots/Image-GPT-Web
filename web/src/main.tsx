@@ -100,6 +100,21 @@ function quotaLabelFromSummary(summary: AccountListSummary | null) {
   return compact(summary.quota_total || 0);
 }
 
+function quotaLabelFromUser(user: User | null) {
+  if (!user) return "可用";
+  if (user.quota_unlimited) return "∞";
+  return compact(Number(user.available_quota || 0));
+}
+
+function formatUserQuotaBreakdown(user: User) {
+  if (user.quota_unlimited) return "无限额度";
+  const temporaryDate = user.temporary_quota_date?.trim();
+  const temporaryPart = user.temporary_quota > 0
+    ? `临时 ${user.temporary_quota}${temporaryDate ? ` · ${temporaryDate}` : ""}`
+    : "临时 0";
+  return `永久 ${compact(user.permanent_quota || 0)} · ${temporaryPart}`;
+}
+
 function IconButton({ children, className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return <button className={classNames("icon-button", className)} {...props}>{children}</button>;
 }
@@ -115,6 +130,7 @@ function SearchControl({ label = "搜索", value, onChange, placeholder }: { lab
 function App() {
   const [token, setToken] = useState(getStoredToken());
   const [identity, setIdentity] = useState<Identity | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [modelPolicy, setModelPolicy] = useState<ModelPolicy>({});
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [adminMode, setAdminMode] = useState(false);
@@ -159,10 +175,22 @@ function App() {
     if (!currentToken) return;
     const me = await api.me(currentToken);
     setIdentity(me.identity);
+    setCurrentUser(me.user || null);
     setModelPolicy(me.model_policy || {});
     setVersion("connected");
     if (me.identity.role !== "admin") setAdminMode(false);
     await refreshAll(currentToken, me.identity.role === "admin");
+  }
+
+  async function refreshCurrentUser(currentToken = token) {
+    if (!currentToken) return;
+    try {
+      const me = await api.me(currentToken);
+      setCurrentUser(me.user || null);
+      setModelPolicy(me.model_policy || {});
+    } catch {
+      // Keep workbench quota refresh quiet.
+    }
   }
 
   async function refreshAll(currentToken = token, admin = isAdmin) {
@@ -194,7 +222,7 @@ function App() {
   }
 
   useEffect(() => {
-    setModelPolicy((current) => ({
+      setModelPolicy((current) => ({
       ...current,
       workbench_model: String(settings.image_workbench_model || current.workbench_model || "gpt-image-2"),
       image_max_count: Number(settings.image_max_count || current.image_max_count || 4),
@@ -210,6 +238,7 @@ function App() {
       setStoredToken("");
       setToken("");
       setIdentity(null);
+      setCurrentUser(null);
     });
   }, []);
 
@@ -268,6 +297,7 @@ function App() {
     setStoredToken("");
     setToken("");
     setIdentity(null);
+    setCurrentUser(null);
     setActiveTab("dashboard");
     setAdminMode(false);
   }
@@ -281,9 +311,11 @@ function App() {
         <ImageHome
           token={token}
           identity={identity}
+          user={currentUser}
           modelPolicy={modelPolicy}
           isAdmin={Boolean(isAdmin)}
-        quotaLabel={quotaLabelFromSummary(accountSummary)}
+        quotaLabel={quotaLabelFromUser(currentUser)}
+        refreshUserState={refreshCurrentUser}
         setTasks={setTasks}
         setTaskTotal={setTaskTotal}
         setImages={setImages}
@@ -404,9 +436,11 @@ function LoginView({ busy, error, onLogin }: { busy: boolean; error: string; onL
 function ImageHome({
   token,
   identity,
+  user,
   modelPolicy,
   isAdmin,
   quotaLabel,
+  refreshUserState,
   setTasks,
   setTaskTotal,
   setImages,
@@ -420,9 +454,11 @@ function ImageHome({
 }: {
   token: string;
   identity: Identity;
+  user: User | null;
   modelPolicy: ModelPolicy;
   isAdmin: boolean;
   quotaLabel: string;
+  refreshUserState: () => Promise<void>;
   setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>;
   setTaskTotal: React.Dispatch<React.SetStateAction<number>>;
   setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>;
@@ -451,7 +487,7 @@ function ImageHome({
         </div>
       </header>
 
-      <ImageWorkbench token={token} identity={identity} modelPolicy={modelPolicy} quotaLabel={quotaLabel} canRefreshArchive={isAdmin} setTasks={setTasks} setTaskTotal={setTaskTotal} setImages={setImages} toast={toast} openLightbox={openLightbox} />
+      <ImageWorkbench token={token} identity={identity} modelPolicy={modelPolicy} quotaLabel={quotaLabel} refreshUserState={refreshUserState} canRefreshArchive={isAdmin} setTasks={setTasks} setTaskTotal={setTaskTotal} setImages={setImages} toast={toast} openLightbox={openLightbox} />
 
       <div className="toast-stack">
         {toasts.map((item) => <div key={item.id} className={classNames("toast", item.type)}>{item.message}</div>)}
@@ -749,7 +785,7 @@ function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefres
   );
 }
 
-function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, canRefreshArchive, setTasks, setTaskTotal, setImages, toast, openLightbox }: { token: string; identity: Identity; modelPolicy: ModelPolicy; quotaLabel: string; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
+function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserState, canRefreshArchive, setTasks, setTaskTotal, setImages, toast, openLightbox }: { token: string; identity: Identity; modelPolicy: ModelPolicy; quotaLabel: string; refreshUserState: () => Promise<void>; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState("");
   const [count, setCount] = useState(1);
@@ -810,6 +846,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, canRefreshAr
         setTasks((current) => mergeImageTasks(current, data.items));
         setTaskTotal((value) => Math.max(value, Number(data.total || value)));
         applyTaskUpdates(data.items);
+        refreshUserState().catch(() => {});
         if (canRefreshArchive && data.items.some((task) => task.status === "success")) {
           api.images(token).then((data) => setImages(data.items || [])).catch(() => {});
         }
@@ -959,12 +996,15 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, canRefreshAr
       setRefs([]);
       if (asyncMode) {
         await enqueueImages(turn);
+        await refreshUserState();
         toast("success", `已提交 ${countValue} 个任务`);
       } else {
         await runSyncTurn(turn);
+        await refreshUserState();
         toast("success", "图片已生成");
       }
     } catch (error) {
+      refreshUserState().catch(() => {});
       toast("error", error instanceof Error ? error.message : "生成失败");
     } finally {
       setBusy(false);
@@ -1141,6 +1181,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, canRefreshAr
                 <label className="composer-field"><span>模型</span><input value={model} readOnly /></label>
                 <label className="composer-field small-field"><span>比例</span><select value={size} onChange={(event) => setSize(event.target.value)}><option value="">默认</option><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></label>
                 <label className="composer-field count-field"><span>张数</span><input type="number" min={1} max={maxCount} value={count} onChange={(event) => setCount(Math.max(1, Math.min(maxCount, Number(event.target.value) || 1)))} /></label>
+                <span className="composer-pill subtle">上限 {maxCount}</span>
                 <div className="mode-toggle">
                   <button className={classNames(asyncMode && "active")} onClick={() => setAsyncMode(true)}>异步</button>
                   <button className={classNames(!asyncMode && "active")} onClick={() => setAsyncMode(false)}>同步</button>
@@ -1881,7 +1922,7 @@ function Playground({ token, models, toast, openLightbox }: { token: string; mod
 }
 
 function UsersPanel({ token, users, setUsers, toast }: { token: string; users: User[]; setUsers: (items: User[]) => void; toast: (type: Toast["type"], message: string) => void }) {
-  const [form, setForm] = useState({ email: "", name: "", password: "", role: "user" });
+  const [form, setForm] = useState({ email: "", name: "", password: "", role: "user", quotaUnlimited: false, permanentQuota: "0", temporaryQuota: "0" });
   const [newKey, setNewKey] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -1911,8 +1952,19 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
     setTotal(Number(data.total || 0));
   }
   async function create() {
-    const data = await api.createUser(token, form);
-    setForm({ email: "", name: "", password: "", role: "user" });
+    const quotaUnlimited = form.role === "admin" ? true : form.quotaUnlimited;
+    const temporaryQuota = Math.max(0, Number(form.temporaryQuota) || 0);
+    const data = await api.createUser(token, {
+      email: form.email,
+      name: form.name,
+      password: form.password,
+      role: form.role,
+      quota_unlimited: quotaUnlimited,
+      permanent_quota: quotaUnlimited ? 0 : Math.max(0, Number(form.permanentQuota) || 0),
+      temporary_quota: quotaUnlimited ? 0 : temporaryQuota,
+      temporary_quota_date: temporaryQuota > 0 ? new Date().toISOString().slice(0, 10) : ""
+    });
+    setForm({ email: "", name: "", password: "", role: "user", quotaUnlimited: false, permanentQuota: "0", temporaryQuota: "0" });
     setCreateOpen(false);
     if (data.key) setNewKey(data.key);
     await reload();
@@ -1932,7 +1984,7 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
         <div className="filter-actions"><button className="secondary" onClick={() => reload().catch((error) => toast("error", error.message))}>刷新用户</button></div>
       </div>
       {newKey ? <div className="notice"><span>新 API Key 只显示一次：</span><code>{newKey}</code><IconButton title="复制" onClick={() => copyText(newKey).then(() => toast("success", "已复制"))}><Copy size={14} /></IconButton><IconButton title="隐藏" onClick={() => setNewKey("")}><EyeOff size={14} /></IconButton></div> : null}
-      <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="users-table"><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>API Key</th><th>Last login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} />)}</tbody></table></div>
+      <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="users-table"><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>可用额度</th><th>额度明细</th><th>API Key</th><th>Last login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} />)}</tbody></table></div>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
       <DetailModal title="创建用户" open={createOpen} onClose={() => setCreateOpen(false)}>
         <div className="detail-panel">
@@ -1941,6 +1993,9 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
             <ControlField label="名称"><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="name" /></ControlField>
             <ControlField label="密码"><input value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} type="password" placeholder="password" /></ControlField>
             <ControlField label="角色"><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option>user</option><option>admin</option></select></ControlField>
+            <ControlField label="无限额度"><select value={form.role === "admin" || form.quotaUnlimited ? "true" : "false"} onChange={(event) => setForm({ ...form, quotaUnlimited: event.target.value === "true" })} disabled={form.role === "admin"}><option value="false">有限额度</option><option value="true">无限额度</option></select></ControlField>
+            <ControlField label="永久额度"><input type="number" min={0} value={form.permanentQuota} onChange={(event) => setForm({ ...form, permanentQuota: event.target.value })} disabled={form.role === "admin" || form.quotaUnlimited} /></ControlField>
+            <ControlField label="临时额度（仅今天）"><input type="number" min={0} value={form.temporaryQuota} onChange={(event) => setForm({ ...form, temporaryQuota: event.target.value })} disabled={form.role === "admin" || form.quotaUnlimited} /></ControlField>
           </div>
           <div className="modal-actions"><button className="secondary" onClick={() => setCreateOpen(false)}>取消</button><button onClick={() => create().catch((error) => toast("error", error.message))}>创建用户</button></div>
         </div>
@@ -1952,18 +2007,42 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
 function UserRow({ token, user, reload, toast, showKey }: { token: string; user: User; reload: () => Promise<void>; toast: (type: Toast["type"], message: string) => void; showKey: (key: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [draft, setDraft] = useState({ email: user.email, name: user.name || "", password: "", role: user.role, status: user.status });
+  const [draft, setDraft] = useState({
+    email: user.email,
+    name: user.name || "",
+    password: "",
+    role: user.role,
+    status: user.status,
+    quotaUnlimited: user.quota_unlimited,
+    permanentQuota: String(user.permanent_quota || 0),
+    temporaryQuota: String(user.temporary_quota || 0)
+  });
   useEffect(() => {
-    if (!editing) setDraft({ email: user.email, name: user.name || "", password: "", role: user.role, status: user.status });
-  }, [editing, user.email, user.name, user.role, user.status]);
+    if (!editing) setDraft({
+      email: user.email,
+      name: user.name || "",
+      password: "",
+      role: user.role,
+      status: user.status,
+      quotaUnlimited: user.quota_unlimited,
+      permanentQuota: String(user.permanent_quota || 0),
+      temporaryQuota: String(user.temporary_quota || 0)
+    });
+  }, [editing, user.email, user.name, user.role, user.status, user.quota_unlimited, user.permanent_quota, user.temporary_quota]);
   async function save() {
     setSaving(true);
     try {
-      const body: Partial<Pick<User, "email" | "name" | "role" | "status">> & { password?: string } = {
+      const quotaUnlimited = draft.role === "admin" ? true : draft.quotaUnlimited;
+      const temporaryQuota = Math.max(0, Number(draft.temporaryQuota) || 0);
+      const body: Partial<Pick<User, "email" | "name" | "role" | "status" | "quota_unlimited" | "permanent_quota" | "temporary_quota" | "temporary_quota_date">> & { password?: string } = {
         email: draft.email.trim(),
         name: draft.name.trim(),
         role: draft.role,
-        status: draft.status
+        status: draft.status,
+        quota_unlimited: quotaUnlimited,
+        permanent_quota: quotaUnlimited ? 0 : Math.max(0, Number(draft.permanentQuota) || 0),
+        temporary_quota: quotaUnlimited ? 0 : temporaryQuota,
+        temporary_quota_date: temporaryQuota > 0 ? new Date().toISOString().slice(0, 10) : ""
       };
       if (draft.password.trim()) body.password = draft.password;
       await api.updateUser(token, user.id, body);
@@ -1998,6 +2077,8 @@ function UserRow({ token, user, reload, toast, showKey }: { token: string; user:
       <td>{editing ? <input className="cell-input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /> : (user.name || "-")}</td>
       <td>{editing ? <select className="cell-input" value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value as User["role"] })}><option>user</option><option>admin</option></select> : <Badge value={user.role} />}</td>
       <td>{editing ? <select className="cell-input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as User["status"] })}><option value="active">active</option><option value="disabled">disabled</option></select> : <Badge value={user.status} />}</td>
+      <td>{user.quota_unlimited ? "∞" : compact(user.available_quota || 0)}</td>
+      <td>{editing ? <div className="quota-edit-inline"><select className="cell-input" value={draft.role === "admin" || draft.quotaUnlimited ? "true" : "false"} onChange={(event) => setDraft({ ...draft, quotaUnlimited: event.target.value === "true" })} disabled={draft.role === "admin"}><option value="false">有限</option><option value="true">无限</option></select><input className="cell-input" type="number" min={0} value={draft.permanentQuota} onChange={(event) => setDraft({ ...draft, permanentQuota: event.target.value })} disabled={draft.role === "admin" || draft.quotaUnlimited} placeholder="永久" /><input className="cell-input" type="number" min={0} value={draft.temporaryQuota} onChange={(event) => setDraft({ ...draft, temporaryQuota: event.target.value })} disabled={draft.role === "admin" || draft.quotaUnlimited} placeholder="今日临时" /></div> : <><strong>{formatUserQuotaBreakdown(user)}</strong><small>{user.temporary_quota > 0 ? "临时额度仅当天有效" : "无临时额度"}</small></>}</td>
       <td><Badge value={user.api_key?.enabled ?? false} /><small>{user.api_key ? `${user.api_key.name} · ${fmtDate(user.api_key.last_used_at)}` : "missing"}</small></td>
       <td>{fmtDate(user.last_login_at)}</td>
       <td className="row-actions">

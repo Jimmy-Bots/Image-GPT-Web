@@ -25,10 +25,14 @@ type registerRequest struct {
 }
 
 type userCreateRequest struct {
-	Email    string      `json:"email"`
-	Name     string      `json:"name"`
-	Password string      `json:"password"`
-	Role     domain.Role `json:"role"`
+	Email              string      `json:"email"`
+	Name               string      `json:"name"`
+	Password           string      `json:"password"`
+	Role               domain.Role `json:"role"`
+	QuotaUnlimited     *bool       `json:"quota_unlimited"`
+	PermanentQuota     *int        `json:"permanent_quota"`
+	TemporaryQuota     *int        `json:"temporary_quota"`
+	TemporaryQuotaDate *string     `json:"temporary_quota_date"`
 }
 
 type userCreateResponse struct {
@@ -38,11 +42,15 @@ type userCreateResponse struct {
 }
 
 type userUpdateRequest struct {
-	Email    *string      `json:"email"`
-	Name     *string      `json:"name"`
-	Password *string      `json:"password"`
-	Role     *domain.Role `json:"role"`
-	Status   *string      `json:"status"`
+	Email              *string      `json:"email"`
+	Name               *string      `json:"name"`
+	Password           *string      `json:"password"`
+	Role               *domain.Role `json:"role"`
+	Status             *string      `json:"status"`
+	QuotaUnlimited     *bool        `json:"quota_unlimited"`
+	PermanentQuota     *int         `json:"permanent_quota"`
+	TemporaryQuota     *int         `json:"temporary_quota"`
+	TemporaryQuotaDate *string      `json:"temporary_quota_date"`
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +96,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"role":       user.Role,
 		"subject_id": user.ID,
 		"name":       user.Name,
+		"user":       user,
 		"token":      token,
 		"expires_at": expiresAt,
 	})
@@ -112,7 +121,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if count == 0 {
 		role = domain.RoleAdmin
 	}
-	user, err := s.createUser(r.Context(), req.Email, req.Name, req.Password, role)
+	user, err := s.createUser(r.Context(), req.Email, req.Name, req.Password, role, nil, nil, nil, nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "create_user_failed", err.Error())
 		return
@@ -184,7 +193,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = domain.RoleUser
 	}
-	user, err := s.createUser(r.Context(), req.Email, req.Name, req.Password, req.Role)
+	user, err := s.createUser(r.Context(), req.Email, req.Name, req.Password, req.Role, req.QuotaUnlimited, req.PermanentQuota, req.TemporaryQuota, req.TemporaryQuotaDate)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "create_user_failed", err.Error())
 		return
@@ -207,7 +216,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	update := storage.UserUpdate{Email: req.Email, Name: req.Name, Role: req.Role}
+	update := storage.UserUpdate{Email: req.Email, Name: req.Name, Role: req.Role, QuotaUnlimited: req.QuotaUnlimited, PermanentQuota: req.PermanentQuota, TemporaryQuota: req.TemporaryQuota, TemporaryQuotaDate: req.TemporaryQuotaDate}
 	if req.Password != nil {
 		hash, err := auth.HashPassword(*req.Password)
 		if err != nil {
@@ -298,7 +307,7 @@ func (s *Server) handleDeleteMyAPIKey(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusGone, "key_deletion_disabled", "each user keeps one API key; disable or delete the user instead")
 }
 
-func (s *Server) createUser(ctx context.Context, email string, name string, password string, role domain.Role) (domain.User, error) {
+func (s *Server) createUser(ctx context.Context, email string, name string, password string, role domain.Role, quotaUnlimited *bool, permanentQuota *int, temporaryQuota *int, temporaryQuotaDate *string) (domain.User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	name = strings.TrimSpace(name)
 	if email == "" {
@@ -324,6 +333,24 @@ func (s *Server) createUser(ctx context.Context, email string, name string, pass
 		Status:       domain.UserStatusActive,
 		CreatedAt:    now,
 		UpdatedAt:    now,
+	}
+	if role == domain.RoleAdmin {
+		user.QuotaUnlimited = true
+	} else {
+		if quotaUnlimited != nil {
+			user.QuotaUnlimited = *quotaUnlimited
+		}
+		if permanentQuota != nil {
+			user.PermanentQuota = maxInt(0, *permanentQuota)
+		}
+		if temporaryQuota != nil {
+			user.TemporaryQuota = maxInt(0, *temporaryQuota)
+		}
+		if user.TemporaryQuota > 0 {
+			user.TemporaryQuotaDate = time.Now().UTC().Format("2006-01-02")
+		} else if temporaryQuotaDate != nil {
+			user.TemporaryQuotaDate = strings.TrimSpace(*temporaryQuotaDate)
+		}
 	}
 	if err := s.store.CreateUser(ctx, user); err != nil {
 		return domain.User{}, err
