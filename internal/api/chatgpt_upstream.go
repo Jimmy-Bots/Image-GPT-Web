@@ -548,23 +548,72 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 		go func() {
 			defer wg.Done()
 			for token := range jobs {
+				jobCtx := withStructuredLog(ctx, u.logWriter, "account", map[string]any{
+					"token_ref": accountTokenRef(token),
+					"account":   maskToken(token),
+				})
 				select {
 				case <-ctx.Done():
 					results <- jobResult{token: token, err: ctx.Err()}
 					continue
 				case u.refreshSem <- struct{}{}:
 				}
-				info, err := chatgpt.NewClient(token, chatgpt.WithHTTPClient(u.httpClient)).UserInfo(ctx)
+				info, err := chatgpt.NewClient(token, chatgpt.WithHTTPClient(u.httpClient)).UserInfo(jobCtx)
 				<-u.refreshSem
+				replacedToken := token
 				if err == nil {
-					_, err = u.store.UpdateAccountRemoteInfo(ctx, token, info)
+					_, err = u.store.UpdateAccountRemoteInfo(jobCtx, token, info)
 				}
 				if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
-					status := "异常"
-					quota := 0
-					_, _ = u.store.UpdateAccount(ctx, token, storage.AccountUpdate{Status: &status, Quota: &quota})
+					_ = u.store.SetAccountRecovery(jobCtx, token, "recovering", err.Error())
+					emitStructuredLog(jobCtx, "账号 access token 失效，尝试重登录", map[string]any{
+						"status":    "relogin_start",
+						"token_ref": accountTokenRef(token),
+						"account":   maskToken(token),
+						"error":     err.Error(),
+					})
+					reloginResult, reloginErr := u.reloginAccount(jobCtx, token)
+					if reloginErr == nil {
+						replacedToken = reloginResult.NewToken
+						info, err = chatgpt.NewClient(reloginResult.NewToken, chatgpt.WithHTTPClient(u.httpClient)).UserInfo(jobCtx)
+						if err == nil {
+							_, err = u.store.UpdateAccountRemoteInfo(jobCtx, reloginResult.NewToken, info)
+						}
+						if err == nil {
+							_ = u.store.SetAccountRecovery(jobCtx, reloginResult.NewToken, "", "")
+							emitStructuredLog(jobCtx, "账号重登录刷新成功", map[string]any{
+								"status":        "relogin_success",
+								"token_ref":     accountTokenRef(reloginResult.NewToken),
+								"old_token_ref": accountTokenRef(token),
+								"account":       maskToken(reloginResult.NewToken),
+								"email":         reloginResult.Email,
+							})
+						} else {
+							_ = u.store.SetAccountRecovery(jobCtx, reloginResult.NewToken, "recover_failed", err.Error())
+							emitStructuredLog(jobCtx, "账号重登录后刷新失败", map[string]any{
+								"status":        "relogin_refresh_failed",
+								"token_ref":     accountTokenRef(reloginResult.NewToken),
+								"old_token_ref": accountTokenRef(token),
+								"account":       maskToken(reloginResult.NewToken),
+								"email":         reloginResult.Email,
+								"error":         err.Error(),
+							})
+						}
+					} else {
+						status := "异常"
+						quota := 0
+						_, _ = u.store.UpdateAccount(jobCtx, token, storage.AccountUpdate{Status: &status, Quota: &quota})
+						_ = u.store.SetAccountRecovery(jobCtx, token, "recover_failed", reloginErr.Error())
+						emitStructuredLog(jobCtx, "账号重登录失败", map[string]any{
+							"status":    "relogin_failed",
+							"token_ref": accountTokenRef(token),
+							"account":   maskToken(token),
+							"error":     reloginErr.Error(),
+						})
+						err = reloginErr
+					}
 				}
-				results <- jobResult{token: token, err: err}
+				results <- jobResult{token: replacedToken, err: err}
 			}
 		}()
 	}

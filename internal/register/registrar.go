@@ -25,6 +25,17 @@ type Registrar struct {
 	now         func() time.Time
 }
 
+func NewLoginOnly(cfg Config) (*LoginOnly, error) {
+	cfg = cfg.withDefaults()
+	return &LoginOnly{
+		cfg:         cfg,
+		httpFactory: defaultHTTPClientFactory{},
+		random:      newDefaultRandomSource(),
+		now:         func() time.Time { return time.Now().UTC() },
+		logger:      LoggerFunc(func(context.Context, string, string, ...any) {}),
+	}, nil
+}
+
 func New(options Options) (*Registrar, error) {
 	if options.MailProvider == nil {
 		return nil, ErrMailProviderRequired
@@ -253,6 +264,70 @@ func (r *Registrar) refreshAccountRemoteInfo(ctx context.Context, accessToken st
 		return nil
 	}
 	return lastErr
+}
+
+func (l *LoginOnly) LoginAndExchangeTokens(ctx context.Context, email string, password string) (RegisterResult, error) {
+	client, err := l.httpFactory.New(l.cfg)
+	if err != nil {
+		return RegisterResult{}, err
+	}
+	defer client.CloseIdleConnections()
+	state := flowState{
+		client:   client,
+		deviceID: randomID(l.random, 12),
+		cfg:      l.cfg,
+		random:   l.random,
+		now:      l.now,
+		logger:   l.logger,
+	}
+	tokens, err := l.loginAndExchange(ctx, state, strings.TrimSpace(email), strings.TrimSpace(password))
+	if err != nil {
+		return RegisterResult{}, err
+	}
+	return RegisterResult{
+		Email:        strings.TrimSpace(email),
+		Password:     strings.TrimSpace(password),
+		AccessToken:  strings.TrimSpace(tokens.AccessToken),
+		RefreshToken: strings.TrimSpace(tokens.RefreshToken),
+		IDToken:      strings.TrimSpace(tokens.IDToken),
+		CreatedAt:    l.now(),
+	}, nil
+}
+
+func (l *LoginOnly) loginAndExchange(ctx context.Context, state flowState, email string, password string) (tokenBundle, error) {
+	emptyMailbox := Mailbox{Address: email}
+	noopMail := loginOnlyMailProvider{}
+	tokens, err := state.loginAndExchangeTokens(ctx, email, password, emptyMailbox, noopMail)
+	if err == nil {
+		return tokens, nil
+	}
+	if !shouldRetryFreshLogin(err) {
+		return tokenBundle{}, err
+	}
+	client, newErr := l.httpFactory.New(l.cfg)
+	if newErr != nil {
+		return tokenBundle{}, newErr
+	}
+	defer client.CloseIdleConnections()
+	freshState := flowState{
+		client:   client,
+		deviceID: randomID(l.random, 12),
+		cfg:      l.cfg,
+		random:   l.random,
+		now:      l.now,
+		logger:   l.logger,
+	}
+	return freshState.loginAndExchangeTokens(ctx, email, password, emptyMailbox, noopMail)
+}
+
+type loginOnlyMailProvider struct{}
+
+func (loginOnlyMailProvider) CreateMailbox(context.Context) (Mailbox, error) {
+	return Mailbox{}, errors.New("login-only mail provider cannot create mailbox")
+}
+
+func (loginOnlyMailProvider) WaitForCode(context.Context, Mailbox) (string, error) {
+	return "", errors.New("login-only flow requires a mailbox provider for otp")
 }
 
 func (r *Registrar) logRegistration(ctx context.Context, level string, summary string, detail map[string]any) {

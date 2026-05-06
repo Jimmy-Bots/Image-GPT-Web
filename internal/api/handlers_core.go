@@ -483,6 +483,8 @@ func publicAccount(item domain.Account, stats map[string]AccountPoolAccountStats
 		"limits_progress":     item.LimitsProgress,
 		"default_model_slug":  item.DefaultModelSlug,
 		"restore_at":          item.RestoreAt,
+		"recovery_state":      item.RecoveryState,
+		"recovery_error":      item.RecoveryError,
 		"success":             item.Success,
 		"fail":                item.Fail,
 		"active_requests":     accountStats.ActiveRequests,

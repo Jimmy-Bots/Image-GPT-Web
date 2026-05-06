@@ -116,6 +116,14 @@ type Config struct {
 	LocalRetryAttempts    int
 }
 
+type LoginOnly struct {
+	cfg         Config
+	httpFactory HTTPClientFactory
+	random      RandomSource
+	now         func() time.Time
+	logger      Logger
+}
+
 func (c Config) withDefaults() Config {
 	if c.AuthBaseURL == "" {
 		c.AuthBaseURL = defaultAuthBaseURL

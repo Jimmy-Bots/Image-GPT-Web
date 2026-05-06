@@ -122,6 +122,15 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		if job.Receipt.Total > 0 {
 			_, _ = q.store.RefundUserQuota(context.Background(), job.OwnerID, job.Receipt)
 		}
+		q.addLogContext(context.Background(), "task", "图片任务失败", map[string]any{
+			"task_id":      job.TaskID,
+			"owner_id":     job.OwnerID,
+			"mode":         job.Mode,
+			"status":       taskError,
+			"quota_used":   0,
+			"quota_refund": job.Receipt.Total,
+			"error":        err.Error(),
+		})
 		log.Printf("image_task failed id=%s owner=%s mode=%s err=%v", job.TaskID, job.OwnerID, job.Mode, err)
 		_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskError, jsonData([]any{}), err.Error())
 		return
@@ -136,6 +145,16 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	if refund := job.Receipt.Total - count; refund > 0 {
 		_, _ = q.store.RefundUserQuota(context.Background(), job.OwnerID, quotaRefundPortion(job.Receipt, refund))
 	}
+	q.addLogContext(context.Background(), "task", "图片任务成功", map[string]any{
+		"task_id":      job.TaskID,
+		"owner_id":     job.OwnerID,
+		"mode":         job.Mode,
+		"status":       taskSuccess,
+		"items":        count,
+		"archived":     saved,
+		"quota_used":   count,
+		"quota_refund": maxInt(0, job.Receipt.Total-count),
+	})
 	log.Printf("image_task success id=%s owner=%s mode=%s items=%d archived=%d base_url_configured=%t", job.TaskID, job.OwnerID, job.Mode, count, saved, q.baseURL != "")
 	data := result["data"]
 	_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskSuccess, jsonData(data), "")
@@ -306,6 +325,15 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusServiceUnavailable, "task_queue_full", err.Error())
 		return
 	}
+	s.addLogContext(r.Context(), "task", "图片任务已提交", map[string]any{
+		"task_id":         taskID,
+		"owner_id":        identity.ID,
+		"mode":            "generate",
+		"model":           req.Model,
+		"size":            req.Size,
+		"requested_count": requestedCount,
+		"quota_reserved":  receipt.Total,
+	})
 	writeJSON(w, http.StatusAccepted, task)
 }
 
@@ -364,6 +392,15 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "task_queue_full", err.Error())
 		return
 	}
+	s.addLogContext(r.Context(), "task", "图片任务已提交", map[string]any{
+		"task_id":         taskID,
+		"owner_id":        identity.ID,
+		"mode":            "edit",
+		"model":           req.Model,
+		"size":            req.Size,
+		"requested_count": req.N,
+		"quota_reserved":  receipt.Total,
+	})
 	writeJSON(w, http.StatusAccepted, task)
 }
 

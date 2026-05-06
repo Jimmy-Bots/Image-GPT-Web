@@ -69,6 +69,8 @@ type Account struct {
 	LimitsProgress     json.RawMessage `json:"limits_progress,omitempty"`
 	DefaultModelSlug   string          `json:"default_model_slug,omitempty"`
 	RestoreAt          string          `json:"restore_at,omitempty"`
+	RecoveryState      string          `json:"recovery_state,omitempty"`
+	RecoveryError      string          `json:"recovery_error,omitempty"`
 	Success            int             `json:"success"`
 	Fail               int             `json:"fail"`
 	ActiveRequests     int             `json:"active_requests,omitempty"`

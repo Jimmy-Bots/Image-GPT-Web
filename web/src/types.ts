@@ -29,6 +29,8 @@ export type Account = {
   limits_progress?: unknown;
   default_model_slug?: string;
   restore_at?: string;
+  recovery_state?: string;
+  recovery_error?: string;
   success: number;
   fail: number;
   active_requests?: number;
@@ -72,6 +74,7 @@ export type ImageTask = {
   model?: string;
   size?: string;
   prompt?: string;
+  requested_count?: number;
   data?: ImageResult[];
   error?: string;
   created_at: string;

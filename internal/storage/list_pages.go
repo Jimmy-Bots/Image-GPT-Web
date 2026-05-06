@@ -82,7 +82,7 @@ func (s *Store) ListAccountsPage(ctx context.Context, query AccountListQuery) ([
 	summary.QuotaUnlimited = quotaUnlimited > 0
 
 	itemsQuery := `SELECT access_token, password, type, status, quota, max_concurrency, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
-		restore_at, success, fail, last_used_at, raw_json, created_at, updated_at
+		restore_at, recovery_state, recovery_error, success, fail, last_used_at, raw_json, created_at, updated_at
 		FROM accounts` + where + ` ORDER BY updated_at DESC LIMIT ? OFFSET ?`
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, itemsQuery, itemsArgs...)
