@@ -106,14 +106,21 @@ func (p *InbucketMailProvider) WaitForCode(ctx context.Context, mailbox Mailbox)
 		waitCtx, cancel = context.WithTimeout(ctx, p.cfg.WaitTimeout)
 		defer cancel()
 	}
+	mailboxName, err := p.mailboxName(mailbox)
+	if err != nil {
+		return "", err
+	}
 	seen := mailboxSeenRefs(mailbox)
 	for {
-		code, messageID, err := p.fetchLatestCode(waitCtx, mailbox, seen)
+		code, messageID, err := p.fetchLatestCode(waitCtx, mailboxName, mailbox, seen)
 		if err != nil {
 			return "", err
 		}
 		if code != "" {
 			markMailboxSeenRef(mailbox, messageID)
+			if messageID != "" {
+				_ = p.deleteMessage(waitCtx, mailboxName, messageID)
+			}
 			return code, nil
 		}
 		if messageID != "" {
@@ -146,15 +153,7 @@ type inbucketMessageDetail struct {
 	Body    map[string]any `json:"body"`
 }
 
-func (p *InbucketMailProvider) fetchLatestCode(ctx context.Context, mailbox Mailbox, seen map[string]struct{}) (string, string, error) {
-	mailboxName := strings.TrimSpace(stringValue(mailbox.Meta["mailbox_name"]))
-	if mailboxName == "" {
-		localPart, _, _ := strings.Cut(strings.TrimSpace(mailbox.Address), "@")
-		mailboxName = strings.TrimSpace(localPart)
-	}
-	if mailboxName == "" {
-		return "", "", errors.New("inbucket mailbox name is required")
-	}
+func (p *InbucketMailProvider) fetchLatestCode(ctx context.Context, mailboxName string, mailbox Mailbox, seen map[string]struct{}) (string, string, error) {
 	items, err := p.listMailbox(ctx, mailboxName)
 	if err != nil {
 		return "", "", err
@@ -193,6 +192,18 @@ func (p *InbucketMailProvider) fetchLatestCode(ctx context.Context, mailbox Mail
 	return "", "", nil
 }
 
+func (p *InbucketMailProvider) mailboxName(mailbox Mailbox) (string, error) {
+	mailboxName := strings.TrimSpace(stringValue(mailbox.Meta["mailbox_name"]))
+	if mailboxName == "" {
+		localPart, _, _ := strings.Cut(strings.TrimSpace(mailbox.Address), "@")
+		mailboxName = strings.TrimSpace(localPart)
+	}
+	if mailboxName == "" {
+		return "", errors.New("inbucket mailbox name is required")
+	}
+	return mailboxName, nil
+}
+
 func (p *InbucketMailProvider) listMailbox(ctx context.Context, mailboxName string) ([]inbucketMailboxMessage, error) {
 	path := "/api/v1/mailbox/" + url.PathEscape(mailboxName)
 	body, err := p.request(ctx, http.MethodGet, path)
@@ -219,7 +230,17 @@ func (p *InbucketMailProvider) getMessage(ctx context.Context, mailboxName strin
 	return detail, nil
 }
 
+func (p *InbucketMailProvider) deleteMessage(ctx context.Context, mailboxName string, messageID string) error {
+	path := "/api/v1/mailbox/" + url.PathEscape(mailboxName) + "/" + url.PathEscape(messageID)
+	_, err := p.requestWithStatus(ctx, http.MethodDelete, path, http.StatusOK, http.StatusAccepted, http.StatusNoContent)
+	return err
+}
+
 func (p *InbucketMailProvider) request(ctx context.Context, method string, path string) ([]byte, error) {
+	return p.requestWithStatus(ctx, method, path, http.StatusOK, http.StatusNoContent)
+}
+
+func (p *InbucketMailProvider) requestWithStatus(ctx context.Context, method string, path string, allowed ...int) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, p.cfg.APIBase+path, nil)
 	if err != nil {
 		return nil, err
@@ -235,13 +256,22 @@ func (p *InbucketMailProvider) request(ctx context.Context, method string, path 
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+	if !statusAllowed(resp.StatusCode, allowed) {
 		return nil, fmt.Errorf("inbucket request failed: %s %s, http %d, body=%s", method, path, resp.StatusCode, string(limitBytes(body, 300)))
 	}
 	if resp.StatusCode == http.StatusNoContent {
 		return []byte(`{}`), nil
 	}
 	return body, nil
+}
+
+func statusAllowed(status int, allowed []int) bool {
+	for _, item := range allowed {
+		if status == item {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *InbucketMailProvider) messageMatchesAddress(detail inbucketMessageDetail, address string) bool {
