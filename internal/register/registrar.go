@@ -209,7 +209,24 @@ func (r *Registrar) loginAndExchangeTokens(ctx context.Context, state flowState,
 		now:      r.now,
 		logger:   r.logger,
 	}
-	return freshState.loginAndExchangeTokens(ctx, email, password, mailbox, r.mail)
+	r.logRegistration(ctx, "info", "retry exchange platform tokens", map[string]any{
+		"email": email,
+		"retry": 1,
+	})
+	tokens, err = freshState.loginAndExchangeTokens(ctx, email, password, mailbox, r.mail)
+	if err != nil {
+		r.logRegistration(ctx, "error", "retry exchange platform tokens failed", map[string]any{
+			"email": email,
+			"retry": 1,
+			"error": err.Error(),
+		})
+		return tokenBundle{}, err
+	}
+	r.logRegistration(ctx, "info", "retry exchange platform tokens succeeded", map[string]any{
+		"email": email,
+		"retry": 1,
+	})
+	return tokens, nil
 }
 
 func (r *Registrar) refreshAccountRemoteInfo(ctx context.Context, accessToken string) error {
