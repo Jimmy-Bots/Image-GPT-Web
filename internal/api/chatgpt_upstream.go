@@ -80,11 +80,17 @@ func (u *ChatGPTUpstream) ListModels(ctx context.Context) (map[string]any, error
 }
 
 func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGenerationPayload) (map[string]any, error) {
+	maxCount := defaultImageMaxCount
+	if settings, err := u.store.GetSettings(ctx); err == nil {
+		if limit := intMapValue(settings, "image_max_count"); limit > 0 {
+			maxCount = limit
+		}
+	}
 	if req.N < 1 {
 		req.N = 1
 	}
-	if req.N > 4 {
-		return nil, fmt.Errorf("n must be between 1 and 4")
+	if req.N > maxCount {
+		return nil, fmt.Errorf("n must be between 1 and %d", maxCount)
 	}
 	results := make([]map[string]any, 0, req.N)
 	attempted := make(map[string]struct{})
@@ -174,11 +180,17 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 }
 
 func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (map[string]any, error) {
+	maxCount := defaultImageMaxCount
+	if settings, err := u.store.GetSettings(ctx); err == nil {
+		if limit := intMapValue(settings, "image_max_count"); limit > 0 {
+			maxCount = limit
+		}
+	}
 	if req.N < 1 {
 		req.N = 1
 	}
-	if req.N > 4 {
-		return nil, fmt.Errorf("n must be between 1 and 4")
+	if req.N > maxCount {
+		return nil, fmt.Errorf("n must be between 1 and %d", maxCount)
 	}
 	if len(req.Images) == 0 {
 		return nil, fmt.Errorf("image is required")

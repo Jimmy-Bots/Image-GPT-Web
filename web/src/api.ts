@@ -49,6 +49,7 @@ export type MeResponse = {
   };
   model_policy?: {
     workbench_model?: string;
+    image_max_count?: number;
     allowed_public_models?: string[];
     is_admin?: boolean;
   };
