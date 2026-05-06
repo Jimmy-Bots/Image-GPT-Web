@@ -8,6 +8,12 @@ export type Identity = {
   auth_type: "legacy" | "session" | "api_key";
 };
 
+export type ModelPolicy = {
+  workbench_model?: string;
+  allowed_public_models?: string[];
+  is_admin?: boolean;
+};
+
 export type Account = {
   token_ref: string;
   access_token_masked: string;

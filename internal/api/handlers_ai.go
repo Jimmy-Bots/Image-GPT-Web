@@ -27,6 +27,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, err)
 		return
 	}
+	result = filterModelsByAllowed(result, s.allowedPublicModels(r.Context()))
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -44,9 +45,12 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "bad_request", "prompt is required")
 		return
 	}
-	if req.Model == "" {
-		req.Model = "gpt-image-2"
+	model, err := s.enforceImageRequestModel(r.Context(), identity, req.Model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_model", err.Error())
+		return
 	}
+	req.Model = model
 	req.Size = normalizeImageTaskSize(req.Size)
 	if !s.checkContentPolicy(w, r, identity, "/v1/images/generations", req.Model, req.Prompt) {
 		return
@@ -110,6 +114,12 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	model, err := s.enforceImageRequestModel(r.Context(), identity, req.Model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_model", err.Error())
+		return
+	}
+	req.Model = model
 	req.Size = normalizeImageTaskSize(req.Size)
 	if !s.checkContentPolicy(w, r, identity, "/v1/images/edits", req.Model, req.Prompt) {
 		return
@@ -199,6 +209,12 @@ func (s *Server) handleJSONUpstream(
 	if value, ok := req["model"].(string); ok && strings.TrimSpace(value) != "" {
 		model = value
 	}
+	model, err := s.enforceGeneralRequestModel(r.Context(), model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_model", err.Error())
+		return
+	}
+	req["model"] = model
 	result, err := handler(r.Context(), req)
 	if err != nil {
 		s.logCall(r, identity, endpoint, model, "failed", err.Error())
@@ -227,6 +243,12 @@ func (s *Server) handleJSONOrStreamUpstream(
 		return
 	}
 	model := stringFromAny(req["model"], "auto")
+	model, err := s.enforceGeneralRequestModel(r.Context(), model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_model", err.Error())
+		return
+	}
+	req["model"] = model
 	if !s.checkContentPolicy(w, r, identity, endpoint, model, requestText(req)) {
 		return
 	}

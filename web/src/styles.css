@@ -248,9 +248,9 @@ th input[type="checkbox"], td input[type="checkbox"] { display: block; margin: 0
 span.composer-pill { display: inline-flex; align-items: center; }
 .composer-pill.passive { background: #f2f5f8; border-color: #f2f5f8; color: #667386; }
 .composer-pill.running { background: #fff6df; border-color: #ffe8a8; color: #8a6200; }
-.composer-field { min-height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px; border: 1px solid #dfe6ee; border-radius: 999px; background: white; }
+.composer-field { min-height: 34px; height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 3px 9px; border: 1px solid #dfe6ee; border-radius: 999px; background: white; box-sizing: border-box; }
 .composer-field span { margin: 0; color: #697586; font-size: 12px; font-weight: 750; }
-.composer-field input, .composer-field select { width: 118px; border: 0; border-radius: 0; background: transparent; padding: 3px 0; box-shadow: none; font-size: 12px; }
+.composer-field input, .composer-field select { width: 118px; height: 24px; border: 0; border-radius: 0; background: transparent; padding: 0; box-shadow: none; font-size: 12px; line-height: 24px; }
 .composer-field input:focus, .composer-field select:focus { border: 0; box-shadow: none; }
 .composer-field.small-field select { width: 72px; }
 .composer-field.count-field input { width: 34px; text-align: center; }

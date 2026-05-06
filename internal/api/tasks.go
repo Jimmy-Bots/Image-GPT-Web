@@ -238,9 +238,12 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "bad_request", "client_task_id and prompt are required")
 		return
 	}
-	if req.Model == "" {
-		req.Model = "gpt-image-2"
+	model, err := s.enforceImageRequestModel(r.Context(), identity, req.Model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_model", err.Error())
+		return
 	}
+	req.Model = model
 	if !s.checkContentPolicy(w, r, identity, "/api/image-tasks/generations", req.Model, req.Prompt) {
 		return
 	}
@@ -267,7 +270,7 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "task_create_failed", err.Error())
 		return
 	}
-	err := s.tasks.Submit(taskJob{
+	err = s.tasks.Submit(taskJob{
 		OwnerID: identity.ID,
 		TaskID:  taskID,
 		Mode:    "generate",
@@ -296,6 +299,12 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	model, err := s.enforceImageRequestModel(r.Context(), identity, req.Model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_model", err.Error())
+		return
+	}
+	req.Model = model
 	req.Size = normalizeImageTaskSize(req.Size)
 	if !s.checkContentPolicy(w, r, identity, "/api/image-tasks/edits", req.Model, req.Prompt) {
 		return
