@@ -28,8 +28,8 @@ import {
   X
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
-import type { Account, AccountRefreshStatus, Identity, ImageResult, ImageTask, ModelItem, ReferenceImage, RegisterRuntime, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
-import { classNames, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imageSrc, parseJSON, parseTaskData, quotaSummary, safeJSON, statusClass } from "./utils";
+import type { Account, AccountListSummary, AccountRefreshStatus, Identity, ImageResult, ImageTask, ModelItem, ReferenceImage, RegisterRuntime, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
+import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass } from "./utils";
 import "./styles.css";
 
 type Tab = "dashboard" | "accounts" | "register" | "activity" | "images" | "playground" | "users" | "settings";
@@ -94,6 +94,13 @@ function Badge({ value }: { value: string | boolean | number | undefined }) {
   return <span className={classNames("badge", statusClass(String(value ?? "")))}>{String(value ?? "-")}</span>;
 }
 
+function quotaLabelFromSummary(summary: AccountListSummary | null) {
+  if (!summary) return "可用";
+  if (summary.quota_unlimited) return "∞";
+  if (summary.quota_unknown) return "未知";
+  return compact(summary.quota_total || 0);
+}
+
 function IconButton({ children, className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return <button className={classNames("icon-button", className)} {...props}>{children}</button>;
 }
@@ -105,9 +112,11 @@ function App() {
   const [adminMode, setAdminMode] = useState(false);
   const [version, setVersion] = useState("-");
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accountSummary, setAccountSummary] = useState<AccountListSummary | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [models, setModels] = useState<ModelItem[]>([]);
   const [tasks, setTasks] = useState<ImageTask[]>([]);
+  const [taskTotal, setTaskTotal] = useState(0);
   const [images, setImages] = useState<StoredImage[]>([]);
   const [settings, setSettings] = useState<SettingsType>({});
   const [registerRuntime, setRegisterRuntime] = useState<RegisterRuntime | null>(null);
@@ -151,18 +160,24 @@ function App() {
     const common = admin
       ? [
           api.models(currentToken).then((data) => setModels(data.data || [])),
-          api.tasks(currentToken).then((data) => setTasks(data.items || []))
+          api.tasks(currentToken, [], { page: 1, pageSize: 25 }).then((data) => {
+            setTasks(data.items || []);
+            setTaskTotal(Number(data.total || 0));
+          })
         ]
       : [];
     const adminLoads = admin
       ? [
-          api.accounts(currentToken).then((data) => setAccounts(data.items || [])),
-          api.users(currentToken).then((data) => setUsers(data.items || [])),
+          api.accounts(currentToken, { page: 1, pageSize: 1 }).then((data) => {
+            setAccounts(data.items || []);
+            setAccountSummary(data.summary || null);
+          }),
+          api.users(currentToken, { page: 1, pageSize: 25 }).then((data) => setUsers(data.items || [])),
           api.images(currentToken).then((data) => setImages(data.items || [])),
           api.settings(currentToken).then((data) => setSettings(data.config || {})),
           api.accountRefreshStatus(currentToken).then((data) => setAccountRefreshStatus(data.status || null)),
           api.registerState(currentToken).then((data) => setRegisterRuntime(data)),
-          api.logs(currentToken).then((data) => setLogs(data.items || [])),
+          api.logs(currentToken, "", [], { page: 1, pageSize: 25 }).then((data) => setLogs(data.items || [])),
           api.storage(currentToken).then((data) => setStorageStatus(`${data.backend.type} · ${data.health.status}`))
         ]
       : [];
@@ -188,12 +203,22 @@ function App() {
 
   useEffect(() => {
     if (!token || !isAdmin || activeTab !== "accounts") return;
+    let cancelled = false;
     const poll = () => {
-      api.accountRefreshStatus(token).then((data) => setAccountRefreshStatus(data.status || null)).catch(() => {});
+      Promise.allSettled([api.accountRefreshStatus(token)]).then((results) => {
+        if (cancelled) return;
+        const statusResult = results[0];
+        if (statusResult.status === "fulfilled") {
+          setAccountRefreshStatus(statusResult.value.status || null);
+        }
+      }).catch(() => {});
     };
     poll();
-    const timer = window.setInterval(poll, 3000);
-    return () => window.clearInterval(timer);
+    const timer = window.setInterval(poll, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [token, isAdmin, activeTab]);
 
   async function handleLogin(email: string, password: string) {
@@ -237,8 +262,9 @@ function App() {
         token={token}
         identity={identity}
         isAdmin={Boolean(isAdmin)}
-        accounts={accounts}
+        quotaLabel={quotaLabelFromSummary(accountSummary)}
         setTasks={setTasks}
+        setTaskTotal={setTaskTotal}
         setImages={setImages}
         toast={toast}
         logout={logout}
@@ -298,10 +324,10 @@ function App() {
           </div>
         </header>
 
-        {activeTab === "dashboard" && isAdmin && <Dashboard accounts={accounts} models={models} tasks={tasks} storageStatus={storageStatus} onReloadModels={() => runBusy("models", async () => setModels((await api.models(token)).data || []))} />}
-        {activeTab === "accounts" && isAdmin && <AccountsPanel token={token} accounts={accounts} refreshIntervalMinutes={Number(settings.refresh_account_interval_minute || 5)} refreshStatus={accountRefreshStatus} setAccounts={setAccounts} toast={toast} busy={busy} runBusy={runBusy} />}
+        {activeTab === "dashboard" && isAdmin && <Dashboard accountSummary={accountSummary} models={models} tasks={tasks} taskTotal={taskTotal} storageStatus={storageStatus} onReloadModels={() => runBusy("models", async () => setModels((await api.models(token)).data || []))} />}
+        {activeTab === "accounts" && isAdmin && <AccountsPanel token={token} refreshIntervalMinutes={Number(settings.refresh_account_interval_minute || 5)} refreshStatus={accountRefreshStatus} setAccountSummary={setAccountSummary} toast={toast} busy={busy} runBusy={runBusy} />}
         {activeTab === "register" && isAdmin && <RegisterPanel token={token} registerRuntime={registerRuntime} setRegisterRuntime={setRegisterRuntime} toast={toast} />}
-        {activeTab === "activity" && isAdmin && <ActivityPanel token={token} tasks={tasks} setTasks={setTasks} logs={logs} setLogs={setLogs} openLightbox={(src, title) => setLightbox({ src, title })} toast={toast} />}
+        {activeTab === "activity" && isAdmin && <ActivityPanel token={token} tasks={tasks} setTasks={setTasks} setTaskTotal={setTaskTotal} logs={logs} setLogs={setLogs} openLightbox={(src, title) => setLightbox({ src, title })} toast={toast} />}
         {activeTab === "images" && isAdmin && <ImagesPanel token={token} images={images} setImages={setImages} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
         {activeTab === "playground" && <Playground token={token} models={models} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
         {activeTab === "users" && isAdmin && <UsersPanel token={token} users={users} setUsers={setUsers} toast={toast} />}
@@ -358,8 +384,9 @@ function ImageHome({
   token,
   identity,
   isAdmin,
-  accounts,
+  quotaLabel,
   setTasks,
+  setTaskTotal,
   setImages,
   toast,
   logout,
@@ -372,8 +399,9 @@ function ImageHome({
   token: string;
   identity: Identity;
   isAdmin: boolean;
-  accounts: Account[];
+  quotaLabel: string;
   setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>;
+  setTaskTotal: React.Dispatch<React.SetStateAction<number>>;
   setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>;
   toast: (type: Toast["type"], message: string) => void;
   logout: () => void;
@@ -400,7 +428,7 @@ function ImageHome({
         </div>
       </header>
 
-      <ImageWorkbench token={token} identity={identity} accounts={accounts} canRefreshArchive={isAdmin} setTasks={setTasks} setImages={setImages} toast={toast} openLightbox={openLightbox} />
+      <ImageWorkbench token={token} identity={identity} quotaLabel={quotaLabel} canRefreshArchive={isAdmin} setTasks={setTasks} setTaskTotal={setTaskTotal} setImages={setImages} toast={toast} openLightbox={openLightbox} />
 
       <div className="toast-stack">
         {toasts.map((item) => <div key={item.id} className={classNames("toast", item.type)}>{item.message}</div>)}
@@ -415,18 +443,19 @@ function ImageHome({
   );
 }
 
-function Dashboard({ accounts, models, tasks, storageStatus, onReloadModels }: { accounts: Account[]; models: ModelItem[]; tasks: ImageTask[]; storageStatus: string; onReloadModels: () => void }) {
-  const normal = accounts.filter((item) => item.status === "正常").length;
-  const success = accounts.reduce((sum, item) => sum + Number(item.success || 0), 0);
-  const fail = accounts.reduce((sum, item) => sum + Number(item.fail || 0), 0);
+function Dashboard({ accountSummary, models, tasks, taskTotal, storageStatus, onReloadModels }: { accountSummary: AccountListSummary | null; models: ModelItem[]; tasks: ImageTask[]; taskTotal: number; storageStatus: string; onReloadModels: () => void }) {
+  const totalAccounts = Number(accountSummary?.total || 0);
+  const normal = Number(accountSummary?.normal || 0);
+  const success = Number(accountSummary?.success || 0);
+  const fail = Number(accountSummary?.fail || 0);
   const recent = tasks[0];
   return (
     <div className="stack">
       <div className="metrics">
-        <Metric label="账号总数" value={accounts.length} />
+        <Metric label="账号总数" value={totalAccounts} />
         <Metric label="正常账号" value={normal} tone="ok" />
-        <Metric label="可用额度" value={quotaSummary(accounts)} />
-        <Metric label="任务总数" value={tasks.length} />
+        <Metric label="可用额度" value={quotaLabelFromSummary(accountSummary)} />
+        <Metric label="任务总数" value={taskTotal} />
         <Metric label="图片成功" value={success} tone="ok" />
         <Metric label="失败" value={fail} tone="err" />
       </div>
@@ -439,13 +468,28 @@ function Dashboard({ accounts, models, tasks, storageStatus, onReloadModels }: {
           <PanelHead title="系统状态" subtitle="关键运行指标" />
           <div className="status-list">
             <div><span>存储</span><strong>{storageStatus}</strong></div>
-            <div><span>账号池</span><strong>{normal}/{accounts.length} 正常</strong></div>
+            <div><span>账号池</span><strong>{normal}/{totalAccounts} 正常</strong></div>
             <div><span>最近任务</span><strong>{recent ? `${recent.status} · ${fmtDate(recent.updated_at)}` : "-"}</strong></div>
           </div>
         </section>
       </div>
     </div>
   );
+}
+
+function useHorizontalWheelScroll(ref: React.RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const handleWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      if (element.scrollWidth <= element.clientWidth) return;
+      event.preventDefault();
+      element.scrollLeft += event.deltaY;
+    };
+    element.addEventListener("wheel", handleWheel, { passive: false });
+    return () => element.removeEventListener("wheel", handleWheel);
+  }, [ref]);
 }
 
 function Metric({ label, value, tone }: { label: string; value: string | number; tone?: string }) {
@@ -461,65 +505,74 @@ function PanelHead({ title, subtitle, action }: { title: string; subtitle?: stri
   );
 }
 
-function AccountsPanel({ token, accounts, refreshIntervalMinutes, refreshStatus, setAccounts, toast, busy, runBusy }: { token: string; accounts: Account[]; refreshIntervalMinutes: number; refreshStatus: AccountRefreshStatus | null; setAccounts: (items: Account[]) => void; toast: (type: Toast["type"], message: string) => void; busy: string | null; runBusy: (id: string, fn: () => Promise<void>) => Promise<void> }) {
+function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccountSummary, toast, busy, runBusy }: { token: string; refreshIntervalMinutes: number; refreshStatus: AccountRefreshStatus | null; setAccountSummary: React.Dispatch<React.SetStateAction<AccountListSummary | null>>; toast: (type: Toast["type"], message: string) => void; busy: string | null; runBusy: (id: string, fn: () => Promise<void>) => Promise<void> }) {
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [tokens, setTokens] = useState("");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [type, setType] = useState("");
   const [pageSize, setPageSize] = useState(25);
   const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [selected, setSelected] = useState<string[]>([]);
 
   const types = useMemo(() => Array.from(new Set(accounts.map((item) => item.type || "Free"))), [accounts]);
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return accounts.filter((item) => {
-      const text = `${item.email || ""} ${item.token_ref} ${item.access_token_masked} ${item.password || ""} ${item.type}`.toLowerCase();
-      return (!q || text.includes(q)) && (!status || item.status === status) && (!type || (item.type || "Free") === type);
-    });
-  }, [accounts, query, status, type]);
-  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const current = filtered.slice((page - 1) * pageSize, page * pageSize);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const selectedSet = new Set(selected);
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  useHorizontalWheelScroll(tableWrapRef);
   useEffect(() => setPage(1), [query, status, type, pageSize]);
   useEffect(() => {
-    const element = tableWrapRef.current;
-    if (!element) return;
-    const handleWheel = (event: WheelEvent) => {
-      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-      const canScrollX = element.scrollWidth > element.clientWidth;
-      if (!canScrollX) return;
-      event.preventDefault();
-      element.scrollLeft += event.deltaY;
+    let cancelled = false;
+    api.accounts(token, { page, pageSize, query, status, accountType: type }).then((data) => {
+      if (cancelled) return;
+      setAccounts(data.items || []);
+      setTotal(Number(data.total || 0));
+      setAccountSummary(data.summary || null);
+      setSelected((prev) => prev.filter((ref) => (data.items || []).some((item) => item.token_ref === ref)));
+    }).catch((error) => toast("error", error instanceof Error ? error.message : "加载账号失败"));
+    return () => {
+      cancelled = true;
     };
-    element.addEventListener("wheel", handleWheel, { passive: false });
-    return () => element.removeEventListener("wheel", handleWheel);
-  }, []);
+  }, [token, page, pageSize, query, status, type, setAccountSummary]);
 
+  async function reloadPage(nextPage = page) {
+    const data = await api.accounts(token, { page: nextPage, pageSize, query, status, accountType: type });
+    const nextItems = data.items || [];
+    const nextTotal = Number(data.total || 0);
+    const nextPageCount = Math.max(1, Math.ceil(nextTotal / pageSize));
+    if (nextPage > nextPageCount) {
+      setPage(nextPageCount);
+      return;
+    }
+    setAccounts(nextItems);
+    setTotal(nextTotal);
+    setAccountSummary(data.summary || null);
+    setSelected((prev) => prev.filter((ref) => nextItems.some((item) => item.token_ref === ref)));
+  }
   async function importTokens() {
     const values = tokens.split(/\s+/).map((item) => item.trim()).filter(Boolean);
     if (!values.length) return;
-    const data = await api.addAccounts(token, values);
-    setAccounts(data.items);
+    const result = await api.addAccounts(token, values);
     setTokens("");
-    toast("success", `新增 ${data.added} 个，跳过 ${data.skipped} 个`);
+    await reloadPage(1);
+    toast("success", `新增 ${result.added} 个，跳过 ${result.skipped} 个`);
   }
   async function refresh(refs = selected) {
-    const data = await api.refreshAccounts(token, refs);
-    setAccounts(data.items);
-    toast(data.errors.length ? "error" : "success", `刷新成功 ${data.refreshed} 个${data.errors.length ? `，失败 ${data.errors.length} 个` : ""}`);
+    const result = await api.refreshAccounts(token, refs);
+    await reloadPage();
+    toast(result.errors.length ? "error" : "success", `刷新成功 ${result.refreshed} 个${result.errors.length ? `，失败 ${result.errors.length} 个` : ""}`);
   }
   async function remove(refs: string[]) {
     if (!refs.length || !confirm(`删除 ${refs.length} 个账号？`)) return;
-    const data = await api.deleteAccounts(token, refs);
-    setAccounts(data.items);
+    const result = await api.deleteAccounts(token, refs);
     setSelected([]);
-    toast("success", `已删除 ${data.removed} 个账号`);
+    await reloadPage(page);
+    toast("success", `已删除 ${result.removed} 个账号`);
   }
-  async function update(ref: string, body: { status?: string; password?: string }) {
-    const data = await api.updateAccount(token, ref, body);
-    setAccounts(data.items);
+  async function update(ref: string, body: { type?: string; status?: string; quota?: number; password?: string }) {
+    await api.updateAccount(token, ref, body);
+    await reloadPage();
   }
 
   return (
@@ -546,8 +599,8 @@ function AccountsPanel({ token, accounts, refreshIntervalMinutes, refreshStatus,
         <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select>
       </div>
       <div className="bulkbar">
-        <label className="inline"><input type="checkbox" checked={current.length > 0 && current.every((item) => selectedSet.has(item.token_ref))} onChange={(event) => {
-          setSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...current.map((item) => item.token_ref)])) : prev.filter((ref) => !current.some((item) => item.token_ref === ref)));
+        <label className="inline"><input type="checkbox" checked={accounts.length > 0 && accounts.every((item) => selectedSet.has(item.token_ref))} onChange={(event) => {
+          setSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...accounts.map((item) => item.token_ref)])) : prev.filter((ref) => !accounts.some((item) => item.token_ref === ref)));
         }} /><span>选择当前页</span></label>
         <span>已选择 {selected.length} 项</span>
         <button className="ghost small" disabled={!selected.length || busy === "refresh-selected"} onClick={() => runBusy("refresh-selected", () => refresh(selected))}>刷新选中</button>
@@ -558,7 +611,7 @@ function AccountsPanel({ token, accounts, refreshIntervalMinutes, refreshStatus,
       <div ref={tableWrapRef} className="table-wrap account-table-wrap">
         <table className="accounts-table">
           <thead><tr><th></th><th>Email</th><th>Token</th><th>密码</th><th>类型</th><th>状态</th><th>额度</th><th>恢复</th><th>预计下次刷新</th><th>成功/失败</th><th>最近使用</th><th></th></tr></thead>
-          <tbody>{current.map((item) => (
+          <tbody>{accounts.map((item) => (
             <AccountRow
               key={item.token_ref}
               item={item}
@@ -569,8 +622,7 @@ function AccountsPanel({ token, accounts, refreshIntervalMinutes, refreshStatus,
               onToggle={() => runBusy("toggle-one", async () => update(item.token_ref, { status: item.status === "禁用" ? "正常" : "禁用" }))}
               onDelete={() => runBusy("delete-one", () => remove([item.token_ref]))}
               onSave={async (body) => {
-                const data = await api.updateAccount(token, item.token_ref, body);
-                setAccounts(data.items);
+                await update(item.token_ref, body);
                 toast("success", "账号已更新");
               }}
               busy={busy}
@@ -579,7 +631,7 @@ function AccountsPanel({ token, accounts, refreshIntervalMinutes, refreshStatus,
           ))}</tbody>
         </table>
       </div>
-      <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {filtered.length} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
+      <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
     </section>
   );
 }
@@ -650,7 +702,7 @@ function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefres
   );
 }
 
-function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks, setImages, toast, openLightbox }: { token: string; identity: Identity; accounts: Account[]; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
+function ImageWorkbench({ token, identity, quotaLabel, canRefreshArchive, setTasks, setTaskTotal, setImages, toast, openLightbox }: { token: string; identity: Identity; quotaLabel: string; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("gpt-image-2");
   const [size, setSize] = useState("");
@@ -663,7 +715,7 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
   const [historyReady, setHistoryReady] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const storageKey = useMemo(() => `${workbenchStoragePrefix}${identity.id || identity.key_id || "legacy"}`, [identity.id, identity.key_id]);
-  const quota = accounts.length ? quotaSummary(accounts) : "可用";
+  const quota = quotaLabel;
   const activeTaskCount = useMemo(() => turns.reduce((sum, turn) => sum + turn.images.filter((item) => item.status === "queued" || item.status === "running").length, 0), [turns]);
   const activeTaskIds = useMemo(() => Array.from(new Set(turns.flatMap((turn) => turn.images.flatMap((item) => item.taskId && (item.status === "queued" || item.status === "running") ? [item.taskId] : [])))), [turns]);
   const activeTaskKey = activeTaskIds.join(",");
@@ -704,6 +756,7 @@ function ImageWorkbench({ token, identity, accounts, canRefreshArchive, setTasks
       try {
         const data = await api.tasks(token, ids);
         setTasks((current) => mergeImageTasks(current, data.items));
+        setTaskTotal((value) => Math.max(value, Number(data.total || value)));
         applyTaskUpdates(data.items);
         if (canRefreshArchive && data.items.some((task) => task.status === "success")) {
           api.images(token).then((data) => setImages(data.items || [])).catch(() => {});
@@ -1223,11 +1276,12 @@ function mergeLogs(current: SystemLog[], updates: SystemLog[]) {
   return sortLogs(Array.from(map.values()));
 }
 
-function ActivityPanel({ token, tasks, setTasks, logs, setLogs, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; logs: SystemLog[]; setLogs: React.Dispatch<React.SetStateAction<SystemLog[]>>; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
+function ActivityPanel({ token, tasks, setTasks, setTaskTotal, logs, setLogs, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; logs: SystemLog[]; setLogs: React.Dispatch<React.SetStateAction<SystemLog[]>>; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
   const [view, setView] = useState<"tasks" | "logs">("tasks");
   async function refresh() {
-    const [taskData, logData] = await Promise.all([api.tasks(token), api.logs(token)]);
+    const [taskData, logData] = await Promise.all([api.tasks(token, [], { page: 1, pageSize: 25 }), api.logs(token, "", [], { page: 1, pageSize: 25 })]);
     setTasks(taskData.items || []);
+    setTaskTotal(Number(taskData.total || 0));
     setLogs(logData.items || []);
     toast("success", "任务日志已刷新");
   }
@@ -1235,82 +1289,128 @@ function ActivityPanel({ token, tasks, setTasks, logs, setLogs, openLightbox, to
     <section className="panel">
       <PanelHead
         title="任务日志"
-        subtitle="图片任务与系统日志统一查看，展开行可看完整上下文"
+        subtitle="图片任务与系统日志统一查看，详情通过弹窗查看完整上下文"
         action={<><div className="segmented"><button className={classNames(view === "tasks" && "active")} onClick={() => setView("tasks")}>任务</button><button className={classNames(view === "logs" && "active")} onClick={() => setView("logs")}>日志</button></div><button className="secondary" onClick={() => refresh().catch((error) => toast("error", error.message))}>刷新</button></>}
       />
       {view === "tasks"
-        ? <TasksTable token={token} tasks={tasks} setTasks={setTasks} openLightbox={openLightbox} toast={toast} />
+        ? <TasksTable token={token} tasks={tasks} setTasks={setTasks} setTaskTotal={setTaskTotal} openLightbox={openLightbox} toast={toast} />
         : <LogsTable token={token} logs={logs} setLogs={setLogs} toast={toast} />}
     </section>
   );
 }
 
-function TasksTable({ token, tasks, setTasks, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
+function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
-  const [expanded, setExpanded] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  const [detailTaskID, setDetailTaskID] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
-  const rows = tasks.filter((item) => {
-    const text = `${item.id} ${item.mode} ${item.status} ${item.model} ${item.size} ${item.prompt} ${item.error}`.toLowerCase();
-    return (!query || text.includes(query.toLowerCase())) && (!status || item.status === status);
-  });
+  const [loadingPreview, setLoadingPreview] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [total, setTotal] = useState(0);
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  useHorizontalWheelScroll(tableWrapRef);
+  const rows = tasks;
   const selectedSet = new Set(selected);
   const allVisibleSelected = rows.length > 0 && rows.every((task) => selectedSet.has(task.id));
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  useEffect(() => setPage(1), [query, status, pageSize]);
+  useEffect(() => {
+    let cancelled = false;
+    api.tasks(token, [], { page, pageSize, query, status }).then((data) => {
+      if (cancelled) return;
+      setTasks(data.items || []);
+      setTotal(Number(data.total || 0));
+      setTaskTotal(Number(data.total || 0));
+      setSelected((prev) => prev.filter((id) => (data.items || []).some((item) => item.id === id)));
+    }).catch((error) => toast("error", error instanceof Error ? error.message : "加载任务失败"));
+    return () => {
+      cancelled = true;
+    };
+  }, [token, page, pageSize, query, status, setTaskTotal]);
+  const detailTask = detailTaskID ? rows.find((task) => task.id === detailTaskID) || null : null;
   function toggleVisible(checked: boolean) {
     const visibleIDs = rows.map((task) => task.id);
     setSelected((prev) => checked ? Array.from(new Set([...prev, ...visibleIDs])) : prev.filter((id) => !visibleIDs.includes(id)));
   }
-  async function loadDetail(task: ImageTask) {
-    if (expanded === task.id) {
-      setExpanded(null);
-      return;
+  async function ensureTaskDetail(task: ImageTask) {
+    if (task.data !== undefined) return task;
+    const data = await api.tasks(token, [task.id]);
+    const item = (data.items || [])[0];
+    if (!item) {
+      throw new Error("任务详情不存在");
     }
-    setExpanded(task.id);
+    setTasks((current) => mergeImageTasks(current, [item]));
+    return item;
+  }
+  async function openDetail(task: ImageTask) {
+    setDetailTaskID(task.id);
     if (task.data !== undefined) return;
     setLoadingDetail(task.id);
     try {
-      const data = await api.tasks(token, [task.id]);
-      setTasks((current) => mergeImageTasks(current, data.items || []));
+      await ensureTaskDetail(task);
     } catch (error) {
       toast("error", error instanceof Error ? error.message : "读取任务详情失败");
     } finally {
       setLoadingDetail(null);
     }
   }
+  async function openPreview(task: ImageTask) {
+    if (task.status !== "success") return;
+    setLoadingPreview(task.id);
+    try {
+      const resolved = await ensureTaskDetail(task);
+      const first = parseTaskData(resolved.data)[0];
+      const src = first ? imageSrc(first) : "";
+      if (!src) {
+        toast("info", "该任务暂无可预览图片");
+        return;
+      }
+      openLightbox(src, task.id);
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "读取任务预览失败");
+    } finally {
+      setLoadingPreview(null);
+    }
+  }
   async function removeSelected() {
     if (!selected.length || !confirm(`删除 ${selected.length} 个图片任务？`)) return;
     const data = await api.deleteTasks(token, selected);
-    setTasks((current) => current.filter((task) => !selected.includes(task.id)));
+    const next = await api.tasks(token, [], { page, pageSize, query, status });
+    setTasks(next.items || []);
+    setTotal(Number(next.total || 0));
+    setTaskTotal(Number(next.total || 0));
     setSelected([]);
     toast("success", `已删除 ${data.removed} 个任务`);
   }
   return (
     <>
-      <div className="filters activity-filters"><div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务 ID、模型、提示词、状态" /></div><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>queued</option><option>running</option><option>success</option><option>error</option></select><button className="secondary" onClick={() => api.tasks(token).then((data) => { setTasks(data.items || []); toast("success", "任务已刷新"); })}>刷新任务</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
-      <div className="table-wrap"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
+      <div className="filters activity-filters"><div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务 ID、模型、提示词、状态" /></div><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>queued</option><option>running</option><option>success</option><option>error</option></select><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select><button className="secondary" onClick={() => api.tasks(token, [], { page, pageSize, query, status }).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
+      <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
         const first = parseTaskData(task.data)[0];
         const src = first ? imageSrc(first) : "";
-        const open = expanded === task.id;
+        const canPreview = Boolean(src) || task.status === "success";
         return (
-          <React.Fragment key={task.id}>
-            <tr>
-              <td><input type="checkbox" checked={selectedSet.has(task.id)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, task.id] : prev.filter((id) => id !== task.id))} /></td>
-              <td><code>{task.id}</code></td>
-              <td>{task.mode}</td>
-              <td><Badge value={task.status} /></td>
-              <td>{task.prompt || "-"}</td>
-              <td>{task.model || "-"}</td>
-              <td>{task.size || "-"}</td>
-              <td>{taskDuration(task)}</td>
-              <td>{src ? <button className="link-button" onClick={() => openLightbox(src, task.id)}>预览</button> : "-"}</td>
-              <td>{fmtDate(task.updated_at)}</td>
-              <td><button className="ghost small" onClick={() => loadDetail(task)}>{loadingDetail === task.id ? "加载" : open ? "收起" : "详情"}</button></td>
-            </tr>
-            {open ? <tr className="detail-row"><td colSpan={11}>{loadingDetail === task.id ? <div className="detail-panel">加载详情中...</div> : <TaskDetail task={task} openLightbox={openLightbox} />}</td></tr> : null}
-          </React.Fragment>
+          <tr key={task.id}>
+            <td><input type="checkbox" checked={selectedSet.has(task.id)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, task.id] : prev.filter((id) => id !== task.id))} /></td>
+            <td><code>{task.id}</code></td>
+            <td>{task.mode}</td>
+            <td><Badge value={task.status} /></td>
+            <td>{task.prompt || "-"}</td>
+            <td>{task.model || "-"}</td>
+            <td>{task.size || "-"}</td>
+            <td>{taskDuration(task)}</td>
+            <td>{canPreview ? <button className="link-button" onClick={() => openPreview(task)}>{loadingPreview === task.id ? "加载" : "预览"}</button> : "-"}</td>
+            <td>{fmtDate(task.updated_at)}</td>
+            <td><button className="ghost small" onClick={() => openDetail(task)}>{loadingDetail === task.id ? "加载" : "详情"}</button></td>
+          </tr>
         );
       })}</tbody></table></div>
+      <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
+      <DetailModal title={detailTask ? `任务详情 · ${detailTask.id}` : "任务详情"} open={Boolean(detailTaskID)} onClose={() => setDetailTaskID(null)}>
+        {loadingDetail === detailTaskID || !detailTask ? <div className="detail-panel detail-panel-plain">加载详情中...</div> : <TaskDetail task={detailTask} openLightbox={openLightbox} />}
+      </DetailModal>
     </>
   );
 }
@@ -1341,30 +1441,56 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
   const [type, setType] = useState("");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [detailLogID, setDetailLogID] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
-  const rows = logs.filter((log) => {
-    const text = `${log.type} ${log.summary} ${JSON.stringify(log.detail || {})}`.toLowerCase();
-    return !query.trim() || text.includes(query.trim().toLowerCase());
-  });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [total, setTotal] = useState(0);
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  useHorizontalWheelScroll(tableWrapRef);
+  const rows = logs;
   const selectedSet = new Set(selected);
   const allVisibleSelected = rows.length > 0 && rows.every((log) => selectedSet.has(log.id));
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  useEffect(() => setPage(1), [type, query, pageSize]);
+  useEffect(() => {
+    let cancelled = false;
+    api.logs(token, type, [], { page, pageSize, query }).then((data) => {
+      if (cancelled) return;
+      setLogs(data.items || []);
+      setTotal(Number(data.total || 0));
+      setSelected((prev) => prev.filter((id) => (data.items || []).some((item) => item.id === id)));
+    }).catch((error) => toast("error", error instanceof Error ? error.message : "加载日志失败"));
+    return () => {
+      cancelled = true;
+    };
+  }, [token, type, page, pageSize, query]);
+  const detailLog = detailLogID ? rows.find((log) => log.id === detailLogID) || null : null;
   function toggleVisible(checked: boolean) {
     const visibleIDs = rows.map((log) => log.id);
     setSelected((prev) => checked ? Array.from(new Set([...prev, ...visibleIDs])) : prev.filter((id) => !visibleIDs.includes(id)));
   }
-  async function load() { setLogs((await api.logs(token, type)).items || []); }
-  async function loadDetail(log: SystemLog) {
-    if (expanded === log.id) {
-      setExpanded(null);
-      return;
+  async function load() {
+    const data = await api.logs(token, type, [], { page, pageSize, query });
+    setLogs(data.items || []);
+    setTotal(Number(data.total || 0));
+  }
+  async function ensureLogDetail(log: SystemLog) {
+    if (Object.keys(logDetail(log)).length > 0) return log;
+    const data = await api.logs(token, "", [log.id]);
+    const item = (data.items || [])[0];
+    if (!item) {
+      throw new Error("日志详情不存在");
     }
-    setExpanded(log.id);
+    setLogs((current) => mergeLogs(current, [item]));
+    return item;
+  }
+  async function openDetail(log: SystemLog) {
+    setDetailLogID(log.id);
     if (Object.keys(logDetail(log)).length > 0) return;
     setLoadingDetail(log.id);
     try {
-      const data = await api.logs(token, "", [log.id]);
-      setLogs((current) => mergeLogs(current, data.items || []));
+      await ensureLogDetail(log);
     } catch (error) {
       toast("error", error instanceof Error ? error.message : "读取日志详情失败");
     } finally {
@@ -1383,30 +1509,46 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
       <div className="filters activity-filters">
         <div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索日志内容、接口、模型" /></div>
         <select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="account">账号</option><option value="register">注册</option></select>
+        <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select>
         <button className="secondary" onClick={() => load().catch((error) => toast("error", error.message))}>刷新日志</button>
         <button className="danger" disabled={!selected.length} onClick={() => clear().catch((error) => toast("error", error.message))}>清理选中</button>
       </div>
-      <div className="table-wrap"><table className="activity-table log-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前日志" /></th><th>Time</th><th>Type</th><th>Status</th><th>Endpoint</th><th>Model</th><th>耗时</th><th>Summary</th><th></th></tr></thead><tbody>{rows.map((log) => {
+      <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="activity-table log-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前日志" /></th><th>Time</th><th>Type</th><th>Status</th><th>Endpoint</th><th>Model</th><th>耗时</th><th>Summary</th><th></th></tr></thead><tbody>{rows.map((log) => {
         const detail = logDetail(log);
-        const open = expanded === log.id;
         return (
-          <React.Fragment key={log.id}>
-            <tr>
-              <td><input type="checkbox" checked={selectedSet.has(log.id)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, log.id] : prev.filter((id) => id !== log.id))} /></td>
-              <td>{fmtDate(log.time)}</td>
-              <td>{log.type}</td>
-              <td>{detail.status ? <Badge value={String(detail.status)} /> : "-"}</td>
-              <td>{String(detail.endpoint || log.summary || "-")}</td>
-              <td>{String(detail.model || "-")}</td>
-              <td>{formatDuration(detail.duration_ms)}</td>
-              <td>{log.summary}</td>
-              <td><button className="ghost small" onClick={() => loadDetail(log)}>{loadingDetail === log.id ? "加载" : open ? "收起" : "详情"}</button></td>
-            </tr>
-            {open ? <tr className="detail-row"><td colSpan={9}>{loadingDetail === log.id ? <div className="detail-panel">加载详情中...</div> : <LogDetail log={log} />}</td></tr> : null}
-          </React.Fragment>
+          <tr key={log.id}>
+            <td><input type="checkbox" checked={selectedSet.has(log.id)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, log.id] : prev.filter((id) => id !== log.id))} /></td>
+            <td>{fmtDate(log.time)}</td>
+            <td>{log.type}</td>
+            <td>{detail.status ? <Badge value={String(detail.status)} /> : "-"}</td>
+            <td>{String(detail.endpoint || log.summary || "-")}</td>
+            <td>{String(detail.model || "-")}</td>
+            <td>{formatDuration(detail.duration_ms)}</td>
+            <td>{log.summary}</td>
+            <td><button className="ghost small" onClick={() => openDetail(log)}>{loadingDetail === log.id ? "加载" : "详情"}</button></td>
+          </tr>
         );
       })}</tbody></table></div>
+      <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
+      <DetailModal title={detailLog ? `日志详情 · ${detailLog.id}` : "日志详情"} open={Boolean(detailLogID)} onClose={() => setDetailLogID(null)}>
+        {loadingDetail === detailLogID || !detailLog ? <div className="detail-panel detail-panel-plain">加载详情中...</div> : <LogDetail log={detailLog} />}
+      </DetailModal>
     </>
+  );
+}
+
+function DetailModal({ title, open, onClose, children }: { title: string; open: boolean; onClose: () => void; children: React.ReactNode }) {
+  if (!open) return null;
+  return (
+    <div className="detail-modal-overlay" onClick={onClose}>
+      <div className="detail-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="detail-modal-header">
+          <strong>{title}</strong>
+          <button className="detail-modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="detail-modal-body">{children}</div>
+      </div>
+    </div>
   );
 }
 
@@ -1600,7 +1742,32 @@ function Playground({ token, models, toast, openLightbox }: { token: string; mod
 function UsersPanel({ token, users, setUsers, toast }: { token: string; users: User[]; setUsers: (items: User[]) => void; toast: (type: Toast["type"], message: string) => void }) {
   const [form, setForm] = useState({ email: "", name: "", password: "", role: "user" });
   const [newKey, setNewKey] = useState("");
-  async function reload() { setUsers((await api.users(token)).items || []); }
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("");
+  const [role, setRole] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [total, setTotal] = useState(0);
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  useHorizontalWheelScroll(tableWrapRef);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  useEffect(() => setPage(1), [query, status, role, pageSize]);
+  useEffect(() => {
+    let cancelled = false;
+    api.users(token, { page, pageSize, query, status, role }).then((data) => {
+      if (cancelled) return;
+      setUsers(data.items || []);
+      setTotal(Number(data.total || 0));
+    }).catch((error) => toast("error", error instanceof Error ? error.message : "加载用户失败"));
+    return () => {
+      cancelled = true;
+    };
+  }, [token, page, pageSize, query, status, role]);
+  async function reload() {
+    const data = await api.users(token, { page, pageSize, query, status, role });
+    setUsers(data.items || []);
+    setTotal(Number(data.total || 0));
+  }
   async function create() {
     const data = await api.createUser(token, form);
     setForm({ email: "", name: "", password: "", role: "user" });
@@ -1618,8 +1785,10 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
         <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option>user</option><option>admin</option></select>
         <button onClick={() => create().catch((error) => toast("error", error.message))}>创建用户</button>
       </div>
+      <div className="filters activity-filters"><div className="searchbox"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱或名称" /></div><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">active</option><option value="disabled">disabled</option></select><select value={role} onChange={(event) => setRole(event.target.value)}><option value="">全部角色</option><option value="user">user</option><option value="admin">admin</option></select><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></div>
       {newKey ? <div className="notice"><span>新 API Key 只显示一次：</span><code>{newKey}</code><IconButton title="复制" onClick={() => copyText(newKey).then(() => toast("success", "已复制"))}><Copy size={14} /></IconButton><IconButton title="隐藏" onClick={() => setNewKey("")}><EyeOff size={14} /></IconButton></div> : null}
-      <div className="table-wrap"><table className="users-table"><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>API Key</th><th>Last login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} />)}</tbody></table></div>
+      <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="users-table"><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>API Key</th><th>Last login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} />)}</tbody></table></div>
+      <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
     </section>
   );
 }

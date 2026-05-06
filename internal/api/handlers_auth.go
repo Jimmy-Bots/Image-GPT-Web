@@ -152,12 +152,19 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	users, err := s.store.ListUsersWithAPIKeys(r.Context())
+	query := storage.UserListQuery{
+		Page:     queryInt(r, "page", 1),
+		PageSize: queryInt(r, "page_size", 25),
+		Query:    strings.TrimSpace(r.URL.Query().Get("query")),
+		Status:   strings.TrimSpace(r.URL.Query().Get("status")),
+		Role:     strings.TrimSpace(r.URL.Query().Get("role")),
+	}
+	users, total, err := s.store.ListUsersWithAPIKeysPage(r.Context(), query)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": users})
+	writeJSON(w, http.StatusOK, map[string]any{"items": users, "total": total, "page": query.Page, "page_size": query.PageSize})
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
