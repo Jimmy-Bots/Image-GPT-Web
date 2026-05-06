@@ -1094,6 +1094,18 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
 
   async function runSyncTurn(turn: WorkbenchTurn) {
     try {
+      setTurns((current) => current.map((row) => row.id === turn.id ? {
+        ...row,
+        status: "running",
+        error: undefined,
+        images: row.images.map((image) => ({
+          ...image,
+          phase: "task",
+          status: "running",
+          error: undefined,
+          startedAt: image.startedAt || turn.createdAt
+        }))
+      } : row));
       const taskSize = workbenchRequestSize(turn.size);
       if (turn.mode === "edit") {
         const form = new FormData();
@@ -1108,6 +1120,13 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
       } else {
         const data = await request<{ data: ImageResult[] }>(token, "/v1/images/generations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: turn.prompt, model: turn.model, size: taskSize || undefined, n: turn.count, response_format: "url" }) });
         finishSyncTurn(turn.id, turn, data.data || []);
+      }
+      try {
+        const latestTasks = await api.tasks(token, [], { page: 1, pageSize: 8 });
+        setTasks((current) => mergeImageTasks(current, latestTasks.items || []));
+        setTaskTotal((value) => Math.max(value, Number(latestTasks.total || value)));
+      } catch {
+        // Keep sync generation smooth even if task list refresh fails.
       }
       if (canRefreshArchive) {
         api.images(token).then((data) => setImages(data.items || [])).catch(() => {});
