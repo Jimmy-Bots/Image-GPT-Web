@@ -65,7 +65,6 @@ Vite proxies `/api`, `/auth`, `/v1`, and `/images` to the Go server on `127.0.0.
 Useful environment variables:
 
 - `VERSION`: repository-root version file, used as the default app version when `CHATGPT2API_VERSION` is not set.
-- `CHATGPT2API_AUTH_KEY`: optional legacy admin bearer key for compatibility API calls, not web login.
 - `CHATGPT2API_ADMIN_EMAIL`: bootstrap admin email.
 - `CHATGPT2API_ADMIN_PASSWORD`: bootstrap admin password.
 - `CHATGPT2API_SESSION_SECRET`: stable HMAC secret for login sessions.
@@ -159,7 +158,7 @@ Recommended workflow:
 - `GET /v1/models`: OpenAI-compatible model list.
 - `POST /v1/images/generations`, `/v1/images/edits`, `/v1/chat/completions`, `/v1/complete`, `/v1/responses`, `/v1/messages`: preserved compatibility surface.
 
-Use `Authorization: Bearer <token>` for protected API endpoints. Browser login uses session tokens from `/auth/login`; OpenAI-compatible API calls can also use a generated user API key or the legacy `CHATGPT2API_AUTH_KEY`.
+Use `Authorization: Bearer <token>` for protected API endpoints. Browser login uses session tokens from `/auth/login`; OpenAI-compatible API calls can also use a generated user API key.
 
 Open `http://localhost:3000/` for the built-in management UI. It covers account pool operations, users and their API keys, image tasks, settings, logs, and a small compatibility playground. Account APIs accept raw `access_token` on create/refresh for upstream calls, but list/update/delete responses expose only `token_ref` plus a masked display value.
 

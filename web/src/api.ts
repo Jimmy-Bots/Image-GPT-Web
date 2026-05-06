@@ -75,7 +75,7 @@ export type MeResponse = {
     key_id?: string;
     name: string;
     role: "admin" | "user";
-    auth_type: "legacy" | "session" | "api_key";
+    auth_type: "session" | "api_key";
   };
   model_policy?: {
     workbench_model?: string;

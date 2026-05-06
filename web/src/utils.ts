@@ -1,4 +1,4 @@
-import type { Account, ImageResult } from "./types";
+import type { Account, ImageResult, StoredImage } from "./types";
 
 export function fmtDate(value?: string | null) {
   if (!value) return "-";
@@ -79,10 +79,20 @@ export function createID(prefix = "task") {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export function imageSrc(item: ImageResult) {
-  if (item.url) return item.url;
+export function withImageToken(url: string, token?: string) {
+  const value = String(url || "").trim();
+  if (!value || value.startsWith("data:")) return value;
+  return value;
+}
+
+export function imageSrc(item: ImageResult, token?: string) {
+  if (item.url) return withImageToken(item.url, token);
   if (item.b64_json) return `data:image/png;base64,${item.b64_json}`;
   return "";
+}
+
+export function storedImageURL(item: StoredImage, token?: string) {
+  return withImageToken(item.url, token);
 }
 
 export function parseTaskData(data?: unknown): ImageResult[] {

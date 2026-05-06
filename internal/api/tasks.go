@@ -168,7 +168,7 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	if job.Mode == "edit" {
 		prompt = job.Edit.Prompt
 	}
-	saved := persistImageResultItems(q.imagesDir, q.baseURL, result, prompt)
+	saved := persistImageResultItems(q.imagesDir, q.baseURL, result, prompt, job.OwnerID)
 	shapeImageResponseForClient(result, "url")
 	count := imageResultCount(result)
 	if refund := job.Receipt.Total - count; refund > 0 {

@@ -128,7 +128,7 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		s.writeUpstreamError(w, err)
 		return
 	}
-	saved := s.persistImageResults(r, result, req.Prompt)
+	saved := s.persistImageResults(r, result, req.Prompt, identity.ID)
 	shapeImageResponseForClient(result, requestedFormat)
 	count := imageResultCount(result)
 	finalUser := user
@@ -250,7 +250,7 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, err)
 		return
 	}
-	saved := s.persistImageResults(r, result, req.Prompt)
+	saved := s.persistImageResults(r, result, req.Prompt, identity.ID)
 	shapeImageResponseForClient(result, requestedFormat)
 	count := imageResultCount(result)
 	finalUser := user

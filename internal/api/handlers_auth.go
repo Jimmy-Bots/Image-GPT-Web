@@ -14,6 +14,31 @@ import (
 	"gpt-image-web/internal/storage"
 )
 
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   false,
+		Expires:  expiresAt,
+	})
+}
+
+func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   false,
+		MaxAge:   -1,
+		Expires:  time.Unix(0, 0),
+	})
+}
+
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -161,6 +186,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"ip":        clientIP,
 		"ips":       clientIPs,
 	})
+	s.setSessionCookie(w, token, expiresAt)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"version":    s.cfg.AppVersion,
@@ -249,6 +275,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		"ip":        clientIP,
 		"ips":       clientIPs,
 	})
+	s.setSessionCookie(w, token, expiresAt)
 	writeJSON(w, http.StatusCreated, map[string]any{"user": user, "token": token, "expires_at": expiresAt})
 }
 
@@ -325,6 +352,7 @@ func (s *Server) handleRegisterSendCode(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	s.clearSessionCookie(w)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
