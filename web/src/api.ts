@@ -30,11 +30,18 @@ export async function request<T>(token: string, path: string, options: RequestIn
     }
   }
   if (!res.ok) {
+    const errorCode =
+      typeof data === "object" && data && "error" in data
+        ? String((data as { error?: { code?: string } }).error?.code || "")
+        : "";
     const message =
       typeof data === "object" && data && "error" in data
         ? String((data as { error?: { message?: string } }).error?.message || res.statusText)
         : res.statusText;
-    throw new Error(message);
+    const error = new Error(message) as Error & { code?: string; status?: number };
+    error.code = errorCode;
+    error.status = res.status;
+    throw error;
   }
   return data as T;
 }
