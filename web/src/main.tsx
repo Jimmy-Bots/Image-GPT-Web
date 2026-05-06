@@ -1828,6 +1828,7 @@ function Playground({ token, models, toast, openLightbox }: { token: string; mod
 function UsersPanel({ token, users, setUsers, toast }: { token: string; users: User[]; setUsers: (items: User[]) => void; toast: (type: Toast["type"], message: string) => void }) {
   const [form, setForm] = useState({ email: "", name: "", password: "", role: "user" });
   const [newKey, setNewKey] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [role, setRole] = useState("");
@@ -1857,29 +1858,38 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
   async function create() {
     const data = await api.createUser(token, form);
     setForm({ email: "", name: "", password: "", role: "user" });
+    setCreateOpen(false);
     if (data.key) setNewKey(data.key);
     await reload();
     toast("success", "用户已创建");
   }
   return (
     <section className="panel">
-      <PanelHead title="用户" subtitle="创建用户、编辑资料、删除账号，并维护每个用户唯一 API Key" />
+      <PanelHead title="用户" subtitle="创建用户、编辑资料、删除账号，并维护每个用户唯一 API Key" action={<button onClick={() => setCreateOpen(true)}>创建用户</button>} />
       <div className="toolbar user-toolbar form-toolbar">
-        <ControlField label="邮箱"><input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="email" /></ControlField>
-        <ControlField label="名称"><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="name" /></ControlField>
-        <ControlField label="密码"><input value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} type="password" placeholder="password" /></ControlField>
-        <ControlField label="角色"><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option>user</option><option>admin</option></select></ControlField>
-        <div className="toolbar-actions"><button onClick={() => create().catch((error) => toast("error", error.message))}>创建用户</button></div>
+        <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱或名称" />
+        <div className="toolbar-actions"><span className="chip">{total} 用户</span></div>
       </div>
       <div className="filters filters-card activity-filters">
-        <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱或名称" />
         <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">active</option><option value="disabled">disabled</option></select></ControlField>
         <ControlField label="角色"><select value={role} onChange={(event) => setRole(event.target.value)}><option value="">全部角色</option><option value="user">user</option><option value="admin">admin</option></select></ControlField>
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
+        <div className="filter-actions"><button className="secondary" onClick={() => reload().catch((error) => toast("error", error.message))}>刷新用户</button></div>
       </div>
       {newKey ? <div className="notice"><span>新 API Key 只显示一次：</span><code>{newKey}</code><IconButton title="复制" onClick={() => copyText(newKey).then(() => toast("success", "已复制"))}><Copy size={14} /></IconButton><IconButton title="隐藏" onClick={() => setNewKey("")}><EyeOff size={14} /></IconButton></div> : null}
       <div ref={tableWrapRef} className="table-wrap data-table-wrap"><table className="users-table"><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>API Key</th><th>Last login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} />)}</tbody></table></div>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
+      <DetailModal title="创建用户" open={createOpen} onClose={() => setCreateOpen(false)}>
+        <div className="detail-panel">
+          <div className="detail-grid detail-grid-two">
+            <ControlField label="邮箱"><input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="email" /></ControlField>
+            <ControlField label="名称"><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="name" /></ControlField>
+            <ControlField label="密码"><input value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} type="password" placeholder="password" /></ControlField>
+            <ControlField label="角色"><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option>user</option><option>admin</option></select></ControlField>
+          </div>
+          <div className="modal-actions"><button className="secondary" onClick={() => setCreateOpen(false)}>取消</button><button onClick={() => create().catch((error) => toast("error", error.message))}>创建用户</button></div>
+        </div>
+      </DetailModal>
     </section>
   );
 }
