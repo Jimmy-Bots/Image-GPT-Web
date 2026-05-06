@@ -13,7 +13,9 @@ import (
 type Config struct {
 	Addr                            string
 	AppVersion                      string
+	RootDir                         string
 	DataDir                         string
+	BackupsDir                      string
 	WebDir                          string
 	ImagesDir                       string
 	DatabasePath                    string
@@ -47,6 +49,10 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	rootDir, err := os.Getwd()
+	if err != nil || strings.TrimSpace(rootDir) == "" {
+		rootDir = "."
+	}
 	dataDir := envString("CHATGPT2API_DATA_DIR", "./data")
 	dbPath := envString("CHATGPT2API_DB_PATH", filepath.Join(dataDir, "app.db"))
 	appVersion := strings.TrimSpace(os.Getenv("CHATGPT2API_VERSION"))
@@ -56,7 +62,9 @@ func Load() (Config, error) {
 	cfg := Config{
 		Addr:                            envString("CHATGPT2API_ADDR", ":3000"),
 		AppVersion:                      appVersion,
+		RootDir:                         rootDir,
 		DataDir:                         dataDir,
+		BackupsDir:                      envString("CHATGPT2API_BACKUPS_DIR", filepath.Join(dataDir, "backups")),
 		WebDir:                          envString("CHATGPT2API_WEB_DIR", "./web/dist"),
 		ImagesDir:                       envString("CHATGPT2API_IMAGES_DIR", filepath.Join(dataDir, "images")),
 		DatabasePath:                    dbPath,
@@ -96,6 +104,9 @@ func Load() (Config, error) {
 	}
 	if err := os.MkdirAll(cfg.ImagesDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create images dir: %w", err)
+	}
+	if err := os.MkdirAll(cfg.BackupsDir, 0o755); err != nil {
+		return Config{}, fmt.Errorf("create backups dir: %w", err)
 	}
 	if cfg.SessionSecret == "" {
 		if cfg.LegacyAdminKey != "" {

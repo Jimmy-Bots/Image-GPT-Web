@@ -29,6 +29,7 @@ type Server struct {
 	limiter  *loginLimiter
 	register *registerManager
 	autoRef  *accountAutoRefresher
+	backup   *backupManager
 }
 
 func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
@@ -52,10 +53,16 @@ func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
 	s.autoRef = newAccountAutoRefresher(store, s.upstream)
 	s.autoRef.SetLogWriter(s.addLogContext)
 	s.autoRef.Start()
+	s.backup = newBackupManager(cfg, store)
+	s.backup.SetLogWriter(s.addLogContext)
+	s.backup.Start()
 	return s, nil
 }
 
 func (s *Server) Close() {
+	if s.backup != nil {
+		s.backup.Close()
+	}
 	if s.autoRef != nil {
 		s.autoRef.Close()
 	}
@@ -105,6 +112,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/register/start", s.handleStartRegister)
 	mux.HandleFunc("POST /api/register/stop", s.handleStopRegister)
 	mux.HandleFunc("POST /api/register/run-once", s.handleRunRegisterOnce)
+	mux.HandleFunc("GET /api/backup/state", s.handleGetBackupState)
+	mux.HandleFunc("POST /api/backup/run", s.handleRunBackup)
+	mux.HandleFunc("GET /api/backup/items", s.handleListBackups)
+	mux.HandleFunc("POST /api/backup/delete", s.handleDeleteBackup)
+	mux.HandleFunc("GET /api/backup/download", s.handleDownloadBackup)
 	mux.HandleFunc("GET /api/storage/info", s.handleStorageInfo)
 	mux.HandleFunc("GET /api/logs", s.handleListLogs)
 	mux.HandleFunc("POST /api/logs/delete", s.handleDeleteLogs)
@@ -212,6 +224,11 @@ func (s *Server) bootstrap(ctx context.Context) error {
 
 func (s *Server) sessionIdentityFromRequest(r *http.Request) (Identity, bool) {
 	header := r.Header.Get("Authorization")
+	if header == "" {
+		if raw := strings.TrimSpace(r.URL.Query().Get("access_token")); raw != "" {
+			header = "Bearer " + raw
+		}
+	}
 	raw, err := auth.ExtractBearer(header)
 	if err != nil {
 		return Identity{}, false
@@ -231,6 +248,11 @@ func (s *Server) identityFromRequest(r *http.Request) (Identity, bool) {
 	header := r.Header.Get("Authorization")
 	if header == "" && r.Header.Get("x-api-key") != "" {
 		header = "Bearer " + r.Header.Get("x-api-key")
+	}
+	if header == "" {
+		if raw := strings.TrimSpace(r.URL.Query().Get("access_token")); raw != "" {
+			header = "Bearer " + raw
+		}
 	}
 	raw, err := auth.ExtractBearer(header)
 	if err != nil {
