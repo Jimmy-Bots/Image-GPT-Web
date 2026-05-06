@@ -1,5 +1,11 @@
 services:
   app:
+    build:
+      context: .
+      # args:
+      #   - HTTP_PROXY=http://host.docker.internal:20122
+      #   - HTTPS_PROXY=http://host.docker.internal:20122
+      #   - NO_PROXY=localhost,127.0.0.1
     image: gpt-image-web:local
     container_name: gpt-image-web
     restart: unless-stopped

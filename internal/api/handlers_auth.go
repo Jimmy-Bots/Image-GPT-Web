@@ -73,6 +73,7 @@ func quotaDayString(now time.Time) string {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	clientIP, clientIPs := requestIPInfo(r)
 	if identity, ok := s.sessionIdentityFromRequest(r); ok {
 		s.addLog(r, "auth", "会话验证成功", map[string]any{
 			"status":    "session_ok",
@@ -80,7 +81,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"name":      identity.Name,
 			"role":      identity.Role,
 			"auth_type": identity.AuthType,
-			"ip":        loginClientIP(r),
+			"ip":        clientIP,
+			"ips":       clientIPs,
 		})
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":         true,
@@ -101,7 +103,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.addLog(r, "auth", "登录失败", map[string]any{
 			"status": "bad_request",
 			"email":  req.Email,
-			"ip":     loginClientIP(r),
+			"ip":     clientIP,
+			"ips":    clientIPs,
 			"reason": "missing_email_or_password",
 		})
 		writeError(w, http.StatusBadRequest, "bad_request", "email and password are required")
@@ -112,7 +115,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.addLog(r, "auth", "登录限流", map[string]any{
 			"status": "rate_limited",
 			"email":  req.Email,
-			"ip":     loginClientIP(r),
+			"ip":     clientIP,
+			"ips":    clientIPs,
 		})
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many login attempts")
 		return
@@ -126,7 +130,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.addLog(r, "auth", "登录失败", map[string]any{
 			"status": status,
 			"email":  req.Email,
-			"ip":     loginClientIP(r),
+			"ip":     clientIP,
+			"ips":    clientIPs,
 		})
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
 		return
@@ -138,7 +143,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"email":   req.Email,
 			"user_id": user.ID,
 			"role":    user.Role,
-			"ip":      loginClientIP(r),
+			"ip":      clientIP,
+			"ips":     clientIPs,
 			"error":   err.Error(),
 		})
 		writeError(w, http.StatusInternalServerError, "session_error", err.Error())
@@ -152,7 +158,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"name":      user.Name,
 		"role":      user.Role,
 		"auth_type": "session",
-		"ip":        loginClientIP(r),
+		"ip":        clientIP,
+		"ips":       clientIPs,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
@@ -166,13 +173,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func loginClientIP(r *http.Request) string {
-	if host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr)); err == nil && host != "" {
-		return host
-	}
-	return strings.TrimSpace(r.RemoteAddr)
-}
-
 func (s *Server) handleRegisterStatus(w http.ResponseWriter, r *http.Request) {
 	status, err := s.publicRegisterStatus(r.Context())
 	if err != nil {
@@ -183,6 +183,7 @@ func (s *Server) handleRegisterStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	clientIP, clientIPs := requestIPInfo(r)
 	count, err := s.store.CountUsers(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
@@ -238,10 +239,21 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "session_error", err.Error())
 		return
 	}
+	s.addLog(r, "auth", "注册成功", map[string]any{
+		"status":    "success",
+		"email":     user.Email,
+		"user_id":   user.ID,
+		"name":      user.Name,
+		"role":      user.Role,
+		"auth_type": "session",
+		"ip":        clientIP,
+		"ips":       clientIPs,
+	})
 	writeJSON(w, http.StatusCreated, map[string]any{"user": user, "token": token, "expires_at": expiresAt})
 }
 
 func (s *Server) handleRegisterSendCode(w http.ResponseWriter, r *http.Request) {
+	clientIP, clientIPs := requestIPInfo(r)
 	var req registerSendCodeRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -296,7 +308,8 @@ func (s *Server) handleRegisterSendCode(w http.ResponseWriter, r *http.Request) 
 		s.addLog(r, "auth", "注册验证码发送失败", map[string]any{
 			"status": "failed",
 			"email":  email,
-			"ip":     loginClientIP(r),
+			"ip":     clientIP,
+			"ips":    clientIPs,
 			"error":  err.Error(),
 		})
 		writeError(w, http.StatusBadRequest, "register_send_code_failed", err.Error())
@@ -305,7 +318,8 @@ func (s *Server) handleRegisterSendCode(w http.ResponseWriter, r *http.Request) 
 	s.addLog(r, "auth", "注册验证码已发送", map[string]any{
 		"status": "sent",
 		"email":  email,
-		"ip":     loginClientIP(r),
+		"ip":     clientIP,
+		"ips":    clientIPs,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
