@@ -71,6 +71,7 @@ export type ApiKey = {
 export type ImageTask = {
   id: string;
   status: "queued" | "running" | "success" | "error";
+  phase?: string;
   mode: "generate" | "edit";
   model?: string;
   size?: string;

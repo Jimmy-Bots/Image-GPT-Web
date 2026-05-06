@@ -94,6 +94,7 @@ type ImageTask struct {
 	ID             string          `json:"id"`
 	OwnerID        string          `json:"-"`
 	Status         string          `json:"status"`
+	Phase          string          `json:"phase,omitempty"`
 	Mode           string          `json:"mode"`
 	Model          string          `json:"model,omitempty"`
 	Size           string          `json:"size,omitempty"`

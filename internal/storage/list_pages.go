@@ -189,7 +189,7 @@ func (s *Store) ListImageTasksPage(ctx context.Context, ownerID string, query Im
 		return nil, 0, err
 	}
 
-	itemsQuery := `SELECT owner_id, id, status, mode, model, size, prompt, requested_count, reserved_quota_json, NULL, error, created_at, updated_at
+	itemsQuery := `SELECT owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, NULL, error, created_at, updated_at
 		FROM image_tasks` + where + ` ORDER BY updated_at DESC LIMIT ? OFFSET ?`
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, itemsQuery, itemsArgs...)

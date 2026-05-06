@@ -20,6 +20,10 @@ const (
 	taskRunning          = "running"
 	taskSuccess          = "success"
 	taskError            = "error"
+	taskPhaseQueued      = "queued"
+	taskPhaseWaitingSlot = "waiting_slot"
+	taskPhaseProcessing  = "processing"
+	taskPhaseFinished    = "finished"
 	defaultImageTaskSize = "auto"
 	maxImageTaskAttempts = 2
 )
@@ -93,12 +97,13 @@ func (q *TaskQueue) worker(ctx context.Context) {
 func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 	defer cancel()
-	_ = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, taskRunning, nil, "")
+	_ = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, taskQueued, taskPhaseWaitingSlot, nil, "")
 	var (
 		result map[string]any
 		err    error
 	)
 	for attempt := 1; attempt <= maxImageTaskAttempts; attempt++ {
+		_ = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, taskRunning, taskPhaseProcessing, nil, "")
 		attemptCtx := withStructuredLog(ctx, q.addLogContext, "task", map[string]any{
 			"task_id":   job.TaskID,
 			"owner_id":  job.OwnerID,
@@ -118,6 +123,9 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		}
 		if err == nil {
 			break
+		}
+		if attempt < maxImageTaskAttempts {
+			_ = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, taskQueued, taskPhaseWaitingSlot, nil, "")
 		}
 		if attempt < maxImageTaskAttempts {
 			appendStructuredLogAttempt(attemptCtx, map[string]any{
@@ -153,7 +161,7 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 			"attempts":     logAttempts(ctx),
 		})
 		log.Printf("image_task failed id=%s owner=%s mode=%s err=%v", job.TaskID, job.OwnerID, job.Mode, err)
-		_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskError, jsonData([]any{}), err.Error())
+		_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskError, taskPhaseFinished, jsonData([]any{}), err.Error())
 		return
 	}
 	prompt := job.Gen.Prompt
@@ -186,7 +194,7 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	})
 	log.Printf("image_task success id=%s owner=%s mode=%s items=%d archived=%d base_url_configured=%t", job.TaskID, job.OwnerID, job.Mode, count, saved, q.baseURL != "")
 	data := result["data"]
-	_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskSuccess, jsonData(data), "")
+	_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskSuccess, taskPhaseFinished, jsonData(data), "")
 }
 
 func (q *TaskQueue) addLogContext(ctx context.Context, logType string, summary string, detail map[string]any) {
@@ -336,6 +344,7 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 		ID:             taskID,
 		OwnerID:        identity.ID,
 		Status:         taskQueued,
+		Phase:          taskPhaseQueued,
 		Mode:           "generate",
 		Model:          req.Model,
 		Size:           req.Size,
@@ -375,7 +384,7 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 	})
 	if err != nil {
 		s.refundImageQuota(r.Context(), identity, receipt)
-		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, jsonData([]any{}), err.Error())
+		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, taskPhaseFinished, jsonData([]any{}), err.Error())
 		s.addLogContext(r.Context(), "task", "图片任务提交失败", map[string]any{
 			"task_id":         taskID,
 			"owner_id":        identity.ID,
@@ -461,6 +470,7 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 		ID:             taskID,
 		OwnerID:        identity.ID,
 		Status:         taskQueued,
+		Phase:          taskPhaseQueued,
 		Mode:           "edit",
 		Model:          req.Model,
 		Size:           req.Size,
@@ -477,7 +487,7 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.tasks.Submit(taskJob{OwnerID: identity.ID, OwnerName: identity.Name, OwnerRole: identity.Role, OwnerAuthType: identity.AuthType, TaskID: taskID, Mode: "edit", Receipt: receipt, Edit: req}); err != nil {
 		s.refundImageQuota(r.Context(), identity, receipt)
-		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, jsonData([]any{}), err.Error())
+		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, taskPhaseFinished, jsonData([]any{}), err.Error())
 		s.addLogContext(r.Context(), "task", "图片任务提交失败", map[string]any{
 			"task_id":         taskID,
 			"owner_id":        identity.ID,
