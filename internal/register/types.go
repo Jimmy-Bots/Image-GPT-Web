@@ -118,6 +118,7 @@ type Config struct {
 
 type LoginOnly struct {
 	cfg         Config
+	mail        MailProvider
 	httpFactory HTTPClientFactory
 	random      RandomSource
 	now         func() time.Time

@@ -20,6 +20,7 @@ type ChatGPTUpstream struct {
 	store      *storage.Store
 	pool       *AccountPool
 	httpClient chatgpt.HTTPDoer
+	proxyURL    string
 	logWriter  structuredLogWriter
 	refreshMu  sync.Mutex
 	refreshSem chan struct{}
@@ -36,6 +37,7 @@ func NewChatGPTUpstream(store *storage.Store, pool *AccountPool, proxyURL string
 		store:      store,
 		pool:       pool,
 		httpClient: httpClient,
+		proxyURL:   strings.TrimSpace(proxyURL),
 		refreshSem: make(chan struct{}, defaultAutoRefreshConcurrency),
 	}
 }
@@ -603,14 +605,28 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 						status := "异常"
 						quota := 0
 						_, _ = u.store.UpdateAccount(jobCtx, token, storage.AccountUpdate{Status: &status, Quota: &quota})
-						_ = u.store.SetAccountRecovery(jobCtx, token, "recover_failed", reloginErr.Error())
+						recoveryState := "recover_failed"
+						if reloginRequiresMailboxOTP(reloginErr) {
+							recoveryState = recoveryStateRequiresOTP
+						}
+						_ = u.store.SetAccountRecovery(jobCtx, token, recoveryState, reloginErr.Error())
 						emitStructuredLog(jobCtx, "账号重登录失败", map[string]any{
 							"status":    "relogin_failed",
 							"token_ref": accountTokenRef(token),
 							"account":   maskToken(token),
 							"error":     reloginErr.Error(),
 						})
-						if autoRemoveInvalid {
+						if reloginRequiresMailboxOTP(reloginErr) {
+							emitStructuredLog(jobCtx, "账号重登录需要邮箱验证码，跳过自动移除", map[string]any{
+								"status":         "relogin_requires_otp",
+								"token_ref":      accountTokenRef(token),
+								"account":        maskToken(token),
+								"reason":         "otp_required",
+								"auto_remove":    autoRemoveInvalid,
+								"recovery_state": recoveryStateRequiresOTP,
+								"error":          reloginErr.Error(),
+							})
+						} else if autoRemoveInvalid {
 							removed, removeErr := u.store.DeleteAccounts(jobCtx, []string{token})
 							if removeErr != nil {
 								emitStructuredLog(jobCtx, "自动移除异常账号失败", map[string]any{

@@ -15,6 +15,8 @@ type accountReloginResult struct {
 	Email    string
 }
 
+const recoveryStateRequiresOTP = "recover_requires_otp"
+
 func (u *ChatGPTUpstream) reloginAccount(ctx context.Context, accessToken string) (accountReloginResult, error) {
 	account, err := u.store.GetAccount(ctx, accessToken)
 	if err != nil {
@@ -27,7 +29,7 @@ func (u *ChatGPTUpstream) reloginAccount(ctx context.Context, accessToken string
 	}
 	settings, _ := u.store.GetSettings(ctx)
 	cfg := register.Config{
-		ProxyURL:             fallbackString(strings.TrimSpace(stringMapValue(mapAnyValue(settings["register"]), "proxy")), ""),
+		ProxyURL:             fallbackString(strings.TrimSpace(stringMapValue(mapAnyValue(settings["register"]), "proxy")), u.proxyURL),
 		RequestTimeout:       30 * time.Second,
 		SentinelTimeout:      20 * time.Second,
 		TokenExchangeTimeout: 60 * time.Second,
@@ -37,7 +39,7 @@ func (u *ChatGPTUpstream) reloginAccount(ctx context.Context, accessToken string
 	if strings.TrimSpace(cfg.ProxyURL) == "" {
 		cfg.ProxyURL = ""
 	}
-	loginOnly, err := register.NewLoginOnly(cfg)
+	loginOnly, err := register.NewLoginOnlyWithMail(cfg, registerMailProviderFromSettings(settings))
 	if err != nil {
 		return accountReloginResult{}, err
 	}
@@ -60,4 +62,35 @@ func (u *ChatGPTUpstream) reloginAccount(ctx context.Context, accessToken string
 		NewToken: newToken,
 		Email:    email,
 	}, nil
+}
+
+func registerMailProviderFromSettings(settings map[string]any) register.MailProvider {
+	registerSettings := mapAnyValue(settings["register"])
+	mail := mapAnyValue(registerSettings["mail"])
+	apiBase := strings.TrimSpace(stringMapValue(mail, "inbucket_api_base"))
+	domains := stringSliceMapValue(mail, "inbucket_domains")
+	if apiBase == "" || len(domains) == 0 {
+		return nil
+	}
+	provider, err := register.NewInbucketMailProvider(register.InbucketConfig{
+		APIBase:         apiBase,
+		Domains:         domains,
+		RandomSubdomain: boolMapValue(mail, "random_subdomain"),
+		RequestTimeout:  30 * time.Second,
+		WaitTimeout:     30 * time.Second,
+		WaitInterval:    2 * time.Second,
+	}, nil)
+	if err != nil {
+		return nil
+	}
+	return provider
+}
+
+func reloginRequiresMailboxOTP(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(message, "requires a mailbox provider for otp") ||
+		strings.Contains(message, "mailbox provider for otp")
 }

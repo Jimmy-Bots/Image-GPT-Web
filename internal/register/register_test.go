@@ -63,6 +63,27 @@ func TestWaitForCodeReturnsTimeoutErrorOnEmptyCode(t *testing.T) {
 	}
 }
 
+func TestNewLoginOnlyWithMailUsesProvidedMailProvider(t *testing.T) {
+	expected := fakeMailProvider{
+		create: func(context.Context) (Mailbox, error) {
+			return Mailbox{}, nil
+		},
+		wait: func(context.Context, Mailbox) (string, error) {
+			return "123456", nil
+		},
+	}
+	loginOnly, err := NewLoginOnlyWithMail(Config{}, expected)
+	if err != nil {
+		t.Fatalf("NewLoginOnlyWithMail() error = %v", err)
+	}
+	if loginOnly.mail == nil {
+		t.Fatal("expected login-only mail provider to be set")
+	}
+	if _, ok := loginOnly.mail.(fakeMailProvider); !ok {
+		t.Fatalf("expected fakeMailProvider, got %T", loginOnly.mail)
+	}
+}
+
 func TestRunnerPoolMetrics(t *testing.T) {
 	registrar, err := New(Options{
 		MailProvider: fakeMailProvider{
