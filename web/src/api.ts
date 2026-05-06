@@ -47,6 +47,11 @@ export type MeResponse = {
     role: "admin" | "user";
     auth_type: "legacy" | "session" | "api_key";
   };
+  model_policy?: {
+    workbench_model?: string;
+    allowed_public_models?: string[];
+    is_admin?: boolean;
+  };
 };
 
 function withQuery(path: string, params: Record<string, string | number | boolean | undefined | null>) {

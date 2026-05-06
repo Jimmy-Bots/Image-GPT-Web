@@ -75,7 +75,7 @@ func (u *ChatGPTUpstream) ListModels(ctx context.Context) (map[string]any, error
 	if token == "" || err != nil {
 		result = fallbackModels()
 	}
-	appendImageModels(result)
+	appendImageModels(result, allowedPublicModelsFromSettingsMust(u.store.GetSettings(ctx)))
 	return result, nil
 }
 
@@ -594,7 +594,7 @@ func fallbackModels() map[string]any {
 	}
 }
 
-func appendImageModels(result map[string]any) {
+func appendImageModels(result map[string]any, allowed []string) {
 	rawItems, _ := result["data"].([]map[string]any)
 	if rawItems == nil {
 		if values, ok := result["data"].([]any); ok {
@@ -611,7 +611,16 @@ func appendImageModels(result map[string]any) {
 			seen[id] = struct{}{}
 		}
 	}
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, item := range allowed {
+		allowedSet[item] = struct{}{}
+	}
 	for _, id := range []string{"gpt-image-2", "codex-gpt-image-2"} {
+		if len(allowedSet) > 0 {
+			if _, ok := allowedSet[id]; !ok {
+				continue
+			}
+		}
 		if _, ok := seen[id]; ok {
 			continue
 		}
@@ -626,6 +635,13 @@ func appendImageModels(result map[string]any) {
 		})
 	}
 	result["data"] = rawItems
+}
+
+func allowedPublicModelsFromSettingsMust(settings map[string]any, err error) []string {
+	if err != nil {
+		return nil
+	}
+	return allowedPublicModelsFromSettings(settings)
 }
 
 func maskToken(token string) string {

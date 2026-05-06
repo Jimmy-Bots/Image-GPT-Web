@@ -145,7 +145,12 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, storageStatus(err), "user_not_found", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"identity": identity, "user": user})
+	settings, _ := s.store.GetSettings(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"identity":     identity,
+		"user":         user,
+		"model_policy": modelPolicyForIdentity(r.Context(), identity, settings),
+	})
 }
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {

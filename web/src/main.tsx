@@ -27,7 +27,7 @@ import {
   X
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
-import type { Account, AccountListSummary, AccountRefreshStatus, Identity, ImageResult, ImageTask, ModelItem, ReferenceImage, RegisterRuntime, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
 import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass } from "./utils";
 import "./styles.css";
 
@@ -115,6 +115,7 @@ function SearchControl({ label = "搜索", value, onChange, placeholder }: { lab
 function App() {
   const [token, setToken] = useState(getStoredToken());
   const [identity, setIdentity] = useState<Identity | null>(null);
+  const [modelPolicy, setModelPolicy] = useState<ModelPolicy>({});
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [adminMode, setAdminMode] = useState(false);
   const [version, setVersion] = useState("-");
@@ -158,6 +159,7 @@ function App() {
     if (!currentToken) return;
     const me = await api.me(currentToken);
     setIdentity(me.identity);
+    setModelPolicy(me.model_policy || {});
     setVersion("connected");
     if (me.identity.role !== "admin") setAdminMode(false);
     await refreshAll(currentToken, me.identity.role === "admin");
@@ -190,6 +192,16 @@ function App() {
       : [];
     await Promise.allSettled([...common, ...adminLoads]);
   }
+
+  useEffect(() => {
+    setModelPolicy((current) => ({
+      ...current,
+      workbench_model: String(settings.image_workbench_model || current.workbench_model || "gpt-image-2"),
+      allowed_public_models: Array.isArray(settings.allowed_public_models)
+        ? settings.allowed_public_models.map((item) => String(item))
+        : current.allowed_public_models
+    }));
+  }, [settings]);
 
   useEffect(() => {
     if (!token) return;
@@ -265,10 +277,11 @@ function App() {
 
   if (!adminMode || !isAdmin) {
     return (
-      <ImageHome
-        token={token}
-        identity={identity}
-        isAdmin={Boolean(isAdmin)}
+        <ImageHome
+          token={token}
+          identity={identity}
+          modelPolicy={modelPolicy}
+          isAdmin={Boolean(isAdmin)}
         quotaLabel={quotaLabelFromSummary(accountSummary)}
         setTasks={setTasks}
         setTaskTotal={setTaskTotal}
@@ -390,6 +403,7 @@ function LoginView({ busy, error, onLogin }: { busy: boolean; error: string; onL
 function ImageHome({
   token,
   identity,
+  modelPolicy,
   isAdmin,
   quotaLabel,
   setTasks,
@@ -405,6 +419,7 @@ function ImageHome({
 }: {
   token: string;
   identity: Identity;
+  modelPolicy: ModelPolicy;
   isAdmin: boolean;
   quotaLabel: string;
   setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>;
@@ -435,7 +450,7 @@ function ImageHome({
         </div>
       </header>
 
-      <ImageWorkbench token={token} identity={identity} quotaLabel={quotaLabel} canRefreshArchive={isAdmin} setTasks={setTasks} setTaskTotal={setTaskTotal} setImages={setImages} toast={toast} openLightbox={openLightbox} />
+      <ImageWorkbench token={token} identity={identity} modelPolicy={modelPolicy} quotaLabel={quotaLabel} canRefreshArchive={isAdmin} setTasks={setTasks} setTaskTotal={setTaskTotal} setImages={setImages} toast={toast} openLightbox={openLightbox} />
 
       <div className="toast-stack">
         {toasts.map((item) => <div key={item.id} className={classNames("toast", item.type)}>{item.message}</div>)}
@@ -733,9 +748,8 @@ function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefres
   );
 }
 
-function ImageWorkbench({ token, identity, quotaLabel, canRefreshArchive, setTasks, setTaskTotal, setImages, toast, openLightbox }: { token: string; identity: Identity; quotaLabel: string; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
+function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, canRefreshArchive, setTasks, setTaskTotal, setImages, toast, openLightbox }: { token: string; identity: Identity; modelPolicy: ModelPolicy; quotaLabel: string; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [prompt, setPrompt] = useState("");
-  const [model, setModel] = useState("gpt-image-2");
   const [size, setSize] = useState("");
   const [count, setCount] = useState(1);
   const [asyncMode, setAsyncMode] = useState(true);
@@ -747,6 +761,7 @@ function ImageWorkbench({ token, identity, quotaLabel, canRefreshArchive, setTas
   const fileRef = useRef<HTMLInputElement>(null);
   const storageKey = useMemo(() => `${workbenchStoragePrefix}${identity.id || identity.key_id || "legacy"}`, [identity.id, identity.key_id]);
   const quota = quotaLabel;
+  const model = String(modelPolicy.workbench_model || "gpt-image-2");
   const activeTaskCount = useMemo(() => turns.reduce((sum, turn) => sum + turn.images.filter((item) => item.status === "queued" || item.status === "running").length, 0), [turns]);
   const activeTaskIds = useMemo(() => Array.from(new Set(turns.flatMap((turn) => turn.images.flatMap((item) => item.taskId && (item.status === "queued" || item.status === "running") ? [item.taskId] : [])))), [turns]);
   const activeTaskKey = activeTaskIds.join(",");
@@ -993,10 +1008,9 @@ function ImageWorkbench({ token, identity, quotaLabel, canRefreshArchive, setTas
 
   function reuseTurn(turn: WorkbenchTurn) {
     setPrompt(turn.prompt);
-    setModel(turn.model);
-    setSize(normalizeWorkbenchSize(turn.size));
-    setCount(turn.count);
-    setRefs(turn.refs);
+      setSize(normalizeWorkbenchSize(turn.size));
+      setCount(turn.count);
+      setRefs(turn.refs);
     setActiveTurnId(turn.id);
   }
 
@@ -1118,7 +1132,7 @@ function ImageWorkbench({ token, identity, quotaLabel, canRefreshArchive, setTas
                 <button className="composer-pill" onClick={() => fileRef.current?.click()}><ImagePlus size={16} />{refs.length ? "添加参考图" : "上传"}</button>
                 <span className="composer-pill passive">额度 {quota}</span>
                 {activeTaskCount > 0 ? <span className="composer-pill running"><LoaderCircle className="spin" size={14} />{activeTaskCount} 处理中</span> : null}
-                <label className="composer-field"><span>模型</span><input value={model} onChange={(event) => setModel(event.target.value)} /></label>
+                <label className="composer-field"><span>模型</span><input value={model} readOnly /></label>
                 <label className="composer-field small-field"><span>比例</span><select value={size} onChange={(event) => setSize(event.target.value)}><option value="">默认</option><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></label>
                 <label className="composer-field count-field"><span>张数</span><input type="number" min={1} max={4} value={count} onChange={(event) => setCount(Math.max(1, Math.min(4, Number(event.target.value) || 1)))} /></label>
                 <div className="mode-toggle">
@@ -2004,9 +2018,10 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
   const [json, setJson] = useState(safeJSON(settings));
   useEffect(() => setJson(safeJSON(settings)), [settings]);
   const aiReview = settings.ai_review && typeof settings.ai_review === "object" ? settings.ai_review as Record<string, unknown> : {};
+  const allowedPublicModels = Array.isArray(settings.allowed_public_models) ? settings.allowed_public_models.map((item) => String(item)) : [];
   function updateField(key: string, value: unknown) { setSettings({ ...settings, [key]: value }); }
   async function save(next = settings) { const data = await api.saveSettings(token, next); setSettings(data.config || {}); toast("success", "设置已保存"); }
-  return <div className="settings-layout"><section className="panel"><PanelHead title="常用设置" subtitle="保存后会同步写入配置表" action={<button onClick={() => save().catch((error) => toast("error", error.message))}>保存</button>} /><div className="settings-form"><label><span>Proxy</span><input value={String(settings.proxy || "")} onChange={(event) => updateField("proxy", event.target.value)} /></label><label><span>Base URL</span><input value={String(settings.base_url || "")} onChange={(event) => updateField("base_url", event.target.value)} /></label><label><span>账号自动刷新间隔（分钟）</span><input type="number" min={1} value={Number(settings.refresh_account_interval_minute || 5)} onChange={(event) => updateField("refresh_account_interval_minute", Number(event.target.value))} /></label><label><span>账号刷新并发（自动刷新/手动刷新共用）</span><input type="number" min={1} value={Number(settings.refresh_account_concurrency || 4)} onChange={(event) => updateField("refresh_account_concurrency", Number(event.target.value))} /></label><label><span>正常账号轮转批大小</span><input type="number" min={1} value={Number(settings.refresh_account_normal_batch_size || 8)} onChange={(event) => updateField("refresh_account_normal_batch_size", Number(event.target.value))} /></label><label><span>单账号默认图片并发</span><input type="number" min={1} value={Number(settings.image_account_concurrency || 1)} onChange={(event) => updateField("image_account_concurrency", Number(event.target.value))} /></label><label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label><label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label><label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label><label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label><label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label></div></section><section className="panel"><PanelHead title="原始 JSON" subtitle="高级设置可以直接编辑" action={<button className="secondary" onClick={() => { const parsed = parseJSON(json) as SettingsType; save(parsed).catch((error) => toast("error", error.message)); }}>保存 JSON</button>} /><textarea className="json-editor settings-json" value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} /></section></div>;
+  return <div className="settings-layout"><section className="panel"><PanelHead title="常用设置" subtitle="保存后会同步写入配置表" action={<button onClick={() => save().catch((error) => toast("error", error.message))}>保存</button>} /><div className="settings-form"><label><span>Proxy</span><input value={String(settings.proxy || "")} onChange={(event) => updateField("proxy", event.target.value)} /></label><label><span>Base URL</span><input value={String(settings.base_url || "")} onChange={(event) => updateField("base_url", event.target.value)} /></label><label><span>图片工作台固定模型</span><input value={String(settings.image_workbench_model || "gpt-image-2")} onChange={(event) => updateField("image_workbench_model", event.target.value)} placeholder="gpt-image-2" /></label><label className="wide"><span>公开允许模型，每行一个</span><textarea value={allowedPublicModels.join("\n")} onChange={(event) => updateField("allowed_public_models", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} placeholder={"gpt-image-2\ngpt-5\nauto"} /></label><label><span>账号自动刷新间隔（分钟）</span><input type="number" min={1} value={Number(settings.refresh_account_interval_minute || 5)} onChange={(event) => updateField("refresh_account_interval_minute", Number(event.target.value))} /></label><label><span>账号刷新并发（自动刷新/手动刷新共用）</span><input type="number" min={1} value={Number(settings.refresh_account_concurrency || 4)} onChange={(event) => updateField("refresh_account_concurrency", Number(event.target.value))} /></label><label><span>正常账号轮转批大小</span><input type="number" min={1} value={Number(settings.refresh_account_normal_batch_size || 8)} onChange={(event) => updateField("refresh_account_normal_batch_size", Number(event.target.value))} /></label><label><span>单账号默认图片并发</span><input type="number" min={1} value={Number(settings.image_account_concurrency || 1)} onChange={(event) => updateField("image_account_concurrency", Number(event.target.value))} /></label><label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label><label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label><label className="inline"><input type="checkbox" checked={Boolean(settings.auto_remove_invalid_accounts)} onChange={(event) => updateField("auto_remove_invalid_accounts", event.target.checked)} /><span>自动移除异常账号</span></label><label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label><label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label></div></section><section className="panel"><PanelHead title="原始 JSON" subtitle="高级设置可以直接编辑" action={<button className="secondary" onClick={() => { const parsed = parseJSON(json) as SettingsType; save(parsed).catch((error) => toast("error", error.message)); }}>保存 JSON</button>} /><textarea className="json-editor settings-json" value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} /></section></div>;
 }
 
 function RegisterPanel({ token, registerRuntime, setRegisterRuntime, toast }: { token: string; registerRuntime: RegisterRuntime | null; setRegisterRuntime: React.Dispatch<React.SetStateAction<RegisterRuntime | null>>; toast: (type: Toast["type"], message: string) => void }) {
