@@ -134,7 +134,7 @@ func (r *Registrar) Register(ctx context.Context) (RegisterResult, error) {
 	}
 
 	r.logRegistration(ctx, "info", "exchange platform tokens", map[string]any{"email": email})
-	tokens, err := state.loginAndExchangeTokens(ctx, email, password, mailbox, r.mail)
+	tokens, err := r.loginAndExchangeTokens(ctx, state, email, password, mailbox)
 	if err != nil {
 		r.logRegistration(ctx, "error", "exchange platform tokens failed", map[string]any{"email": email, "error": err.Error()})
 		return RegisterResult{}, err
@@ -182,6 +182,34 @@ func (r *Registrar) waitForCode(ctx context.Context, mailbox Mailbox) (string, e
 		return "", ErrCodeTimeout
 	}
 	return code, nil
+}
+
+func (r *Registrar) loginAndExchangeTokens(ctx context.Context, state flowState, email string, password string, mailbox Mailbox) (tokenBundle, error) {
+	tokens, err := state.loginAndExchangeTokens(ctx, email, password, mailbox, r.mail)
+	if err == nil {
+		return tokens, nil
+	}
+	if !shouldRetryFreshLogin(err) {
+		return tokenBundle{}, err
+	}
+	r.logRegistration(ctx, "warn", "login session invalid, retry with fresh session", map[string]any{
+		"email": email,
+		"error": err.Error(),
+	})
+	client, newErr := r.httpFactory.New(r.cfg)
+	if newErr != nil {
+		return tokenBundle{}, newErr
+	}
+	defer client.CloseIdleConnections()
+	freshState := flowState{
+		client:   client,
+		deviceID: randomID(r.random, 12),
+		cfg:      r.cfg,
+		random:   r.random,
+		now:      r.now,
+		logger:   r.logger,
+	}
+	return freshState.loginAndExchangeTokens(ctx, email, password, mailbox, r.mail)
 }
 
 func (r *Registrar) refreshAccountRemoteInfo(ctx context.Context, accessToken string) error {
@@ -236,6 +264,7 @@ func (f flowState) platformAuthorize(ctx context.Context, email string) error {
 	if err != nil {
 		return err
 	}
+	f.client.SetFollowRedirect(true)
 	f.client.SetCookies(authURL, []*fhttp.Cookie{
 		{Name: "oai-did", Value: f.deviceID, Domain: ".auth.openai.com", Path: "/"},
 		{Name: "oai-did", Value: f.deviceID, Domain: "auth.openai.com", Path: "/"},
@@ -264,6 +293,7 @@ func (f flowState) platformAuthorize(ctx context.Context, email string) error {
 }
 
 func (f flowState) registerUser(ctx context.Context, email string, password string) error {
+	f.client.SetFollowRedirect(true)
 	headers := f.jsonHeaders(f.cfg.AuthBaseURL + "/create-account/password")
 	token, err := buildSentinelToken(ctx, f.client, f.cfg, f.deviceID, "username_password_create", f.random, f.now)
 	if err != nil {
@@ -294,6 +324,7 @@ func (f flowState) registerUser(ctx context.Context, email string, password stri
 }
 
 func (f flowState) sendOTP(ctx context.Context) error {
+	f.client.SetFollowRedirect(true)
 	headers := f.navigateHeaders(f.cfg.AuthBaseURL + "/create-account/password")
 	reqCtx, cancel := withTimeout(ctx, f.cfg.RequestTimeout)
 	defer cancel()
@@ -310,6 +341,7 @@ func (f flowState) sendOTP(ctx context.Context) error {
 }
 
 func (f flowState) validateOTP(ctx context.Context, code string) error {
+	f.client.SetFollowRedirect(true)
 	payload, _ := json.Marshal(map[string]string{"code": code})
 	headers := f.jsonHeaders(f.cfg.AuthBaseURL + "/email-verification")
 	reqCtx, cancel := withTimeout(ctx, f.cfg.RequestTimeout)
@@ -341,6 +373,7 @@ func (f flowState) validateOTP(ctx context.Context, code string) error {
 }
 
 func (f flowState) createAccount(ctx context.Context, name string, birthdate string) error {
+	f.client.SetFollowRedirect(true)
 	headers := f.jsonHeaders(f.cfg.AuthBaseURL + "/about-you")
 	token, err := buildSentinelToken(ctx, f.client, f.cfg, f.deviceID, "oauth_create_account", f.random, f.now)
 	if err != nil {
@@ -371,6 +404,7 @@ func (f flowState) createAccount(ctx context.Context, name string, birthdate str
 }
 
 func (f flowState) loginAndExchangeTokens(ctx context.Context, email string, password string, mailbox Mailbox, mail MailProvider) (tokenBundle, error) {
+	f.client.SetFollowRedirect(true)
 	codeVerifier, codeChallenge := generatePKCE(f.random)
 	params := f.oauthParams(email, codeChallenge)
 	headers := f.navigateHeaders(f.cfg.PlatformBaseURL + "/")
@@ -393,6 +427,7 @@ func (f flowState) loginAndExchangeTokens(ctx context.Context, email string, pas
 	}
 	passwordHeaders["openai-sentinel-token"] = token
 	payload, _ := json.Marshal(map[string]string{"password": password})
+	f.client.SetFollowRedirect(false)
 	resp, err = doWithRetry(reqCtx, f.client, f.cfg.LocalRetryAttempts, func() (*fhttp.Request, error) {
 		return newRequest("POST", f.cfg.AuthBaseURL+"/api/accounts/password/verify", passwordHeaders, payload)
 	})
@@ -400,7 +435,27 @@ func (f flowState) loginAndExchangeTokens(ctx context.Context, email string, pas
 		return tokenBundle{}, err
 	}
 	if resp.StatusCode != 200 {
-		return tokenBundle{}, fmt.Errorf("password_verify_http_%d", resp.StatusCode)
+		detail := ""
+		if data := resp.JSON(); len(data) > 0 {
+			if errData := mapValue(data["error"]); len(errData) > 0 {
+				message := strings.TrimSpace(stringValue(errData["message"]))
+				code := strings.TrimSpace(stringValue(errData["code"]))
+				switch {
+				case code != "" && message != "":
+					detail = fmt.Sprintf(": %s - %s", code, message)
+				case message != "":
+					detail = ": " + message
+				case code != "":
+					detail = ": " + code
+				}
+			} else {
+				message := strings.TrimSpace(stringValue(data["message"]))
+				if message != "" {
+					detail = ": " + message
+				}
+			}
+		}
+		return tokenBundle{}, fmt.Errorf("password_verify_http_%d%s", resp.StatusCode, detail)
 	}
 	data := resp.JSON()
 	continueURL := stringValue(data["continue_url"])
@@ -478,6 +533,7 @@ func (f flowState) extractOAuthCallback(ctx context.Context, consentURL string) 
 	}
 	currentURL := consentURL
 	for range 10 {
+		f.client.SetFollowRedirect(false)
 		resp, err := doWithRetry(ctx, f.client, 1, func() (*fhttp.Request, error) {
 			return newRequest("GET", currentURL, f.navigateHeaders(""), nil)
 		})
@@ -510,6 +566,7 @@ func (f flowState) extractOAuthCallback(ctx context.Context, consentURL string) 
 	}
 	headers := f.jsonHeaders(consentURL)
 	payload, _ := json.Marshal(map[string]string{"workspace_id": workspaceID})
+	f.client.SetFollowRedirect(false)
 	resp, err := doWithRetry(ctx, f.client, f.cfg.LocalRetryAttempts, func() (*fhttp.Request, error) {
 		return newRequest("POST", f.cfg.AuthBaseURL+"/api/accounts/workspace/select", headers, payload)
 	})
@@ -540,6 +597,7 @@ func (f flowState) extractOAuthCallback(ctx context.Context, consentURL string) 
 	}
 	body, _ := json.Marshal(orgPayload)
 	orgHeaders := f.jsonHeaders(stringValue(data["continue_url"]))
+	f.client.SetFollowRedirect(false)
 	resp, err = doWithRetry(ctx, f.client, f.cfg.LocalRetryAttempts, func() (*fhttp.Request, error) {
 		return newRequest("POST", f.cfg.AuthBaseURL+"/api/accounts/organization/select", orgHeaders, body)
 	})
@@ -676,4 +734,15 @@ func extractWorkspaceID(raw string) string {
 
 func decodeBase64URL(value string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(strings.TrimSpace(value))
+}
+
+func shouldRetryFreshLogin(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "invalid session") ||
+		strings.Contains(text, "invalid_state") ||
+		strings.Contains(text, "password_verify_http_409") ||
+		strings.Contains(text, "password_verify_http_401")
 }

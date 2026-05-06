@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -83,6 +84,61 @@ func TestRunnerPoolMetrics(t *testing.T) {
 	}
 	if metrics.CurrentAvailable != 2 || metrics.CurrentQuota != 5 {
 		t.Fatalf("unexpected metrics: %+v", metrics)
+	}
+}
+
+func TestNewRunnerFactoryCreatesIndependentRegistrarPerWorker(t *testing.T) {
+	var factoryCalls atomic.Int32
+	var concurrent atomic.Int32
+	var maxConcurrent atomic.Int32
+	repo := fakeAccountRepo{}
+
+	runner, err := NewRunnerFactory(func() (*Registrar, error) {
+		factoryCalls.Add(1)
+		registrar, err := New(Options{
+			MailProvider: fakeMailProvider{
+				create: func(context.Context) (Mailbox, error) { return Mailbox{}, nil },
+				wait:   func(context.Context, Mailbox) (string, error) { return "", nil },
+			},
+			AccountRepo: repo,
+		})
+		if err != nil {
+			return nil, err
+		}
+		registrar.logSink = LogSinkFunc(func(ctx context.Context, level string, summary string, detail map[string]any) error {
+			current := concurrent.Add(1)
+			for {
+				seen := maxConcurrent.Load()
+				if current <= seen || maxConcurrent.CompareAndSwap(seen, current) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			concurrent.Add(-1)
+			return errors.New("stop after start")
+		})
+		return registrar, nil
+	}, repo, nil, func() time.Time { return time.Now().UTC() })
+	if err != nil {
+		t.Fatalf("NewRunnerFactory() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_, runErr := runner.Run(ctx, BatchConfig{
+		Mode:          RegisterModeTotal,
+		Total:         2,
+		Threads:       2,
+		CheckInterval: 10 * time.Millisecond,
+	})
+	if runErr == nil {
+		t.Fatal("expected runner to fail after injected log sink error")
+	}
+	if factoryCalls.Load() < 2 {
+		t.Fatalf("expected factory to be called per worker, got %d", factoryCalls.Load())
+	}
+	if maxConcurrent.Load() < 2 {
+		t.Fatalf("expected concurrent worker execution, max=%d", maxConcurrent.Load())
 	}
 }
 

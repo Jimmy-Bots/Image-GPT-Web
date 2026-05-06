@@ -106,13 +106,14 @@ func (p *InbucketMailProvider) WaitForCode(ctx context.Context, mailbox Mailbox)
 		waitCtx, cancel = context.WithTimeout(ctx, p.cfg.WaitTimeout)
 		defer cancel()
 	}
-	seen := make(map[string]struct{})
+	seen := mailboxSeenRefs(mailbox)
 	for {
 		code, messageID, err := p.fetchLatestCode(waitCtx, mailbox, seen)
 		if err != nil {
 			return "", err
 		}
 		if code != "" {
+			markMailboxSeenRef(mailbox, messageID)
 			return code, nil
 		}
 		if messageID != "" {
@@ -316,4 +317,55 @@ func limitBytes(body []byte, max int) []byte {
 		return body
 	}
 	return body[:max]
+}
+
+func mailboxSeenRefs(mailbox Mailbox) map[string]struct{} {
+	seen := make(map[string]struct{})
+	raw := mailbox.Meta["_seen_code_message_refs"]
+	switch items := raw.(type) {
+	case []string:
+		for _, item := range items {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				seen[item] = struct{}{}
+			}
+		}
+	case []any:
+		for _, item := range items {
+			text := strings.TrimSpace(stringValue(item))
+			if text != "" {
+				seen[text] = struct{}{}
+			}
+		}
+	}
+	return seen
+}
+
+func markMailboxSeenRef(mailbox Mailbox, ref string) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return
+	}
+	if mailbox.Meta == nil {
+		return
+	}
+	current := mailbox.Meta["_seen_code_message_refs"]
+	switch items := current.(type) {
+	case []string:
+		for _, item := range items {
+			if strings.TrimSpace(item) == ref {
+				return
+			}
+		}
+		mailbox.Meta["_seen_code_message_refs"] = append(items, ref)
+	case []any:
+		for _, item := range items {
+			if strings.TrimSpace(stringValue(item)) == ref {
+				return
+			}
+		}
+		mailbox.Meta["_seen_code_message_refs"] = append(items, ref)
+	default:
+		mailbox.Meta["_seen_code_message_refs"] = []string{ref}
+	}
 }

@@ -176,11 +176,6 @@ func (m *registerManager) RunOnce(ctx context.Context) (map[string]any, error) {
 }
 
 func (m *registerManager) runBatch(ctx context.Context, cfg register.BatchConfig) {
-	registrar, err := m.newRegistrar(cfg)
-	if err != nil {
-		m.finishBatch(register.BatchState{Config: cfg}, err)
-		return
-	}
 	logger := register.LoggerFunc(func(ctx context.Context, level string, format string, args ...any) {
 		message := strings.TrimSpace(fmt.Sprintf(format, args...))
 		if message == "" {
@@ -188,7 +183,9 @@ func (m *registerManager) runBatch(ctx context.Context, cfg register.BatchConfig
 		}
 		m.addLog(ctx, level, message, map[string]any{"level": level})
 	})
-	runner, err := register.NewRunner(registrar, register.StorageAccountRepository{
+	runner, err := register.NewRunnerFactory(func() (*register.Registrar, error) {
+		return m.newRegistrar(cfg)
+	}, register.StorageAccountRepository{
 		Store:       m.store,
 		ProxyURL:    fallbackString(cfg.Proxy, m.cfg.ProxyURL),
 		RefreshFunc: m.refreshAccountLikePool,
