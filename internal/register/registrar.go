@@ -26,9 +26,14 @@ type Registrar struct {
 }
 
 func NewLoginOnly(cfg Config) (*LoginOnly, error) {
+	return NewLoginOnlyWithMail(cfg, nil)
+}
+
+func NewLoginOnlyWithMail(cfg Config, mail MailProvider) (*LoginOnly, error) {
 	cfg = cfg.withDefaults()
 	return &LoginOnly{
 		cfg:         cfg,
+		mail:        mail,
 		httpFactory: defaultHTTPClientFactory{},
 		random:      newDefaultRandomSource(),
 		now:         func() time.Time { return time.Now().UTC() },
@@ -296,8 +301,11 @@ func (l *LoginOnly) LoginAndExchangeTokens(ctx context.Context, email string, pa
 
 func (l *LoginOnly) loginAndExchange(ctx context.Context, state flowState, email string, password string) (tokenBundle, error) {
 	emptyMailbox := Mailbox{Address: email}
-	noopMail := loginOnlyMailProvider{}
-	tokens, err := state.loginAndExchangeTokens(ctx, email, password, emptyMailbox, noopMail)
+	mail := l.mail
+	if mail == nil {
+		mail = loginOnlyMailProvider{}
+	}
+	tokens, err := state.loginAndExchangeTokens(ctx, email, password, emptyMailbox, mail)
 	if err == nil {
 		return tokens, nil
 	}
@@ -317,7 +325,7 @@ func (l *LoginOnly) loginAndExchange(ctx context.Context, state flowState, email
 		now:      l.now,
 		logger:   l.logger,
 	}
-	return freshState.loginAndExchangeTokens(ctx, email, password, emptyMailbox, noopMail)
+	return freshState.loginAndExchangeTokens(ctx, email, password, emptyMailbox, mail)
 }
 
 type loginOnlyMailProvider struct{}
