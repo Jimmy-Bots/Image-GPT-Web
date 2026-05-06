@@ -67,6 +67,7 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 	startedAt := r.now()
 	jobID := randomID(newDefaultRandomSource(), 6)
 	batchCtx := WithJobID(ctx, jobID)
+	monitorMode := cfg.Mode == RegisterModeQuota || cfg.Mode == RegisterModeAvailable
 	state := BatchState{
 		Config:  cfg,
 		Enabled: true,
@@ -101,33 +102,40 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 	}
 	var wg sync.WaitGroup
 	submitted := 0
+	monitoring := false
+	targetLogged := false
 
-	type launchStatus int
-
-	const (
-		launchStatusLaunched launchStatus = iota
-		launchStatusHold
-		launchStatusStop
-	)
-
-	tryLaunch := func() (launchStatus, error) {
+	tryLaunch := func() (bool, error) {
 		if state.Config.Mode == RegisterModeTotal {
 			if state.Stats.Success >= state.Config.Total {
-				r.logger.Printf(batchCtx, "info", "target reached success=%d total=%d", state.Stats.Success, state.Config.Total)
-				return launchStatusStop, nil
+				if !targetLogged {
+					r.logger.Printf(batchCtx, "info", "target reached success=%d total=%d", state.Stats.Success, state.Config.Total)
+					targetLogged = true
+				}
+				return false, nil
 			}
 			if state.Stats.Success+state.Stats.Running >= state.Config.Total {
-				return launchStatusHold, nil
+				return false, nil
 			}
-		}
-		reached, err := r.targetReached(batchCtx, &state)
-		if err != nil {
-			r.logger.Printf(batchCtx, "error", "target check failed: %v", err)
-			return launchStatusStop, err
-		}
-		if reached {
-			r.logger.Printf(batchCtx, "info", "target reached, stop launching more jobs")
-			return launchStatusStop, nil
+		} else {
+			reached, err := r.targetReached(batchCtx, &state)
+			if err != nil {
+				r.logger.Printf(batchCtx, "error", "target check failed: %v", err)
+				return false, err
+			}
+			state = r.bumpStats(state)
+			r.emitState(state)
+			if reached {
+				if !monitoring {
+					monitoring = true
+					r.logger.Printf(batchCtx, "info", "target reached, enter monitor mode quota=%d available=%d", state.Stats.CurrentQuota, state.Stats.CurrentAvailable)
+				}
+				return false, nil
+			}
+			if monitoring {
+				monitoring = false
+				r.logger.Printf(batchCtx, "warn", "target dropped below threshold, resume registering quota=%d available=%d", state.Stats.CurrentQuota, state.Stats.CurrentAvailable)
+			}
 		}
 		submitted++
 		threadID := <-slots
@@ -150,48 +158,47 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 			}
 			results <- jobResult{ok: err == nil, err: err}
 		}(threadID, submitted)
-		return launchStatusLaunched, nil
+		return true, nil
 	}
 
-	fillWorkers := func() (bool, error) {
+	fillWorkers := func() error {
 		for state.Stats.Running < cfg.Threads {
-			status, err := tryLaunch()
+			launched, err := tryLaunch()
 			if err != nil {
-				return true, err
+				return err
 			}
-			switch status {
-			case launchStatusLaunched:
+			if launched {
 				continue
-			case launchStatusStop:
-				return true, nil
-			default:
-				return false, nil
 			}
+			return nil
 		}
-		return false, nil
+		return nil
 	}
 
-	doneLaunching, err := fillWorkers()
-	if err != nil {
+	if err := fillWorkers(); err != nil {
 		return r.finishState(state, false), err
 	}
-	for state.Stats.Running > 0 || !doneLaunching {
-		if state.Stats.Running == 0 && doneLaunching {
+	for {
+		if !monitorMode && state.Stats.Success >= state.Config.Total && state.Stats.Running == 0 {
 			break
 		}
-		if state.Stats.Running == 0 && !doneLaunching {
+		if state.Stats.Running == 0 {
 			select {
 			case <-batchCtx.Done():
-				r.logger.Printf(batchCtx, "warn", "canceled while idle")
+				if monitorMode {
+					r.logger.Printf(batchCtx, "warn", "monitor canceled while idle")
+				} else {
+					r.logger.Printf(batchCtx, "warn", "canceled while idle")
+				}
 				return r.finishState(state, false), batchCtx.Err()
 			case <-time.After(cfg.CheckInterval):
-				r.logger.Printf(batchCtx, "info", "tick interval=%s waiting for next launch", cfg.CheckInterval)
-				stopped, err := fillWorkers()
-				if err != nil {
-					return r.finishState(state, false), err
+				if monitorMode {
+					r.logger.Printf(batchCtx, "info", "monitor tick interval=%s quota=%d available=%d", cfg.CheckInterval, state.Stats.CurrentQuota, state.Stats.CurrentAvailable)
+				} else {
+					r.logger.Printf(batchCtx, "info", "tick interval=%s waiting for next launch", cfg.CheckInterval)
 				}
-				if stopped {
-					doneLaunching = true
+				if err := fillWorkers(); err != nil {
+					return r.finishState(state, false), err
 				}
 			}
 			continue
@@ -213,12 +220,8 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 			state = r.bumpStats(state)
 			r.emitState(state)
 			r.logger.Printf(batchCtx, "info", "progress done=%d success=%d fail=%d running=%d rate=%s", state.Stats.Done, state.Stats.Success, state.Stats.Fail, state.Stats.Running, formatRunnerPercent(state.Stats.SuccessRate))
-			stopped, err := fillWorkers()
-			if err != nil {
+			if err := fillWorkers(); err != nil {
 				return r.finishState(state, false), err
-			}
-			if stopped {
-				doneLaunching = true
 			}
 		}
 	}
