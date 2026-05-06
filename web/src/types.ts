@@ -86,6 +86,23 @@ export type SystemLog = {
   detail?: unknown;
 };
 
+export type PagedResult<T> = {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+export type AccountListSummary = {
+  total: number;
+  normal: number;
+  success: number;
+  fail: number;
+  quota_total: number;
+  quota_unknown: boolean;
+  quota_unlimited: boolean;
+};
+
 export type ModelItem = {
   id: string;
   object?: string;

@@ -138,13 +138,29 @@ func (s *Server) handleListImageTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	ids := compactStrings(strings.Split(r.URL.Query().Get("ids"), ","))
 	includeData := len(ids) > 0 || boolFromAny(r.URL.Query().Get("detail"))
-	items, err := s.store.ListImageTasks(r.Context(), identity.ID, ids, includeData)
+	if len(ids) > 0 {
+		items, err := s.store.ListImageTasks(r.Context(), identity.ID, ids, includeData)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+			return
+		}
+		missing := missingTaskIDs(ids, items)
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "missing_ids": missing, "total": len(items), "page": 1, "page_size": len(items)})
+		return
+	}
+	query := storage.ImageTaskPageQuery{
+		Page:     queryInt(r, "page", 1),
+		PageSize: queryInt(r, "page_size", 25),
+		Query:    strings.TrimSpace(r.URL.Query().Get("query")),
+		Status:   strings.TrimSpace(r.URL.Query().Get("status")),
+	}
+	items, total, err := s.store.ListImageTasksPage(r.Context(), identity.ID, query)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
 	missing := missingTaskIDs(ids, items)
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "missing_ids": missing})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "missing_ids": missing, "total": total, "page": query.Page, "page_size": query.PageSize})
 }
 
 func (s *Server) handleDeleteImageTasks(w http.ResponseWriter, r *http.Request) {

@@ -1,4 +1,4 @@
-import type { Account, AccountRefreshStatus, ApiKey, ImageTask, ModelItem, RegisterConfig, RegisterRuntime, Settings, StoredImage, SystemLog, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, Settings, StoredImage, SystemLog, User } from "./types";
 
 const storageKey = "gpt_image_web_token";
 
@@ -49,6 +49,16 @@ export type MeResponse = {
   };
 };
 
+function withQuery(path: string, params: Record<string, string | number | boolean | undefined | null>) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return query ? `${path}?${query}` : path;
+}
+
 export const api = {
   loginWithPassword: (email: string, password: string) =>
     request<{ token: string; role: string; name: string; version: string }>("", "/auth/login", {
@@ -59,33 +69,47 @@ export const api = {
   me: (token: string) => request<MeResponse>(token, "/api/me"),
   version: (token: string) => request<{ version: string }>(token, "/version"),
   models: (token: string) => request<{ data: ModelItem[] }>(token, "/v1/models"),
-  accounts: (token: string) => request<{ items: Account[] }>(token, "/api/accounts"),
+  accounts: (token: string, params: { page?: number; pageSize?: number; query?: string; status?: string; accountType?: string } = {}) =>
+    request<PagedResult<Account> & { summary: AccountListSummary }>(token, withQuery("/api/accounts", {
+      page: params.page,
+      page_size: params.pageSize,
+      query: params.query,
+      status: params.status,
+      account_type: params.accountType
+    })),
   accountRefreshStatus: (token: string) => request<{ status: AccountRefreshStatus }>(token, "/api/accounts/refresh-status"),
   addAccounts: (token: string, tokens: string[]) =>
-    request<{ added: number; skipped: number; items: Account[] }>(token, "/api/accounts", {
+    request<{ added: number; skipped: number }>(token, "/api/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tokens })
     }),
   deleteAccounts: (token: string, tokenRefs: string[]) =>
-    request<{ removed: number; items: Account[] }>(token, "/api/accounts", {
+    request<{ removed: number }>(token, "/api/accounts", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token_refs: tokenRefs })
     }),
   refreshAccounts: (token: string, tokenRefs: string[] = []) =>
-    request<{ refreshed: number; errors: Array<{ token_ref?: string; error?: string }>; items: Account[] }>(token, "/api/accounts/refresh", {
+    request<{ refreshed: number; errors: Array<{ token_ref?: string; error?: string }> }>(token, "/api/accounts/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token_refs: tokenRefs })
     }),
   updateAccount: (token: string, tokenRef: string, body: { status?: string; type?: string; quota?: number; password?: string }) =>
-    request<{ item: Account; items: Account[] }>(token, "/api/accounts/update", {
+    request<{ item: Account }>(token, "/api/accounts/update", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token_ref: tokenRef, ...body })
     }),
-  users: (token: string) => request<{ items: User[] }>(token, "/api/users"),
+  users: (token: string, params: { page?: number; pageSize?: number; query?: string; status?: string; role?: string } = {}) =>
+    request<PagedResult<User>>(token, withQuery("/api/users", {
+      page: params.page,
+      page_size: params.pageSize,
+      query: params.query,
+      status: params.status,
+      role: params.role
+    })),
   createUser: (token: string, body: { email: string; name?: string; password: string; role: string }) =>
     request<{ item: User; api_key?: ApiKey; key?: string }>(token, "/api/users", {
       method: "POST",
@@ -106,8 +130,15 @@ export const api = {
     request<{ item: ApiKey; key: string }>(token, `/api/users/${encodeURIComponent(id)}/api-key/reset`, {
       method: "POST"
     }),
-  tasks: (token: string, ids: string[] = []) =>
-    request<{ items: ImageTask[]; missing_ids: string[] }>(token, ids.length ? `/api/image-tasks?ids=${encodeURIComponent(ids.join(","))}` : "/api/image-tasks"),
+  tasks: (token: string, ids: string[] = [], params: { page?: number; pageSize?: number; query?: string; status?: string } = {}) =>
+    request<PagedResult<ImageTask> & { missing_ids: string[] }>(token, ids.length
+      ? `/api/image-tasks?ids=${encodeURIComponent(ids.join(","))}`
+      : withQuery("/api/image-tasks", {
+          page: params.page,
+          page_size: params.pageSize,
+          query: params.query,
+          status: params.status
+        })),
   deleteTasks: (token: string, ids: string[]) =>
     request<{ removed: number }>(token, "/api/image-tasks/delete", {
       method: "POST",
@@ -160,13 +191,14 @@ export const api = {
       method: "POST"
     }),
   storage: (token: string) => request<{ backend: { type: string; path: string }; health: { status: string } }>(token, "/api/storage/info"),
-  logs: (token: string, type = "", ids: string[] = []) => {
-    const params = new URLSearchParams();
-    if (type) params.set("type", type);
-    if (ids.length) params.set("ids", ids.join(","));
-    const query = params.toString();
-    return request<{ items: SystemLog[] }>(token, query ? `/api/logs?${query}` : "/api/logs");
-  },
+  logs: (token: string, type = "", ids: string[] = [], params: { page?: number; pageSize?: number; query?: string } = {}) =>
+    request<PagedResult<SystemLog>>(token, withQuery("/api/logs", {
+      type,
+      ids: ids.length ? ids.join(",") : "",
+      page: ids.length ? undefined : params.page,
+      page_size: ids.length ? undefined : params.pageSize,
+      query: ids.length ? undefined : params.query
+    })),
   deleteLogs: (token: string, ids: string[]) =>
     request<{ removed: number }>(token, "/api/logs/delete", {
       method: "POST",

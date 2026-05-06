@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,12 +57,25 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	items, err := s.store.ListAccounts(r.Context())
+	query := storage.AccountListQuery{
+		Page:     queryInt(r, "page", 1),
+		PageSize: queryInt(r, "page_size", 25),
+		Query:    strings.TrimSpace(r.URL.Query().Get("query")),
+		Status:   strings.TrimSpace(r.URL.Query().Get("status")),
+		Type:     strings.TrimSpace(r.URL.Query().Get("account_type")),
+	}
+	items, total, summary, err := s.store.ListAccountsPage(r.Context(), query)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": publicAccounts(items)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":     publicAccounts(items),
+		"total":     total,
+		"page":      query.Page,
+		"page_size": query.PageSize,
+		"summary":   summary,
+	})
 }
 
 func (s *Server) handleGetAccountRefreshStatus(w http.ResponseWriter, r *http.Request) {
@@ -98,9 +112,8 @@ func (s *Server) handleCreateAccounts(w http.ResponseWriter, r *http.Request) {
 			skipped++
 		}
 	}
-	items, _ := s.store.ListAccounts(r.Context())
 	s.addLog(r, "account", "新增账号", map[string]any{"added": added, "skipped": skipped})
-	writeJSON(w, http.StatusOK, map[string]any{"added": added, "skipped": skipped, "items": publicAccounts(items)})
+	writeJSON(w, http.StatusOK, map[string]any{"added": added, "skipped": skipped})
 }
 
 func (s *Server) handleDeleteAccounts(w http.ResponseWriter, r *http.Request) {
@@ -122,9 +135,8 @@ func (s *Server) handleDeleteAccounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
-	items, _ := s.store.ListAccounts(r.Context())
 	s.addLog(r, "account", "删除账号", map[string]any{"removed": removed})
-	writeJSON(w, http.StatusOK, map[string]any{"removed": removed, "items": publicAccounts(items)})
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
 func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
@@ -150,8 +162,7 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, storageStatus(err), "update_account_failed", err.Error())
 		return
 	}
-	items, _ := s.store.ListAccounts(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"item": publicAccount(item), "items": publicAccounts(items)})
+	writeJSON(w, http.StatusOK, map[string]any{"item": publicAccount(item)})
 }
 
 func (s *Server) handleRefreshAccounts(w http.ResponseWriter, r *http.Request) {
@@ -168,15 +179,14 @@ func (s *Server) handleRefreshAccounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	items, _ := s.store.ListAccounts(r.Context())
 	if len(tokens) == 0 {
+		items, _ := s.store.ListAccounts(r.Context())
 		for _, item := range items {
 			tokens = append(tokens, item.AccessToken)
 		}
 	}
 	refreshed, errorsList := s.upstream.RefreshAccounts(r.Context(), tokens)
-	items, _ = s.store.ListAccounts(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"refreshed": refreshed, "errors": publicRefreshErrors(errorsList), "items": publicAccounts(items)})
+	writeJSON(w, http.StatusOK, map[string]any{"refreshed": refreshed, "errors": publicRefreshErrors(errorsList)})
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -232,12 +242,28 @@ func (s *Server) handleListLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	ids := compactStrings(strings.Split(r.URL.Query().Get("ids"), ","))
 	includeDetail := len(ids) > 0 || boolFromAny(r.URL.Query().Get("detail"))
-	items, err := s.store.ListLogs(r.Context(), strings.TrimSpace(r.URL.Query().Get("type")), ids, includeDetail)
+	if len(ids) > 0 {
+		items, err := s.store.ListLogs(r.Context(), strings.TrimSpace(r.URL.Query().Get("type")), ids, includeDetail)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items), "page": 1, "page_size": len(items)})
+		return
+	}
+	query := storage.LogListQuery{
+		Page:          queryInt(r, "page", 1),
+		PageSize:      queryInt(r, "page_size", 25),
+		Query:         strings.TrimSpace(r.URL.Query().Get("query")),
+		Type:          strings.TrimSpace(r.URL.Query().Get("type")),
+		IncludeDetail: includeDetail,
+	}
+	items, total, err := s.store.ListLogsPage(r.Context(), query)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "page": query.Page, "page_size": query.PageSize})
 }
 
 func (s *Server) handleDeleteLogs(w http.ResponseWriter, r *http.Request) {
@@ -376,4 +402,16 @@ func publicRefreshErrors(items []map[string]string) []map[string]string {
 func accountTokenRef(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])[:24]
+}
+
+func queryInt(r *http.Request, key string, fallback int) int {
+	value := strings.TrimSpace(r.URL.Query().Get(key))
+	if value == "" {
+		return fallback
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil || number < 1 {
+		return fallback
+	}
+	return number
 }
