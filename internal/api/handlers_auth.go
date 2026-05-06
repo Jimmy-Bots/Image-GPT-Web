@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -19,9 +20,14 @@ type loginRequest struct {
 }
 
 type registerRequest struct {
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	Password string `json:"password"`
+	Email            string `json:"email"`
+	Name             string `json:"name"`
+	Password         string `json:"password"`
+	VerificationCode string `json:"verification_code"`
+}
+
+type registerSendCodeRequest struct {
+	Email string `json:"email"`
 }
 
 type userCreateRequest struct {
@@ -51,7 +57,7 @@ type userUpdateRequest struct {
 	PermanentQuota     *int         `json:"permanent_quota"`
 	TemporaryQuota     *int         `json:"temporary_quota"`
 	TemporaryQuotaDate *string      `json:"temporary_quota_date"`
-	AddPermanentQuota   *int        `json:"add_permanent_quota"`
+	AddPermanentQuota  *int         `json:"add_permanent_quota"`
 }
 
 type userBatchRequest struct {
@@ -167,19 +173,49 @@ func loginClientIP(r *http.Request) string {
 	return strings.TrimSpace(r.RemoteAddr)
 }
 
+func (s *Server) handleRegisterStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := s.publicRegisterStatus(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": status})
+}
+
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	count, err := s.store.CountUsers(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
-	if count > 0 && !s.cfg.AllowPublicRegistration {
-		writeError(w, http.StatusForbidden, "registration_disabled", "public registration is disabled")
-		return
-	}
 	var req registerRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	req.Email = normalizeRegistrationEmail(req.Email)
+	req.Name = strings.TrimSpace(req.Name)
+	req.Password = strings.TrimSpace(req.Password)
+	req.VerificationCode = strings.TrimSpace(req.VerificationCode)
+	if req.Email == "" || req.Name == "" || req.Password == "" || req.VerificationCode == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "email, name, password and verification code are required")
+		return
+	}
+	settings, err := s.store.GetSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	if err := s.ensurePublicRegistrationAllowed(r.Context(), settings); err != nil {
+		writeError(w, http.StatusForbidden, "registration_disabled", err.Error())
+		return
+	}
+	if err := validateRegisterEmail(req.Email, settings); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if err := s.regCodes.Verify(req.Email, req.VerificationCode); err != nil {
+		writeError(w, http.StatusBadRequest, "verification_failed", err.Error())
 		return
 	}
 	role := domain.RoleUser
@@ -203,6 +239,75 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"user": user, "token": token, "expires_at": expiresAt})
+}
+
+func (s *Server) handleRegisterSendCode(w http.ResponseWriter, r *http.Request) {
+	var req registerSendCodeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	email := normalizeRegistrationEmail(req.Email)
+	if email == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "email is required")
+		return
+	}
+	settings, err := s.store.GetSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	if err := s.ensurePublicRegistrationAllowed(r.Context(), settings); err != nil {
+		writeError(w, http.StatusForbidden, "registration_disabled", err.Error())
+		return
+	}
+	if err := validateRegisterEmail(email, settings); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if _, err := s.store.GetUserByEmail(r.Context(), email); err == nil {
+		writeError(w, http.StatusConflict, "email_exists", "email is already registered")
+		return
+	} else if !errors.Is(err, storage.ErrNotFound) {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	if remaining := s.regCodes.CooldownRemaining(email, s.registerCodeCooldown(email, settings)); remaining > 0 {
+		writeError(w, http.StatusTooManyRequests, "register_code_cooldown", fmt.Sprintf("please wait %ds before requesting another code", int(remaining.Seconds())+1))
+		return
+	}
+	cfg := smtpMailConfigFromSettings(settings)
+	if err := validateSMTPMailConfig(cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "smtp_config_invalid", err.Error())
+		return
+	}
+	code := generateVerificationCode()
+	s.regCodes.Put(email, code)
+	subject := "GPT Image Web 注册验证码"
+	body := strings.Join([]string{
+		"你的注册验证码如下：",
+		"",
+		fmt.Sprintf("验证码：%s", code),
+		"",
+		"该验证码 10 分钟内有效，仅用于 GPT Image Web 注册。",
+	}, "\n")
+	if err := sendSMTPMail(r.Context(), cfg, email, subject, body); err != nil {
+		s.regCodes.Delete(email)
+		s.addLog(r, "auth", "注册验证码发送失败", map[string]any{
+			"status": "failed",
+			"email":  email,
+			"ip":     loginClientIP(r),
+			"error":  err.Error(),
+		})
+		writeError(w, http.StatusBadRequest, "register_send_code_failed", err.Error())
+		return
+	}
+	s.addLog(r, "auth", "注册验证码已发送", map[string]any{
+		"status": "sent",
+		"email":  email,
+		"ip":     loginClientIP(r),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -282,14 +387,14 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	update := storage.UserUpdate{
-		Email: req.Email,
-		Name: req.Name,
-		Role: req.Role,
-		QuotaUnlimited: req.QuotaUnlimited,
-		PermanentQuota: req.PermanentQuota,
-		TemporaryQuota: req.TemporaryQuota,
+		Email:              req.Email,
+		Name:               req.Name,
+		Role:               req.Role,
+		QuotaUnlimited:     req.QuotaUnlimited,
+		PermanentQuota:     req.PermanentQuota,
+		TemporaryQuota:     req.TemporaryQuota,
 		TemporaryQuotaDate: req.TemporaryQuotaDate,
-		AddPermanentQuota: req.AddPermanentQuota,
+		AddPermanentQuota:  req.AddPermanentQuota,
 	}
 	if req.Password != nil {
 		hash, err := auth.HashPassword(*req.Password)
@@ -513,6 +618,7 @@ func (s *Server) createUser(ctx context.Context, email string, name string, pass
 	if role == domain.RoleAdmin {
 		user.QuotaUnlimited = true
 	} else {
+		defaultTemporaryQuota := s.defaultNewUserTemporaryQuota(ctx)
 		if quotaUnlimited != nil {
 			user.QuotaUnlimited = *quotaUnlimited
 		}
@@ -521,9 +627,13 @@ func (s *Server) createUser(ctx context.Context, email string, name string, pass
 		}
 		if temporaryQuota != nil {
 			user.TemporaryQuota = maxInt(0, *temporaryQuota)
+		} else if defaultTemporaryQuota > 0 {
+			user.TemporaryQuota = defaultTemporaryQuota
 		}
 		if dailyTemporaryQuota != nil {
 			user.DailyTemporaryQuota = maxInt(0, *dailyTemporaryQuota)
+		} else if user.TemporaryQuota > 0 {
+			user.DailyTemporaryQuota = user.TemporaryQuota
 		}
 		if user.TemporaryQuota > 0 {
 			user.TemporaryQuotaDate = quotaDayString(time.Now())
@@ -535,6 +645,18 @@ func (s *Server) createUser(ctx context.Context, email string, name string, pass
 		return domain.User{}, err
 	}
 	return user, nil
+}
+
+func (s *Server) defaultNewUserTemporaryQuota(ctx context.Context) int {
+	settings, err := s.store.GetSettings(ctx)
+	if err != nil {
+		return 0
+	}
+	return maxInt(0, intMapValue(settings, "default_new_user_temporary_quota"))
+}
+
+func normalizeRegistrationEmail(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func (s *Server) ensureUserAPIKey(ctx context.Context, user domain.User, name string, reset bool) (domain.APIKey, string, error) {

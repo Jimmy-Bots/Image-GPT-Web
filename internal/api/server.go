@@ -30,6 +30,7 @@ type Server struct {
 	register *registerManager
 	autoRef  *accountAutoRefresher
 	backup   *backupManager
+	regCodes *registerCodeStore
 }
 
 func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
@@ -40,6 +41,7 @@ func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
 		sessions: auth.NewSessionSigner(cfg.SessionSecret, time.Duration(cfg.SessionTTLHours)*time.Hour),
 		pool:     pool,
 		limiter:  newLoginLimiter(cfg.LoginRateLimitMax, time.Duration(cfg.LoginRateLimitWindowSec)*time.Second),
+		regCodes: newRegisterCodeStore(10 * time.Minute),
 	}
 	s.upstream = NewChatGPTUpstream(store, pool, cfg.ProxyURL)
 	if upstreamImpl, ok := s.upstream.(*ChatGPTUpstream); ok {
@@ -84,7 +86,9 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /version", s.handleVersion)
+	mux.HandleFunc("GET /auth/register/status", s.handleRegisterStatus)
 	mux.HandleFunc("POST /auth/login", s.handleLogin)
+	mux.HandleFunc("POST /auth/register/send-code", s.handleRegisterSendCode)
 	mux.HandleFunc("POST /auth/register", s.handleRegister)
 	mux.HandleFunc("POST /auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/me", s.handleMe)

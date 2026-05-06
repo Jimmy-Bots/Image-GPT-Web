@@ -270,7 +270,7 @@ func (s *Store) CountUsers(ctx context.Context) (int, error) {
 func (s *Store) CreateUser(ctx context.Context, user domain.User) error {
 	_, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO users (id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, created_at, updated_at, last_login_at)
+		`INSERT INTO users (id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, daily_temporary_quota, created_at, updated_at, last_login_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		user.ID,
 		normalizeEmail(user.Email),
@@ -1306,6 +1306,11 @@ func defaultSettings() map[string]any {
 		"image_retention_days":              30,
 		"image_poll_timeout_secs":           120,
 		"image_account_concurrency":         1,
+		"default_new_user_temporary_quota":  10,
+		"public_registration_enabled":       false,
+		"register_code_cooldown_seconds":    60,
+		"register_allowed_email_domains":    []any{},
+		"register_max_ordinary_users":       0,
 		"auto_remove_invalid_accounts":      false,
 		"auto_remove_rate_limited_accounts": false,
 		"log_levels":                        []any{},
