@@ -14,17 +14,18 @@ import (
 )
 
 type accountAutoRefresher struct {
-	store    *storage.Store
-	upstream Upstream
-	stop     chan struct{}
-	done     chan struct{}
-	stopOnce sync.Once
-	runMu    sync.Mutex
-	running  bool
-	cursor   int
-	stateMu  sync.RWMutex
-	nextRun  time.Time
-	lastRun  accountAutoRefreshState
+	store     *storage.Store
+	upstream  Upstream
+	logWriter structuredLogWriter
+	stop      chan struct{}
+	done      chan struct{}
+	stopOnce  sync.Once
+	runMu     sync.Mutex
+	running   bool
+	cursor    int
+	stateMu   sync.RWMutex
+	nextRun   time.Time
+	lastRun   accountAutoRefreshState
 }
 
 const (
@@ -58,6 +59,10 @@ func newAccountAutoRefresher(store *storage.Store, upstream Upstream) *accountAu
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}
+}
+
+func (r *accountAutoRefresher) SetLogWriter(writer structuredLogWriter) {
+	r.logWriter = writer
 }
 
 func (r *accountAutoRefresher) Start() {
@@ -130,6 +135,13 @@ func (r *accountAutoRefresher) runOnce() {
 	accounts, err := r.store.ListAccounts(ctx)
 	if err != nil {
 		log.Printf("account_auto_refresh list_accounts_failed err=%v", err)
+		r.emitLog(ctx, "自动刷新失败", map[string]any{
+			"mode":       "auto",
+			"status":     "failed",
+			"stage":      "list_accounts",
+			"error":      err.Error(),
+			"started_at": startedAt.Format(time.RFC3339),
+		})
 		r.recordRun(accountAutoRefreshState{
 			LastStartedAt:  startedAt.Format(time.RFC3339),
 			LastFinishedAt: time.Now().UTC().Format(time.RFC3339),
@@ -162,11 +174,44 @@ func (r *accountAutoRefresher) runOnce() {
 	if len(errorsList) > 0 {
 		state.LastError = summarizeAutoRefreshErrors(errorsList)
 		r.recordRun(state)
+		r.emitLog(ctx, "自动刷新完成", map[string]any{
+			"mode":         "auto",
+			"status":       "partial_failed",
+			"selected":     len(tokens),
+			"limited":      limitedCount,
+			"normal":       normalCount,
+			"refreshed":    refreshed,
+			"failed":       len(errorsList),
+			"duration_ms":  state.LastDurationMS,
+			"error":        state.LastError,
+			"failed_items": refreshErrorSummaries(errorsList),
+			"started_at":   state.LastStartedAt,
+			"finished_at":  state.LastFinishedAt,
+		})
 		log.Printf("account_auto_refresh done refreshed=%d failed=%d", refreshed, len(errorsList))
 		return
 	}
 	r.recordRun(state)
+	r.emitLog(ctx, "自动刷新完成", map[string]any{
+		"mode":        "auto",
+		"status":      "success",
+		"selected":    len(tokens),
+		"limited":     limitedCount,
+		"normal":      normalCount,
+		"refreshed":   refreshed,
+		"failed":      0,
+		"duration_ms": state.LastDurationMS,
+		"started_at":  state.LastStartedAt,
+		"finished_at": state.LastFinishedAt,
+	})
 	log.Printf("account_auto_refresh done refreshed=%d failed=0", refreshed)
+}
+
+func (r *accountAutoRefresher) emitLog(ctx context.Context, summary string, detail map[string]any) {
+	if r == nil || r.logWriter == nil {
+		return
+	}
+	r.logWriter(ctx, "account", summary, detail)
 }
 
 func (r *accountAutoRefresher) pickTokens(accounts []domain.Account) ([]string, int, int) {

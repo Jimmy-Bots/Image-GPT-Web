@@ -41,12 +41,16 @@ func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
 		limiter:  newLoginLimiter(cfg.LoginRateLimitMax, time.Duration(cfg.LoginRateLimitWindowSec)*time.Second),
 	}
 	s.upstream = NewChatGPTUpstream(store, pool, cfg.ProxyURL)
+	if upstreamImpl, ok := s.upstream.(*ChatGPTUpstream); ok {
+		upstreamImpl.SetLogWriter(s.addLogContext)
+	}
 	s.register = newRegisterManager(cfg, store, s.upstream)
 	if err := s.bootstrap(context.Background()); err != nil {
 		return nil, err
 	}
 	s.tasks = NewTaskQueue(store, s.upstream, cfg.ImagesDir, cfg.BaseURL, cfg.ImageWorkerCount, cfg.ImageQueueSize)
 	s.autoRef = newAccountAutoRefresher(store, s.upstream)
+	s.autoRef.SetLogWriter(s.addLogContext)
 	s.autoRef.Start()
 	return s, nil
 }

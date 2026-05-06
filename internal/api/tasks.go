@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -94,10 +95,19 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		err    error
 	)
 	for attempt := 1; attempt <= maxImageTaskAttempts; attempt++ {
+		attemptCtx := withStructuredLog(ctx, q.addLogContext, "task", map[string]any{
+			"task_id":   job.TaskID,
+			"owner_id":  job.OwnerID,
+			"mode":      job.Mode,
+			"model":     imageTaskModel(job),
+			"size":      imageTaskSize(job),
+			"log_kind":  "image_attempt",
+			"queue_try": attempt,
+		})
 		if job.Mode == "edit" {
-			result, err = q.upstream.EditImage(ctx, job.Edit)
+			result, err = q.upstream.EditImage(attemptCtx, job.Edit)
 		} else {
-			result, err = q.upstream.GenerateImage(ctx, job.Gen)
+			result, err = q.upstream.GenerateImage(attemptCtx, job.Gen)
 		}
 		if err == nil {
 			break
@@ -121,6 +131,31 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	log.Printf("image_task success id=%s owner=%s mode=%s items=%d archived=%d base_url_configured=%t", job.TaskID, job.OwnerID, job.Mode, imageResultCount(result), saved, q.baseURL != "")
 	data := result["data"]
 	_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskSuccess, jsonData(data), "")
+}
+
+func (q *TaskQueue) addLogContext(ctx context.Context, logType string, summary string, detail map[string]any) {
+	payload, _ := json.Marshal(detail)
+	_ = q.store.AddLog(ctx, domain.SystemLog{
+		ID:      randomLogID(),
+		Time:    time.Now().UTC(),
+		Type:    logType,
+		Summary: summary,
+		Detail:  payload,
+	})
+}
+
+func imageTaskModel(job taskJob) string {
+	if job.Mode == "edit" {
+		return job.Edit.Model
+	}
+	return job.Gen.Model
+}
+
+func imageTaskSize(job taskJob) string {
+	if job.Mode == "edit" {
+		return job.Edit.Size
+	}
+	return job.Gen.Size
 }
 
 type imageTaskCreateRequest struct {
