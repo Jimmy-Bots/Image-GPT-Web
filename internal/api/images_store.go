@@ -28,6 +28,13 @@ type storedImageMeta struct {
 	OwnerID       string    `json:"owner_id,omitempty"`
 }
 
+type storedReferenceMeta struct {
+	OriginalName string    `json:"original_name,omitempty"`
+	ContentType  string    `json:"content_type,omitempty"`
+	StoredAt     time.Time `json:"stored_at,omitempty"`
+	OwnerID      string    `json:"owner_id,omitempty"`
+}
+
 func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -254,6 +261,64 @@ func readImageMeta(path string) storedImageMeta {
 		return storedImageMeta{}
 	}
 	return meta
+}
+
+func writeReferenceMeta(path string, meta storedReferenceMeta) {
+	payload, err := json.Marshal(meta)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(imageMetaPath(path), payload, 0o644)
+}
+
+func persistReferenceImage(root string, image UploadImage, ownerID string) (string, error) {
+	if len(image.Data) == 0 {
+		return "", fmt.Errorf("reference image data is empty")
+	}
+	sum := sha256.Sum256(image.Data)
+	now := time.Now().UTC()
+	ext := filepath.Ext(strings.TrimSpace(image.Name))
+	if ext == "" {
+		ext = contentTypeExtension(image.ContentType)
+	}
+	if ext == "" {
+		ext = ".bin"
+	}
+	rel := filepath.ToSlash(filepath.Join(
+		now.Format("2006"),
+		now.Format("01"),
+		now.Format("02"),
+		fmt.Sprintf("%d_%s%s", now.Unix(), hex.EncodeToString(sum[:])[:16], ext),
+	))
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, image.Data, 0o644); err != nil {
+		return "", err
+	}
+	writeReferenceMeta(path, storedReferenceMeta{
+		OriginalName: strings.TrimSpace(image.Name),
+		ContentType:  strings.TrimSpace(image.ContentType),
+		StoredAt:     now,
+		OwnerID:      strings.TrimSpace(ownerID),
+	})
+	return rel, nil
+}
+
+func contentTypeExtension(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ""
+	}
 }
 
 func matchImageDateScope(createdAt time.Time, scope string) bool {

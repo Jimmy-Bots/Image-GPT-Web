@@ -584,7 +584,7 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	req, ok := parseImageEditPayload(w, r)
+	req, ok := s.parseImageEditPayload(w, r, identity.ID)
 	if !ok {
 		return
 	}

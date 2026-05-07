@@ -196,7 +196,7 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	req, ok := parseImageEditPayload(w, r)
+	req, ok := s.parseImageEditPayload(w, r, identity.ID)
 	if !ok {
 		return
 	}
@@ -516,10 +516,13 @@ func truncateForLog(value string, max int) string {
 	return string(runes[:max]) + "..."
 }
 
-func parseImageEditPayload(w http.ResponseWriter, r *http.Request) (ImageEditPayload, bool) {
+func (s *Server) parseImageEditPayload(w http.ResponseWriter, r *http.Request, ownerID string) (ImageEditPayload, bool) {
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return ImageEditPayload{}, false
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
 	}
 	req := ImageEditPayload{
 		Prompt:         strings.TrimSpace(r.FormValue("prompt")),
@@ -558,10 +561,20 @@ func parseImageEditPayload(w http.ResponseWriter, r *http.Request) (ImageEditPay
 			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return ImageEditPayload{}, false
 		}
+		storedPath, err := persistReferenceImage(s.cfg.ReferenceImagesDir, UploadImage{
+			Name:        header.Filename,
+			ContentType: header.Header.Get("Content-Type"),
+			Data:        data,
+		}, ownerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "reference_store_failed", err.Error())
+			return ImageEditPayload{}, false
+		}
 		req.Images = append(req.Images, UploadImage{
 			Name:        header.Filename,
 			ContentType: header.Header.Get("Content-Type"),
 			Data:        data,
+			StoredPath:  storedPath,
 		})
 	}
 	return req, true

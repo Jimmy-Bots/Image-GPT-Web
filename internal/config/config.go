@@ -18,6 +18,7 @@ type Config struct {
 	BackupsDir                      string
 	WebDir                          string
 	ImagesDir                       string
+	ReferenceImagesDir              string
 	DatabasePath                    string
 	DBMaxOpenConns                  int
 	ProxyURL                        string
@@ -66,6 +67,7 @@ func Load() (Config, error) {
 		BackupsDir:                      envString("CHATGPT2API_BACKUPS_DIR", filepath.Join(dataDir, "backups")),
 		WebDir:                          envString("CHATGPT2API_WEB_DIR", "./web/dist"),
 		ImagesDir:                       envString("CHATGPT2API_IMAGES_DIR", filepath.Join(dataDir, "images")),
+		ReferenceImagesDir:              envString("CHATGPT2API_REFERENCES_DIR", filepath.Join(dataDir, "references")),
 		DatabasePath:                    dbPath,
 		DBMaxOpenConns:                  envInt("CHATGPT2API_DB_MAX_OPEN_CONNS", 16, 1),
 		ProxyURL:                        envString("CHATGPT2API_PROXY_URL", ""),
@@ -102,6 +104,9 @@ func Load() (Config, error) {
 	}
 	if err := os.MkdirAll(cfg.ImagesDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create images dir: %w", err)
+	}
+	if err := os.MkdirAll(cfg.ReferenceImagesDir, 0o755); err != nil {
+		return Config{}, fmt.Errorf("create references dir: %w", err)
 	}
 	if err := os.MkdirAll(cfg.BackupsDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create backups dir: %w", err)
