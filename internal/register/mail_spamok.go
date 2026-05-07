@@ -120,9 +120,15 @@ func (p *SpamOKMailProvider) WaitForCode(ctx context.Context, mailbox Mailbox) (
 	if err != nil {
 		return "", err
 	}
+	waitStartedAt := parseMailTime(stringValue(mailbox.Meta["_wait_for_new_mail_after"]))
+	newMailFallbackAfter := 10 * time.Second
 	seen := mailboxSeenRefs(mailbox)
 	for {
-		code, ref, err := p.fetchLatestCode(waitCtx, prefix, seen)
+		notBefore := waitStartedAt
+		if !waitStartedAt.IsZero() && time.Since(waitStartedAt) >= newMailFallbackAfter {
+			notBefore = time.Time{}
+		}
+		code, ref, err := p.fetchLatestCode(waitCtx, prefix, seen, notBefore)
 		if err != nil {
 			return "", err
 		}
@@ -156,12 +162,12 @@ func (p *SpamOKMailProvider) mailboxPrefix(mailbox Mailbox) (string, error) {
 	return prefix, nil
 }
 
-func (p *SpamOKMailProvider) fetchLatestCode(ctx context.Context, prefix string, seen map[string]struct{}) (string, string, error) {
+func (p *SpamOKMailProvider) fetchLatestCode(ctx context.Context, prefix string, seen map[string]struct{}, notBefore time.Time) (string, string, error) {
 	body, err := p.requestAPI(ctx, prefix)
 	if err != nil {
 		return "", "", err
 	}
-	code, ref, found, err := p.extractCodeFromAPI(body, seen)
+	code, ref, found, err := p.extractCodeFromAPI(body, seen, notBefore)
 	if err == nil {
 		if found {
 			return code, ref, nil
@@ -267,7 +273,7 @@ type spamOKEmailItem struct {
 	DateSystem     string `json:"dateSystem"`
 }
 
-func (p *SpamOKMailProvider) extractCodeFromAPI(body []byte, seen map[string]struct{}) (string, string, bool, error) {
+func (p *SpamOKMailProvider) extractCodeFromAPI(body []byte, seen map[string]struct{}, notBefore time.Time) (string, string, bool, error) {
 	var payload spamOKEmailBox
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", "", false, err
@@ -314,6 +320,10 @@ func (p *SpamOKMailProvider) extractCodeFromAPI(body []byte, seen map[string]str
 			continue
 		}
 		if _, ok := seen[ref]; ok {
+			continue
+		}
+		if !notBefore.IsZero() && item.at.Before(notBefore.Add(-2*time.Second)) {
+			seen[ref] = struct{}{}
 			continue
 		}
 		if item.code != "" {

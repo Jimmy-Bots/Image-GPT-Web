@@ -783,6 +783,99 @@ func TestSpamOKMailProviderWaitForCodePrefersLatestMail(t *testing.T) {
 	}
 }
 
+func TestSpamOKMailProviderWaitForCodeSkipsOlderMailAndWaitsForNewerCode(t *testing.T) {
+	var calls int32
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			current := atomic.AddInt32(&calls, 1)
+			body := `{"address":"vqphv9ioc","subscribed":false,"mails":[{"id":65212172,"subject":"Your temporary OpenAI login code","toDomain":"spamok.com","toLocal":"vqphv9ioc","date":"2026-05-07T12:27:38Z","dateSystem":"2026-05-07T12:27:40.665458Z","messagePreview":"Enter this temporary verification code to continue: 185146."}]}`
+			if current > 1 {
+				body = `{"address":"vqphv9ioc","subscribed":false,"mails":[{"id":65220066,"subject":"Your temporary OpenAI login code","toDomain":"spamok.com","toLocal":"vqphv9ioc","date":"2026-05-08T12:27:45Z","dateSystem":"2026-05-08T12:27:45Z","messagePreview":"Enter this temporary verification code to continue: 682766."},{"id":65212172,"subject":"Your temporary OpenAI login code","toDomain":"spamok.com","toLocal":"vqphv9ioc","date":"2026-05-07T12:27:38Z","dateSystem":"2026-05-07T12:27:40.665458Z","messagePreview":"Enter this temporary verification code to continue: 185146."}]}`
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    r,
+			}, nil
+		}),
+	}
+
+	provider, err := NewSpamOKMailProvider(SpamOKConfig{
+		BaseURL:        "https://spamok.test",
+		APIBaseURL:     "https://api.spamok.test/v2",
+		Domain:         "spamok.com",
+		RequestTimeout: time.Second,
+		WaitTimeout:    2 * time.Second,
+		WaitInterval:   10 * time.Millisecond,
+		HTTPClient:     client,
+	}, &deterministicRandom{})
+	if err != nil {
+		t.Fatalf("NewSpamOKMailProvider() error = %v", err)
+	}
+
+	code, err := provider.WaitForCode(context.Background(), Mailbox{
+		Address: "vqphv9ioc@spamok.com",
+		Meta: map[string]any{
+			"_wait_for_new_mail_after": "2026-05-08T12:27:42Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("WaitForCode() error = %v", err)
+	}
+	if code != "682766" {
+		t.Fatalf("expected newer spamok code, got %s", code)
+	}
+	if atomic.LoadInt32(&calls) < 2 {
+		t.Fatalf("expected provider to poll for a newer mail, calls=%d", calls)
+	}
+}
+
+func TestSpamOKMailProviderWaitForCodeFallsBackToOlderLatestAfterTenSeconds(t *testing.T) {
+	var calls int32
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			atomic.AddInt32(&calls, 1)
+			body := `{"address":"vqphv9ioc","subscribed":false,"mails":[{"id":65212172,"subject":"Your temporary OpenAI login code","toDomain":"spamok.com","toLocal":"vqphv9ioc","date":"2026-05-07T12:27:38Z","dateSystem":"2026-05-07T12:27:40.665458Z","messagePreview":"Enter this temporary verification code to continue: 185146."}]}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    r,
+			}, nil
+		}),
+	}
+
+	provider, err := NewSpamOKMailProvider(SpamOKConfig{
+		BaseURL:        "https://spamok.test",
+		APIBaseURL:     "https://api.spamok.test/v2",
+		Domain:         "spamok.com",
+		RequestTimeout: time.Second,
+		WaitTimeout:    2 * time.Second,
+		WaitInterval:   10 * time.Millisecond,
+		HTTPClient:     client,
+	}, &deterministicRandom{})
+	if err != nil {
+		t.Fatalf("NewSpamOKMailProvider() error = %v", err)
+	}
+
+	code, err := provider.WaitForCode(context.Background(), Mailbox{
+		Address: "vqphv9ioc@spamok.com",
+		Meta: map[string]any{
+			"_wait_for_new_mail_after": time.Now().UTC().Add(-11 * time.Second).Format(time.RFC3339Nano),
+		},
+	})
+	if err != nil {
+		t.Fatalf("WaitForCode() error = %v", err)
+	}
+	if code != "185146" {
+		t.Fatalf("expected fallback older spamok code, got %s", code)
+	}
+	if atomic.LoadInt32(&calls) < 1 {
+		t.Fatalf("expected at least one poll call")
+	}
+}
+
 func TestExtractSpamOKCodeFromHTMLIgnoresScriptsAndFindsVisibleCode(t *testing.T) {
 	source := `
 	<html>

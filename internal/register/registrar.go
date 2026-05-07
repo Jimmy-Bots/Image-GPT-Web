@@ -312,7 +312,12 @@ func (l *LoginOnly) LoginAndExchangeTokens(ctx context.Context, email string, pa
 }
 
 func (l *LoginOnly) loginAndExchange(ctx context.Context, state flowState, email string, password string) (tokenBundle, error) {
-	emptyMailbox := Mailbox{Address: email}
+	emptyMailbox := Mailbox{
+		Address: email,
+		Meta: map[string]any{
+			"_wait_for_new_mail_after": time.Now().UTC().Format(time.RFC3339Nano),
+		},
+	}
 	mail := l.mail
 	if mail == nil {
 		mail = loginOnlyMailProvider{}
