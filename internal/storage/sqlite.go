@@ -1790,20 +1790,20 @@ func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string
 		WHERE 1=1`
 	args := make([]any, 0, len(ids)+1)
 	if ownerID = strings.TrimSpace(ownerID); ownerID != "" {
-		query += ` AND owner_id = ?`
+		query += ` AND image_tasks.owner_id = ?`
 		args = append(args, ownerID)
 	}
 	if !includeDeleted {
-		query += ` AND deleted_at IS NULL`
+		query += ` AND image_tasks.deleted_at IS NULL`
 	}
 	if len(ids) > 0 {
 		placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
-		query += ` AND id IN (` + placeholders + `)`
+		query += ` AND image_tasks.id IN (` + placeholders + `)`
 		for _, id := range ids {
 			args = append(args, id)
 		}
 	}
-	query += ` ORDER BY updated_at DESC LIMIT 200`
+	query += ` ORDER BY image_tasks.updated_at DESC LIMIT 200`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

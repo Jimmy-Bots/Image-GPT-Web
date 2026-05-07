@@ -1421,7 +1421,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
         const result = parseTaskData(task.data)[0];
         return {
           ...item,
-          phase: task.phase === "waiting_slot" ? "waiting_slot" : task.phase === "processing" ? "task" : task.phase === "finished" ? item.phase : item.phase,
+          phase: taskPhaseToWorkbenchPhase(task, item.phase),
           status: taskStatusToWorkbench(task.status),
           startedAt: item.startedAt || task.created_at || turn.createdAt,
           image: result || item.image,
@@ -1489,7 +1489,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
         setTurns((current) => current.map((row) => {
           if (row.id !== turn.id) return row;
           const images = row.images.map((image) => image.id === imageId
-            ? { ...image, phase: task.phase === "waiting_slot" ? "waiting_slot" : task.phase === "processing" ? "task" : image.phase, taskId: task.id, status: taskStatusToWorkbench(task.status), startedAt: image.startedAt || task.created_at || turn.createdAt, image: parseTaskData(task.data)[0] || image.image, error: task.error }
+            ? { ...image, phase: taskPhaseToWorkbenchPhase(task, image.phase), taskId: task.id, status: taskStatusToWorkbench(task.status), startedAt: image.startedAt || task.created_at || turn.createdAt, image: parseTaskData(task.data)[0] || image.image, error: task.error }
             : image);
           return { ...row, images, status: deriveTurnStatus(images), error: images.find((image) => image.error)?.error };
         }));
@@ -1943,6 +1943,17 @@ function workbenchWaitingHint(item: WorkbenchItem) {
   if (elapsed < 12000) return "通常会在 1 分钟左右开始处理。";
   if (elapsed < 45000) return "当前高峰，通常会在 1 分钟左右开始处理，请耐心等待。";
   return "当前高峰，已经排队一会儿了，通常仍会在约 1 分钟内进入处理。";
+}
+
+function taskPhaseToWorkbenchPhase(task: ImageTask, current?: WorkbenchItem["phase"]): WorkbenchItem["phase"] {
+  if (task.phase === "waiting_slot") return "waiting_slot";
+  if (task.phase === "processing") return "task";
+  if (task.phase === "queued") return "waiting_slot";
+  if (task.phase === "finished") return "task";
+  if (task.status === "queued") return "waiting_slot";
+  if (task.status === "running" || task.status === "success" || task.status === "error") return "task";
+  if (current && current !== "submitting") return current;
+  return "task";
 }
 
 function sizeAspectClass(size?: string) {
