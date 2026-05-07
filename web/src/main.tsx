@@ -9,6 +9,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  History,
   ImageIcon,
   ImagePlus,
   LayoutDashboard,
@@ -1182,7 +1183,7 @@ function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefres
 function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refreshUserState, canRefreshArchive, setTasks, setTaskTotal, setImages, toast, openLightbox }: { token: string; identity: Identity; user: User | null; modelPolicy: ModelPolicy; quotaLabel: string; refreshUserState: () => Promise<void>; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState("");
-  const [count, setCount] = useState(1);
+  const [countInput, setCountInput] = useState("1");
   const [asyncMode, setAsyncMode] = useState(true);
   const [submitShortcut, setSubmitShortcut] = useState<"enter" | "ctrl_enter">(() => loadSubmitShortcut());
   const [refs, setRefs] = useState<ReferenceImage[]>([]);
@@ -1190,6 +1191,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [historyReady, setHistoryReady] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const storageKey = useMemo(() => `${workbenchStoragePrefix}${identity.id || identity.key_id || "legacy"}`, [identity.id, identity.key_id]);
   const quota = quotaLabel;
@@ -1223,10 +1225,6 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
     if (!historyReady) return;
     saveWorkbenchState(storageKey, { version: 1, activeTurnId, turns: serializeWorkbenchTurns(turns) });
   }, [activeTurnId, historyReady, storageKey, turns]);
-
-  useEffect(() => {
-    setCount((current) => Math.max(1, Math.min(maxCount, current || 1)));
-  }, [maxCount]);
 
   useEffect(() => {
     localStorage.setItem(workbenchSubmitShortcutKey, submitShortcut);
@@ -1426,9 +1424,10 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
     if (!canSubmit) return;
     const text = prompt.trim();
     if (!text) return;
+    const countValue = normalizeWorkbenchCount(countInput, maxCount);
+    setCountInput(String(countValue));
     setBusy(true);
     try {
-      const countValue = Math.max(1, Math.min(maxCount, count || 1));
       const sizeValue = normalizeWorkbenchSize(size);
       const mode = refs.length ? "edit" : "generate";
       const startedAt = new Date().toISOString();
@@ -1512,7 +1511,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
   function reuseTurn(turn: WorkbenchTurn) {
     setPrompt(turn.prompt);
       setSize(normalizeWorkbenchSize(turn.size));
-      setCount(turn.count);
+      setCountInput(String(normalizeWorkbenchCount(turn.count, maxCount)));
       setRefs(turn.refs);
     setActiveTurnId(turn.id);
   }
@@ -1529,33 +1528,55 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
 
   function scrollToTurn(id: string) {
     setActiveTurnId(id);
+    setHistoryOpen(false);
     requestAnimationFrame(() => document.getElementById(`turn-${id}`)?.scrollIntoView({ block: "start", behavior: "smooth" }));
+  }
+
+  function createDraft() {
+    setActiveTurnId(null);
+    setPrompt("");
+    setRefs([]);
+    setHistoryOpen(false);
+  }
+
+  function clearHistory() {
+    if (!confirm("清空当前页面的图片记录？")) return;
+    setTurns([]);
+    setActiveTurnId(null);
+    setHistoryOpen(false);
+    localStorage.removeItem(storageKey);
+  }
+
+  function renderHistoryList(compactList = false) {
+    return (
+      <div className={classNames("history-list", compactList && "history-list-drawer")}>
+        {!hasHistory ? <div className="history-empty">暂无图片记录</div> : turns.map((turn) => (
+          <button key={turn.id} className={classNames("history-item", activeTurnId === turn.id && "active")} onClick={() => scrollToTurn(turn.id)}>
+            <strong>{turn.prompt}</strong>
+            <span>{turn.count} 张 · {turnModeLabel(turn.mode)} · {fmtDate(turn.createdAt)}</span>
+            <Badge value={turn.status} />
+          </button>
+        ))}
+      </div>
+    );
   }
 
   return (
     <div className="creator-page">
       <aside className="creator-rail">
         <div className="rail-actions">
-          <button onClick={() => { setActiveTurnId(null); setPrompt(""); setRefs([]); }}><MessageSquarePlus size={16} />新建</button>
-          <IconButton title="清空历史" disabled={!turns.length} onClick={() => {
-            if (!confirm("清空当前页面的图片记录？")) return;
-            setTurns([]);
-            setActiveTurnId(null);
-            localStorage.removeItem(storageKey);
-          }}><Trash2 size={15} /></IconButton>
+          <button onClick={createDraft}><MessageSquarePlus size={16} />新建</button>
+          <IconButton title="清空历史" disabled={!turns.length} onClick={clearHistory}><Trash2 size={15} /></IconButton>
         </div>
-        <div className="history-list">
-          {!hasHistory ? <div className="history-empty">暂无图片记录</div> : turns.map((turn) => (
-            <button key={turn.id} className={classNames("history-item", activeTurnId === turn.id && "active")} onClick={() => scrollToTurn(turn.id)}>
-              <strong>{turn.prompt}</strong>
-              <span>{turn.count} 张 · {turnModeLabel(turn.mode)} · {fmtDate(turn.createdAt)}</span>
-              <Badge value={turn.status} />
-            </button>
-          ))}
-        </div>
+        {renderHistoryList()}
       </aside>
 
       <main className="creator-main">
+        <div className="mobile-workbench-toolbar">
+          <button className="ghost compact" onClick={() => setHistoryOpen(true)}><History size={15} />历史记录 <span>{turns.length}</span></button>
+          <button className="compact" onClick={createDraft}><MessageSquarePlus size={15} />新建</button>
+          <IconButton title="清空历史" disabled={!turns.length} onClick={clearHistory}><Trash2 size={15} /></IconButton>
+        </div>
         <div className={classNames("creation-feed", !hasHistory && "empty")}>
           {!hasHistory ? (
             <div className="workbench-empty">
@@ -1645,7 +1666,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
                 {activeTaskCount > 0 ? <span className="composer-pill running"><LoaderCircle className="spin" size={14} />{activeTaskCount} 处理中</span> : null}
                 <label className="composer-field"><span>模型</span><input value={model} readOnly /></label>
                 <label className="composer-field small-field"><span>比例</span><select value={size} onChange={(event) => setSize(event.target.value)}><option value="">默认</option><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></label>
-                <label className="composer-field count-field"><span>张数</span><input type="number" min={1} max={maxCount} value={count} onChange={(event) => setCount(Math.max(1, Math.min(maxCount, Number(event.target.value) || 1)))} /></label>
+                <label className="composer-field count-field"><span>张数</span><input type="number" min={1} max={maxCount} inputMode="numeric" value={countInput} onChange={(event) => setCountInput(event.target.value)} onBlur={() => setCountInput(String(normalizeWorkbenchCount(countInput, maxCount)))} /></label>
                 <span className="composer-pill subtle">上限 {maxCount}</span>
                 <label className="composer-field shortcut-field"><span>提交</span><select value={submitShortcut} onChange={(event) => setSubmitShortcut(event.target.value === "enter" ? "enter" : "ctrl_enter")}><option value="ctrl_enter">Ctrl+Enter</option><option value="enter">Enter</option></select></label>
               </div>
@@ -1660,6 +1681,24 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
           </div>
         </section>
       </main>
+      {historyOpen ? (
+        <div className="history-drawer-overlay" onClick={() => setHistoryOpen(false)}>
+          <section className="history-drawer" onClick={(event) => event.stopPropagation()}>
+            <div className="history-drawer-head">
+              <div>
+                <strong>历史记录</strong>
+                <span>{turns.length ? `${turns.length} 条生成记录` : "还没有图片记录"}</span>
+              </div>
+              <IconButton title="关闭" onClick={() => setHistoryOpen(false)}><X size={16} /></IconButton>
+            </div>
+            <div className="history-drawer-actions">
+              <button onClick={createDraft}><MessageSquarePlus size={15} />新建</button>
+              <button className="ghost" disabled={!turns.length} onClick={clearHistory}><Trash2 size={15} />清空</button>
+            </div>
+            {renderHistoryList(true)}
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1765,6 +1804,13 @@ function normalizeWorkbenchSize(size?: string) {
   const value = (size || "").trim();
   if (value === "auto" || value === "default" || value === "默认") return "";
   return value;
+}
+
+function normalizeWorkbenchCount(value: string | number, maxCount: number) {
+  const limit = Math.max(1, Number(maxCount) || 1);
+  const count = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isFinite(count) || count < 1) return 1;
+  return Math.min(limit, Math.floor(count));
 }
 
 function workbenchRequestSize(size?: string) {
