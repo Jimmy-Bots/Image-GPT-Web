@@ -269,3 +269,11 @@ func smtpSecurityMode(cfg smtpMailConfig) string {
 	}
 	return "plain"
 }
+
+func TestOnlySMTPMailConfigFromSettingsMap(settings map[string]any) smtpMailConfig {
+	return smtpMailConfigFromSettings(settings)
+}
+
+func TestOnlySendSMTPMail(ctx context.Context, cfg smtpMailConfig, to string, subject string, plainBody string) error {
+	return sendSMTPMail(ctx, cfg, to, subject, plainBody)
+}

@@ -73,6 +73,7 @@ func defaultRegisterBatchConfig(cfg config.Config) register.BatchConfig {
 			"inbucket_api_base": strings.TrimSpace(cfg.RegisterInbucketAPIBase),
 			"inbucket_domains":  append([]string(nil), cfg.RegisterInbucketDomains...),
 			"random_subdomain":  cfg.RegisterInbucketRandomSubdomain,
+			"spamok_base_url":   "https://spamok.com",
 		},
 	}.WithDefaults()
 }
@@ -218,14 +219,7 @@ func (m *registerManager) finishBatch(state register.BatchState, err error) {
 }
 
 func (m *registerManager) newRegistrar(cfg register.BatchConfig) (*register.Registrar, error) {
-	provider, err := register.NewInbucketMailProvider(register.InbucketConfig{
-		APIBase:         stringMapValue(cfg.Mail, "inbucket_api_base"),
-		Domains:         stringSliceMapValue(cfg.Mail, "inbucket_domains"),
-		RandomSubdomain: boolMapValue(cfg.Mail, "random_subdomain"),
-		RequestTimeout:  30 * time.Second,
-		WaitTimeout:     30 * time.Second,
-		WaitInterval:    2 * time.Second,
-	}, nil)
+	provider, err := registerProviderFromMailConfig(cfg.Mail)
 	if err != nil {
 		return nil, err
 	}
@@ -383,6 +377,9 @@ func batchConfigFromSettings(cfg config.Config, settings map[string]any) registe
 		out.CheckInterval = time.Duration(seconds) * time.Second
 	}
 	mail := mapAnyValue(registerSettings["mail"])
+	if provider := stringMapValue(mail, "provider"); provider != "" {
+		out.Mail["provider"] = provider
+	}
 	if base := stringMapValue(mail, "inbucket_api_base"); base != "" {
 		out.Mail["inbucket_api_base"] = base
 	}
@@ -392,7 +389,34 @@ func batchConfigFromSettings(cfg config.Config, settings map[string]any) registe
 	if _, ok := mail["random_subdomain"]; ok {
 		out.Mail["random_subdomain"] = boolMapValue(mail, "random_subdomain")
 	}
+	if base := stringMapValue(mail, "spamok_base_url"); base != "" {
+		out.Mail["spamok_base_url"] = base
+	}
 	return out.WithDefaults()
+}
+
+func registerProviderFromMailConfig(mail map[string]any) (register.MailProvider, error) {
+	switch strings.ToLower(strings.TrimSpace(stringMapValue(mail, "provider"))) {
+	case "", "inbucket":
+		return register.NewInbucketMailProvider(register.InbucketConfig{
+			APIBase:         stringMapValue(mail, "inbucket_api_base"),
+			Domains:         stringSliceMapValue(mail, "inbucket_domains"),
+			RandomSubdomain: boolMapValue(mail, "random_subdomain"),
+			RequestTimeout:  30 * time.Second,
+			WaitTimeout:     30 * time.Second,
+			WaitInterval:    2 * time.Second,
+		}, nil)
+	case "spamok":
+		return register.NewSpamOKMailProvider(register.SpamOKConfig{
+			BaseURL:        fallbackString(stringMapValue(mail, "spamok_base_url"), "https://spamok.com"),
+			Domain:         "spamok.com",
+			RequestTimeout: 30 * time.Second,
+			WaitTimeout:    30 * time.Second,
+			WaitInterval:   2 * time.Second,
+		}, nil)
+	default:
+		return nil, fmt.Errorf("unsupported mail provider: %s", strings.TrimSpace(stringMapValue(mail, "provider")))
+	}
 }
 
 func cloneMap(src map[string]any) map[string]any {

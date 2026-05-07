@@ -1803,9 +1803,11 @@ func defaultSettings() map[string]any {
 			"target_available":       10,
 			"check_interval_seconds": 5,
 			"mail": map[string]any{
+				"provider":          "inbucket",
 				"inbucket_api_base": "",
 				"inbucket_domains":  []any{},
 				"random_subdomain":  true,
+				"spamok_base_url":   "https://spamok.com",
 			},
 		},
 	}

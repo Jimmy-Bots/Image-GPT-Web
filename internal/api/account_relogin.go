@@ -67,19 +67,7 @@ func (u *ChatGPTUpstream) reloginAccount(ctx context.Context, accessToken string
 func registerMailProviderFromSettings(settings map[string]any) register.MailProvider {
 	registerSettings := mapAnyValue(settings["register"])
 	mail := mapAnyValue(registerSettings["mail"])
-	apiBase := strings.TrimSpace(stringMapValue(mail, "inbucket_api_base"))
-	domains := stringSliceMapValue(mail, "inbucket_domains")
-	if apiBase == "" || len(domains) == 0 {
-		return nil
-	}
-	provider, err := register.NewInbucketMailProvider(register.InbucketConfig{
-		APIBase:         apiBase,
-		Domains:         domains,
-		RandomSubdomain: boolMapValue(mail, "random_subdomain"),
-		RequestTimeout:  30 * time.Second,
-		WaitTimeout:     30 * time.Second,
-		WaitInterval:    2 * time.Second,
-	}, nil)
+	provider, err := registerProviderFromMailConfig(mail)
 	if err != nil {
 		return nil
 	}

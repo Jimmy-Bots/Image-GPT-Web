@@ -403,3 +403,70 @@ func TestInbucketMailProviderCreatesMailboxAndWaitsForCode(t *testing.T) {
 		t.Fatalf("expected delete request after consuming code, methods=%s", methods)
 	}
 }
+
+func TestSpamOKMailProviderCreatesMailboxAndWaitsForCode(t *testing.T) {
+	var requestedPaths []string
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requestedPaths = append(requestedPaths, r.URL.Path)
+			body := `{"address":"aaaaa0a","subscribed":false,"mails":[{"id":123,"subject":"OpenAI Verification code","messagePreview":"Your Verification code: 654321","toDomain":"spamok.com","toLocal":"aaaaa0a","dateSystem":"2026-05-07T09:44:06.501656Z"}]}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    r,
+			}, nil
+		}),
+	}
+
+	provider, err := NewSpamOKMailProvider(SpamOKConfig{
+		BaseURL:        "https://spamok.test",
+		APIBaseURL:     "https://api.spamok.test/v2",
+		Domain:         "spamok.com",
+		RequestTimeout: time.Second,
+		WaitTimeout:    time.Second,
+		WaitInterval:   10 * time.Millisecond,
+		HTTPClient:     client,
+	}, &deterministicRandom{})
+	if err != nil {
+		t.Fatalf("NewSpamOKMailProvider() error = %v", err)
+	}
+
+	mailbox, err := provider.CreateMailbox(context.Background())
+	if err != nil {
+		t.Fatalf("CreateMailbox() error = %v", err)
+	}
+	if mailbox.Address != "aaaaa0a@spamok.com" {
+		t.Fatalf("unexpected mailbox address: %s", mailbox.Address)
+	}
+	if got := strings.TrimSpace(stringValue(mailbox.Meta["mailbox_url"])); got != "https://spamok.test/aaaaa0a" {
+		t.Fatalf("unexpected mailbox url: %s", got)
+	}
+
+	code, err := provider.WaitForCode(context.Background(), mailbox)
+	if err != nil {
+		t.Fatalf("WaitForCode() error = %v", err)
+	}
+	if code != "654321" {
+		t.Fatalf("unexpected code: %s", code)
+	}
+	if strings.Join(requestedPaths, ",") != "/v2/EmailBox/aaaaa0a" {
+		t.Fatalf("unexpected requested paths: %v", requestedPaths)
+	}
+}
+
+func TestExtractSpamOKCodeFromHTMLIgnoresScriptsAndFindsVisibleCode(t *testing.T) {
+	source := `
+	<html>
+		<head>
+			<script>var build = "123456";</script>
+			<style>.x{content:"654321"}</style>
+		</head>
+		<body>
+			<div>OpenAI Verification code: 112233</div>
+		</body>
+	</html>`
+	if got := extractSpamOKCodeFromHTML(source); got != "112233" {
+		t.Fatalf("expected visible code, got %q", got)
+	}
+}

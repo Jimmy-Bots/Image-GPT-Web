@@ -192,9 +192,11 @@ export type RegisterConfig = {
   target_available?: number;
   check_interval_seconds?: number;
   mail?: {
+    provider?: "inbucket" | "spamok";
     inbucket_api_base?: string;
     inbucket_domains?: string[];
     random_subdomain?: boolean;
+    spamok_base_url?: string;
   };
 };
 
@@ -208,9 +210,11 @@ export type RegisterState = {
     target_available: number;
     check_interval: number | string;
     mail?: {
+      provider?: "inbucket" | "spamok";
       inbucket_api_base?: string;
       inbucket_domains?: string[];
       random_subdomain?: boolean;
+      spamok_base_url?: string;
     };
   };
   enabled: boolean;
