@@ -39,7 +39,7 @@ func (u *ChatGPTUpstream) reloginAccount(ctx context.Context, accessToken string
 	if strings.TrimSpace(cfg.ProxyURL) == "" {
 		cfg.ProxyURL = ""
 	}
-	loginOnly, err := register.NewLoginOnlyWithMail(cfg, registerMailProviderFromSettings(settings))
+	loginOnly, err := register.NewLoginOnlyWithMail(cfg, registerMailProviderForRelogin(settings, email))
 	if err != nil {
 		return accountReloginResult{}, err
 	}
@@ -67,6 +67,26 @@ func (u *ChatGPTUpstream) reloginAccount(ctx context.Context, accessToken string
 func registerMailProviderFromSettings(settings map[string]any) register.MailProvider {
 	registerSettings := mapAnyValue(settings["register"])
 	mail := mapAnyValue(registerSettings["mail"])
+	provider, err := registerProviderFromMailConfig(mail)
+	if err != nil {
+		return nil
+	}
+	return provider
+}
+
+func registerMailProviderForRelogin(settings map[string]any, email string) register.MailProvider {
+	registerSettings := mapAnyValue(settings["register"])
+	mail := cloneAnyMap(mapAnyValue(registerSettings["mail"]))
+	if mail == nil {
+		mail = map[string]any{}
+	}
+	addr := strings.ToLower(strings.TrimSpace(email))
+	switch {
+	case strings.HasSuffix(addr, "@spamok.com"):
+		mail["provider"] = "spamok"
+	default:
+		mail["provider"] = "inbucket"
+	}
 	provider, err := registerProviderFromMailConfig(mail)
 	if err != nil {
 		return nil

@@ -392,6 +392,9 @@ func batchConfigFromSettings(cfg config.Config, settings map[string]any) registe
 	if base := stringMapValue(mail, "spamok_base_url"); base != "" {
 		out.Mail["spamok_base_url"] = base
 	}
+	if apiBase := stringMapValue(mail, "spamok_api_base_url"); apiBase != "" {
+		out.Mail["spamok_api_base_url"] = apiBase
+	}
 	return out.WithDefaults()
 }
 
@@ -409,6 +412,7 @@ func registerProviderFromMailConfig(mail map[string]any) (register.MailProvider,
 	case "spamok":
 		return register.NewSpamOKMailProvider(register.SpamOKConfig{
 			BaseURL:        fallbackString(stringMapValue(mail, "spamok_base_url"), "https://spamok.com"),
+			APIBaseURL:     fallbackString(stringMapValue(mail, "spamok_api_base_url"), "https://api.spamok.com/v2"),
 			Domain:         "spamok.com",
 			RequestTimeout: 30 * time.Second,
 			WaitTimeout:    30 * time.Second,
