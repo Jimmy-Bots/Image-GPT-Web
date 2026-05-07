@@ -1874,13 +1874,18 @@ function ActivityPanel({ token, tasks, setTasks, setTaskTotal, logs, setLogs, op
 function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast }: { token: string; tasks: ImageTask[]; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; openLightbox: (src: string, title?: string) => void; toast: (type: Toast["type"], message: string) => void }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
+  const [mode, setMode] = useState("");
+  const [modelFilter, setModelFilter] = useState("");
+  const [sizeFilter, setSizeFilter] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [detailTaskID, setDetailTaskID] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-  const [includeDeleted, setIncludeDeleted] = useState(false);
+  const [deletedScope, setDeletedScope] = useState("active");
   const [total, setTotal] = useState(0);
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   useHorizontalWheelScroll(tableWrapRef);
@@ -1888,10 +1893,11 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
   const selectedSet = new Set(selected);
   const allVisibleSelected = rows.length > 0 && rows.every((task) => selectedSet.has(task.id));
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  useEffect(() => setPage(1), [query, status, pageSize, includeDeleted]);
+  const taskQueryParams = { page, pageSize, query, status, mode, model: modelFilter, size: sizeFilter, dateFrom, dateTo, deleted: deletedScope === "deleted" ? "only" : "", includeDeleted: deletedScope !== "active" };
+  useEffect(() => setPage(1), [query, status, mode, modelFilter, sizeFilter, dateFrom, dateTo, pageSize, deletedScope]);
   useEffect(() => {
     let cancelled = false;
-    api.tasks(token, [], { page, pageSize, query, status, includeDeleted }).then((data) => {
+    api.tasks(token, [], taskQueryParams).then((data) => {
       if (cancelled) return;
       setTasks(data.items || []);
       setTotal(Number(data.total || 0));
@@ -1901,7 +1907,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
     return () => {
       cancelled = true;
     };
-  }, [token, page, pageSize, query, status, includeDeleted, setTaskTotal]);
+  }, [token, page, pageSize, query, status, mode, modelFilter, sizeFilter, dateFrom, dateTo, deletedScope, setTaskTotal]);
   const detailTask = detailTaskID ? rows.find((task) => task.id === detailTaskID) || null : null;
   function toggleVisible(checked: boolean) {
     const visibleIDs = rows.map((task) => task.id);
@@ -1909,7 +1915,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
   }
   async function ensureTaskDetail(task: ImageTask) {
     if (task.data !== undefined) return task;
-    const data = await api.tasks(token, [task.id]);
+    const data = await api.tasks(token, [task.id], { includeDeleted: Boolean(task.deleted_at) });
     const item = (data.items || [])[0];
     if (!item) {
       throw new Error("任务详情不存在");
@@ -1950,7 +1956,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
   async function removeSelected() {
     if (!selected.length || !confirm(`删除 ${selected.length} 个图片任务？`)) return;
     const data = await api.deleteTasks(token, selected);
-    const next = await api.tasks(token, [], { page, pageSize, query, status, includeDeleted });
+    const next = await api.tasks(token, [], taskQueryParams);
     setTasks(next.items || []);
     setTotal(Number(next.total || 0));
     setTaskTotal(Number(next.total || 0));
@@ -1962,9 +1968,14 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
       <div className="filters filters-card activity-filters">
         <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务 ID、模型、提示词、状态" />
         <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>queued</option><option>running</option><option>success</option><option>error</option></select></ControlField>
+        <ControlField label="模式"><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="">全部模式</option><option value="generate">generate</option><option value="edit">edit</option></select></ControlField>
+        <ControlField label="模型"><input value={modelFilter} onChange={(event) => setModelFilter(event.target.value)} placeholder="gpt-image-2" /></ControlField>
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
-        <ControlField label="范围"><select value={includeDeleted ? "all" : "active"} onChange={(event) => setIncludeDeleted(event.target.value === "all")}><option value="active">未删除</option><option value="all">含已删除</option></select></ControlField>
-        <div className="filter-actions"><button className="secondary" onClick={() => api.tasks(token, [], { page, pageSize, query, status, includeDeleted }).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
+        <ControlField label="范围"><select value={deletedScope} onChange={(event) => setDeletedScope(event.target.value)}><option value="active">未删除</option><option value="all">含已删除</option><option value="deleted">仅已删除</option></select></ControlField>
+        <ControlField label="比例"><input value={sizeFilter} onChange={(event) => setSizeFilter(event.target.value)} placeholder="auto / 1:1" /></ControlField>
+        <ControlField label="开始"><input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></ControlField>
+        <ControlField label="结束"><input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></ControlField>
+        <div className="filter-actions"><button className="secondary" onClick={() => api.tasks(token, [], taskQueryParams).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="ghost small" onClick={() => { setQuery(""); setStatus(""); setMode(""); setModelFilter(""); setSizeFilter(""); setDateFrom(""); setDateTo(""); setDeletedScope("active"); }}>重置</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
       </div>
       <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
         const first = parseTaskData(task.data)[0];
@@ -2076,6 +2087,13 @@ function TaskEventTimeline({ events, loading, error }: { events: TaskEvent[]; lo
 function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: SystemLog[]; setLogs: React.Dispatch<React.SetStateAction<SystemLog[]>>; toast: (type: Toast["type"], message: string) => void }) {
   const [type, setType] = useState("");
   const [query, setQuery] = useState("");
+  const [logStatus, setLogStatus] = useState("");
+  const [endpoint, setEndpoint] = useState("");
+  const [actorID, setActorID] = useState("");
+  const [subjectID, setSubjectID] = useState("");
+  const [taskID, setTaskID] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [detailLogID, setDetailLogID] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
@@ -2088,10 +2106,11 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
   const selectedSet = new Set(selected);
   const allVisibleSelected = rows.length > 0 && rows.every((log) => selectedSet.has(log.id));
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  useEffect(() => setPage(1), [type, query, pageSize]);
+  const logQueryParams = { page, pageSize, query, status: logStatus, endpoint, actorID, subjectID, taskID, dateFrom, dateTo };
+  useEffect(() => setPage(1), [type, query, logStatus, endpoint, actorID, subjectID, taskID, dateFrom, dateTo, pageSize]);
   useEffect(() => {
     let cancelled = false;
-    api.logs(token, type, [], { page, pageSize, query }).then((data) => {
+    api.logs(token, type, [], logQueryParams).then((data) => {
       if (cancelled) return;
       setLogs(data.items || []);
       setTotal(Number(data.total || 0));
@@ -2100,14 +2119,14 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
     return () => {
       cancelled = true;
     };
-  }, [token, type, page, pageSize, query]);
+  }, [token, type, page, pageSize, query, logStatus, endpoint, actorID, subjectID, taskID, dateFrom, dateTo]);
   const detailLog = detailLogID ? rows.find((log) => log.id === detailLogID) || null : null;
   function toggleVisible(checked: boolean) {
     const visibleIDs = rows.map((log) => log.id);
     setSelected((prev) => checked ? Array.from(new Set([...prev, ...visibleIDs])) : prev.filter((id) => !visibleIDs.includes(id)));
   }
   async function load() {
-    const data = await api.logs(token, type, [], { page, pageSize, query });
+    const data = await api.logs(token, type, [], logQueryParams);
     setLogs(data.items || []);
     setTotal(Number(data.total || 0));
   }
@@ -2143,21 +2162,30 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
   return (
     <>
       <div className="filters filters-card activity-filters">
-        <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索日志内容、接口、模型" />
+        <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索日志内容、接口、模型、用户或任务" />
         <ControlField label="类型"><select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="account">账号</option><option value="task">任务拒绝</option><option value="register">注册</option><option value="backup">备份</option></select></ControlField>
+        <ControlField label="状态"><select value={logStatus} onChange={(event) => setLogStatus(event.target.value)}><option value="">全部状态</option><option value="success">success</option><option value="failed">failed</option><option value="error">error</option><option value="partial_failed">partial_failed</option></select></ControlField>
+        <ControlField label="端点"><input value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="/v1/images/generations" /></ControlField>
+        <ControlField label="任务 ID"><input value={taskID} onChange={(event) => setTaskID(event.target.value)} placeholder="task id" /></ControlField>
+        <ControlField label="用户 ID"><input value={subjectID} onChange={(event) => setSubjectID(event.target.value)} placeholder="subject / owner" /></ControlField>
+        <ControlField label="操作者"><input value={actorID} onChange={(event) => setActorID(event.target.value)} placeholder="actor id" /></ControlField>
+        <ControlField label="开始"><input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></ControlField>
+        <ControlField label="结束"><input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></ControlField>
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
-        <div className="filter-actions"><button className="secondary" onClick={() => load().catch((error) => toast("error", error.message))}>刷新日志</button><button className="danger" disabled={!selected.length} onClick={() => clear().catch((error) => toast("error", error.message))}>清理选中</button></div>
+        <div className="filter-actions"><button className="secondary" onClick={() => load().catch((error) => toast("error", error.message))}>刷新日志</button><button className="ghost small" onClick={() => { setQuery(""); setType(""); setLogStatus(""); setEndpoint(""); setActorID(""); setSubjectID(""); setTaskID(""); setDateFrom(""); setDateTo(""); }}>重置</button><button className="danger" disabled={!selected.length} onClick={() => clear().catch((error) => toast("error", error.message))}>清理选中</button></div>
       </div>
-      <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table log-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前日志" /></th><th>Time</th><th>Type</th><th>Status</th><th>Endpoint</th><th>Model</th><th>耗时</th><th>Summary</th><th></th></tr></thead><tbody>{rows.map((log) => {
+      <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table log-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前日志" /></th><th>Time</th><th>Type</th><th>Status</th><th>Endpoint</th><th>Subject</th><th>Actor</th><th>Task</th><th>耗时</th><th>Summary</th><th></th></tr></thead><tbody>{rows.map((log) => {
         const detail = logDetail(log);
         return (
           <tr key={log.id}>
             <td><input type="checkbox" checked={selectedSet.has(log.id)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, log.id] : prev.filter((id) => id !== log.id))} /></td>
             <td>{fmtDate(log.time)}</td>
             <td>{log.type}</td>
-            <td>{detail.status ? <Badge value={String(detail.status)} /> : "-"}</td>
-            <td>{String(detail.endpoint || log.summary || "-")}</td>
-            <td>{String(detail.model || "-")}</td>
+            <td>{log.status || detail.status ? <Badge value={String(log.status || detail.status)} /> : "-"}</td>
+            <td>{String(log.endpoint || detail.endpoint || log.summary || "-")}</td>
+            <td>{String(log.subject_id || detail.subject_id || detail.owner_id || detail.user_id || "-")}</td>
+            <td>{String(log.actor_id || detail.actor_id || "-")}</td>
+            <td>{String(log.task_id || detail.task_id || "-")}</td>
             <td>{formatDuration(detail.duration_ms)}</td>
             <td>{log.summary}</td>
             <td><button className="ghost small" onClick={() => openDetail(log)}>{loadingDetail === log.id ? "加载" : "详情"}</button></td>
@@ -2195,18 +2223,20 @@ function LogDetail({ log }: { log: SystemLog }) {
         <DetailItem label="日志 ID" value={log.id} code />
         <DetailItem label="时间" value={fmtDate(log.time)} />
         <DetailItem label="类型" value={log.type} />
-        <DetailItem label="接口" value={String(detail.endpoint || log.summary)} />
+        <DetailItem label="接口" value={String(log.endpoint || detail.endpoint || log.summary)} />
         <DetailItem label="模型" value={String(detail.model || "-")} />
-        <DetailItem label="状态" value={String(detail.status || "-")} />
+        <DetailItem label="状态" value={String(log.status || detail.status || "-")} />
         <DetailItem label="生成时间" value={formatDuration(detail.duration_ms)} />
         <DetailItem label="用户" value={String(detail.name || detail.subject_id || "-")} />
-        <DetailItem label="用户 ID" value={String(detail.subject_id || detail.owner_id || "-")} />
+        <DetailItem label="用户 ID" value={String(log.subject_id || detail.subject_id || detail.owner_id || detail.user_id || "-")} />
+        <DetailItem label="操作者" value={String(log.actor_id || detail.actor_id || "-")} />
+        <DetailItem label="任务 ID" value={String(log.task_id || detail.task_id || "-")} code />
         <DetailItem label="请求张数" value={String(detail.requested_count ?? detail.n ?? "-")} />
         <DetailItem label="消耗额度" value={String(detail.quota_used ?? detail.quota_reserved ?? "-")} />
         <DetailItem label="剩余额度" value={String(detail.available_quota ?? "-")} />
       </div>
       {detail.error ? <p className="detail-error">{String(detail.error)}</p> : null}
-      <pre className="detail-json">{safeJSON({ id: log.id, time: log.time, type: log.type, summary: log.summary, detail })}</pre>
+      <pre className="detail-json">{safeJSON({ id: log.id, time: log.time, type: log.type, summary: log.summary, actor_id: log.actor_id, subject_id: log.subject_id, task_id: log.task_id, endpoint: log.endpoint, status: log.status, detail })}</pre>
     </div>
   );
 }

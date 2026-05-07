@@ -99,6 +99,12 @@ func TestImageGenerationURLResponseUsesLocalArchive(t *testing.T) {
 	if !strings.Contains(eventRec.Body.String(), `"type":"submitted"`) || !strings.Contains(eventRec.Body.String(), `"type":"success"`) {
 		t.Fatalf("sync image task events missing lifecycle markers: %s", eventRec.Body.String())
 	}
+	assertLogQueryContains(t, server, map[string]string{
+		"type":      "call",
+		"endpoint":  "/v1/images/generations",
+		"status":    "success",
+		"date_from": "2000-01-01",
+	}, `"endpoint":"/v1/images/generations"`)
 }
 
 type imageArchiveUpstream struct {

@@ -144,10 +144,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			time TEXT NOT NULL,
 			type TEXT NOT NULL,
 			summary TEXT NOT NULL,
-			detail_json TEXT NOT NULL DEFAULT '{}'
+			detail_json TEXT NOT NULL DEFAULT '{}',
+			actor_id TEXT NOT NULL DEFAULT '',
+			subject_id TEXT NOT NULL DEFAULT '',
+			task_id TEXT NOT NULL DEFAULT '',
+			endpoint TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_system_logs_time ON system_logs(time)`,
 		`CREATE INDEX IF NOT EXISTS idx_system_logs_type ON system_logs(type)`,
+		`CREATE INDEX IF NOT EXISTS idx_system_logs_actor_id ON system_logs(actor_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_system_logs_subject_id ON system_logs(subject_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_system_logs_task_id ON system_logs(task_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_system_logs_endpoint ON system_logs(endpoint)`,
+		`CREATE INDEX IF NOT EXISTS idx_system_logs_status ON system_logs(status)`,
 		`CREATE TABLE IF NOT EXISTS image_tasks (
 			owner_id TEXT NOT NULL,
 			id TEXT NOT NULL,
@@ -202,6 +212,17 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "accounts", "recovery_error", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	for _, column := range []string{"actor_id", "subject_id", "task_id", "endpoint", "status"} {
+		if err := s.addColumnIfMissing(ctx, "system_logs", column, "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+	}
+	if err := s.ensureLogIndexes(ctx); err != nil {
+		return err
+	}
+	if err := s.backfillLogIndexColumns(ctx); err != nil {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "users", "quota_unlimited", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -311,6 +332,77 @@ func (s *Store) ensureTaskEventsRetainAfterTaskDelete(ctx context.Context) error
 		}
 	}
 	return tx.Commit()
+}
+
+func (s *Store) ensureLogIndexes(ctx context.Context) error {
+	statements := []string{
+		`CREATE INDEX IF NOT EXISTS idx_system_logs_actor_id ON system_logs(actor_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_system_logs_subject_id ON system_logs(subject_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_system_logs_task_id ON system_logs(task_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_system_logs_endpoint ON system_logs(endpoint)`,
+		`CREATE INDEX IF NOT EXISTS idx_system_logs_status ON system_logs(status)`,
+	}
+	for _, stmt := range statements {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) backfillLogIndexColumns(ctx context.Context) error {
+	type item struct {
+		id     string
+		fields logIndexFields
+	}
+
+	lastID := ""
+	for {
+		rows, err := s.db.QueryContext(ctx, `SELECT id, detail_json FROM system_logs WHERE id > ? AND actor_id = '' AND subject_id = '' AND task_id = '' AND endpoint = '' AND status = '' ORDER BY id LIMIT 5000`, lastID)
+		if err != nil {
+			return err
+		}
+		items := make([]item, 0)
+		for rows.Next() {
+			var id string
+			var raw string
+			if err := rows.Scan(&id, &raw); err != nil {
+				rows.Close()
+				return err
+			}
+			items = append(items, item{id: id, fields: logIndexFieldsFromRaw([]byte(raw))})
+			lastID = id
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(items) == 0 {
+			return nil
+		}
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			_, err := tx.ExecContext(ctx, `UPDATE system_logs SET actor_id = ?, subject_id = ?, task_id = ?, endpoint = ?, status = ? WHERE id = ?`,
+				item.fields.ActorID,
+				item.fields.SubjectID,
+				item.fields.TaskID,
+				item.fields.Endpoint,
+				item.fields.Status,
+				item.id,
+			)
+			if err != nil {
+				tx.Rollback()
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
 }
 
 func (s *Store) ensureSingleAPIKeyPerUser(ctx context.Context) error {
@@ -1298,14 +1390,20 @@ func (s *Store) AddLog(ctx context.Context, item domain.SystemLog) error {
 	if len(item.Detail) == 0 {
 		item.Detail = json.RawMessage(`{}`)
 	}
+	fields := logIndexFieldsFromRaw(item.Detail)
 	_, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO system_logs (id, time, type, summary, detail_json) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO system_logs (id, time, type, summary, detail_json, actor_id, subject_id, task_id, endpoint, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID,
 		formatTime(item.Time),
 		item.Type,
 		item.Summary,
 		string(item.Detail),
+		firstNonEmpty(item.ActorID, fields.ActorID),
+		firstNonEmpty(item.SubjectID, fields.SubjectID),
+		firstNonEmpty(item.TaskID, fields.TaskID),
+		firstNonEmpty(item.Endpoint, fields.Endpoint),
+		firstNonEmpty(item.Status, fields.Status),
 	)
 	return err
 }
@@ -1315,7 +1413,7 @@ func (s *Store) ListLogs(ctx context.Context, logType string, ids []string, incl
 	if includeDetail {
 		detailExpr = `detail_json`
 	}
-	query := `SELECT id, time, type, summary, ` + detailExpr + ` FROM system_logs`
+	query := `SELECT id, time, type, summary, actor_id, subject_id, task_id, endpoint, status, ` + detailExpr + ` FROM system_logs`
 	var args []any
 	if logType != "" {
 		query += ` WHERE type = ?`
@@ -1344,7 +1442,7 @@ func (s *Store) ListLogs(ctx context.Context, logType string, ids []string, incl
 		var item domain.SystemLog
 		var at string
 		var detail sql.NullString
-		if err := rows.Scan(&item.ID, &at, &item.Type, &item.Summary, &detail); err != nil {
+		if err := rows.Scan(&item.ID, &at, &item.Type, &item.Summary, &item.ActorID, &item.SubjectID, &item.TaskID, &item.Endpoint, &item.Status, &detail); err != nil {
 			return nil, err
 		}
 		item.Time = parseTime(at)
@@ -1357,6 +1455,50 @@ func (s *Store) ListLogs(ctx context.Context, logType string, ids []string, incl
 		items = []domain.SystemLog{}
 	}
 	return items, rows.Err()
+}
+
+type logIndexFields struct {
+	ActorID   string
+	SubjectID string
+	TaskID    string
+	Endpoint  string
+	Status    string
+}
+
+func logIndexFieldsFromRaw(raw json.RawMessage) logIndexFields {
+	if len(raw) == 0 {
+		return logIndexFields{}
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return logIndexFields{}
+	}
+	return logIndexFields{
+		ActorID:   firstLogString(detail, "actor_id"),
+		SubjectID: firstLogString(detail, "subject_id", "owner_id", "user_id"),
+		TaskID:    firstLogString(detail, "task_id"),
+		Endpoint:  firstLogString(detail, "endpoint"),
+		Status:    firstLogString(detail, "status"),
+	}
+}
+
+func firstLogString(detail map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value := strings.TrimSpace(fmt.Sprint(detail[key]))
+		if value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (s *Store) DeleteLogs(ctx context.Context, ids []string) (int, error) {
@@ -1451,13 +1593,16 @@ func (s *Store) CreateImageTask(ctx context.Context, task domain.ImageTask) erro
 	return err
 }
 
-func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string, includeData bool) ([]domain.ImageTask, error) {
+func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string, includeData bool, includeDeleted bool) ([]domain.ImageTask, error) {
 	dataExpr := `NULL`
 	if includeData {
 		dataExpr = `data_json`
 	}
-	query := `SELECT owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, ` + dataExpr + `, error, created_at, updated_at, deleted_at, deleted_by FROM image_tasks WHERE owner_id = ? AND deleted_at IS NULL`
+	query := `SELECT owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, ` + dataExpr + `, error, created_at, updated_at, deleted_at, deleted_by FROM image_tasks WHERE owner_id = ?`
 	args := []any{ownerID}
+	if !includeDeleted {
+		query += ` AND deleted_at IS NULL`
+	}
 	if len(ids) > 0 {
 		placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
 		query += ` AND id IN (` + placeholders + `)`

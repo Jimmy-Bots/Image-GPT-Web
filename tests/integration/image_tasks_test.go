@@ -209,7 +209,7 @@ func TestImageTasksCanBeDeleted(t *testing.T) {
 		t.Fatalf("deleted task should be missing: %s", detailRec.Body.String())
 	}
 
-	includeDeletedReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks?include_deleted=true&query=task-delete", nil)
+	includeDeletedReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks?deleted=only&mode=generate&model=gpt-image-2&date_from=2000-01-01&query=task-delete", nil)
 	includeDeletedReq.Header.Set("Authorization", "Bearer dev-key")
 	includeDeletedRec := httptest.NewRecorder()
 	server.Routes().ServeHTTP(includeDeletedRec, includeDeletedReq)
@@ -241,6 +241,11 @@ func TestImageTasksCanBeDeleted(t *testing.T) {
 	if !strings.Contains(logRec.Body.String(), `"图片任务删除"`) {
 		t.Fatalf("task deletion audit log missing: %s", logRec.Body.String())
 	}
+	assertLogQueryContains(t, server, map[string]string{
+		"type":    "task",
+		"task_id": "task-delete",
+		"query":   "图片任务删除",
+	}, "图片任务删除")
 }
 
 type taskCaptureUpstream struct {

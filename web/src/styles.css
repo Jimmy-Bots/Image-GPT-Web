@@ -119,7 +119,7 @@ small { display: block; margin-top: 3px; color: #8792a2; font-size: 11px; }
 .filters { display: grid; grid-template-columns: minmax(280px, 1.35fr) repeat(3, minmax(132px, .58fr)); gap: 10px; align-items: end; margin-bottom: 12px; }
 .filters.images-filters { grid-template-columns: minmax(280px, 1.35fr) repeat(3, minmax(132px, .58fr)) minmax(140px, auto); }
 .filters-card { padding: 12px; border: 1px solid #e5ebf3; border-radius: 12px; background: linear-gradient(180deg, #fbfcfe 0%, #f6f9fc 100%); }
-.activity-filters { grid-template-columns: minmax(280px, 1.3fr) 150px 132px 132px minmax(180px, auto); }
+.activity-filters { grid-template-columns: minmax(280px, 1.3fr) repeat(5, minmax(118px, .58fr)) minmax(220px, auto); }
 .control-field { display: grid; gap: 6px; min-width: 0; }
 .control-field span { margin: 0; color: #6d7888; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .control-field-search { min-width: 0; }
@@ -422,14 +422,16 @@ span.composer-pill { display: inline-flex; align-items: center; }
 .task-table tbody td:nth-child(2) { background: #fff; }
 .task-table tbody tr:hover td:nth-child(2) { background: #fbfcfe; }
 .task-table thead th:nth-child(2) { background: #fbfcfe; z-index: 8; }
-.log-table { min-width: 1220px; }
+.log-table { min-width: 1580px; }
 .log-table th:nth-child(2), .log-table td:nth-child(2) { position: sticky; left: 42px; z-index: 4; width: 156px; min-width: 156px; background: inherit; box-shadow: 1px 0 0 #edf2f7; }
 .log-table th:nth-child(3), .log-table td:nth-child(3) { width: 80px; min-width: 80px; }
 .log-table th:nth-child(4), .log-table td:nth-child(4) { width: 92px; min-width: 92px; }
 .log-table th:nth-child(5), .log-table td:nth-child(5) { width: 170px; min-width: 170px; }
-.log-table th:nth-child(6), .log-table td:nth-child(6) { width: 130px; min-width: 130px; }
-.log-table th:nth-child(7), .log-table td:nth-child(7) { width: 86px; min-width: 86px; }
-.log-table th:nth-child(8), .log-table td:nth-child(8) { width: 320px; min-width: 320px; }
+.log-table th:nth-child(6), .log-table td:nth-child(6),
+.log-table th:nth-child(7), .log-table td:nth-child(7),
+.log-table th:nth-child(8), .log-table td:nth-child(8) { width: 170px; min-width: 170px; }
+.log-table th:nth-child(9), .log-table td:nth-child(9) { width: 86px; min-width: 86px; }
+.log-table th:nth-child(10), .log-table td:nth-child(10) { width: 320px; min-width: 320px; }
 .log-table tbody td:nth-child(2) { background: #fff; }
 .log-table tbody tr:hover td:nth-child(2) { background: #fbfcfe; }
 .log-table thead th:nth-child(2) { background: #fbfcfe; z-index: 8; }

@@ -86,11 +86,16 @@ type Account struct {
 }
 
 type SystemLog struct {
-	ID      string          `json:"id"`
-	Time    time.Time       `json:"time"`
-	Type    string          `json:"type"`
-	Summary string          `json:"summary"`
-	Detail  json.RawMessage `json:"detail,omitempty"`
+	ID        string          `json:"id"`
+	Time      time.Time       `json:"time"`
+	Type      string          `json:"type"`
+	Summary   string          `json:"summary"`
+	ActorID   string          `json:"actor_id,omitempty"`
+	SubjectID string          `json:"subject_id,omitempty"`
+	TaskID    string          `json:"task_id,omitempty"`
+	Endpoint  string          `json:"endpoint,omitempty"`
+	Status    string          `json:"status,omitempty"`
+	Detail    json.RawMessage `json:"detail,omitempty"`
 }
 
 type ImageTask struct {

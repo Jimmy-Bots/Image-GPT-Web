@@ -186,14 +186,20 @@ export const api = {
     request<{ item: ApiKey; key: string }>(token, `/api/users/${encodeURIComponent(id)}/api-key/reset`, {
       method: "POST"
     }),
-  tasks: (token: string, ids: string[] = [], params: { page?: number; pageSize?: number; query?: string; status?: string; includeDeleted?: boolean } = {}) =>
+  tasks: (token: string, ids: string[] = [], params: { page?: number; pageSize?: number; query?: string; status?: string; mode?: string; model?: string; size?: string; dateFrom?: string; dateTo?: string; deleted?: string; includeDeleted?: boolean } = {}) =>
     request<PagedResult<ImageTask> & { missing_ids: string[] }>(token, ids.length
-      ? `/api/image-tasks?ids=${encodeURIComponent(ids.join(","))}`
+      ? withQuery("/api/image-tasks", { ids: ids.join(","), include_deleted: params.includeDeleted })
       : withQuery("/api/image-tasks", {
           page: params.page,
           page_size: params.pageSize,
           query: params.query,
           status: params.status,
+          mode: params.mode,
+          model: params.model,
+          size: params.size,
+          date_from: params.dateFrom,
+          date_to: params.dateTo,
+          deleted: params.deleted,
           include_deleted: params.includeDeleted
         })),
   taskEvents: (token: string, id: string) =>
@@ -276,13 +282,20 @@ export const api = {
       body: JSON.stringify({ key })
     }),
   storage: (token: string) => request<{ backend: { type: string; path: string }; health: { status: string } }>(token, "/api/storage/info"),
-  logs: (token: string, type = "", ids: string[] = [], params: { page?: number; pageSize?: number; query?: string } = {}) =>
+  logs: (token: string, type = "", ids: string[] = [], params: { page?: number; pageSize?: number; query?: string; actorID?: string; subjectID?: string; taskID?: string; endpoint?: string; status?: string; dateFrom?: string; dateTo?: string } = {}) =>
     request<PagedResult<SystemLog>>(token, withQuery("/api/logs", {
       type,
       ids: ids.length ? ids.join(",") : "",
       page: ids.length ? undefined : params.page,
       page_size: ids.length ? undefined : params.pageSize,
-      query: ids.length ? undefined : params.query
+      query: ids.length ? undefined : params.query,
+      actor_id: ids.length ? undefined : params.actorID,
+      subject_id: ids.length ? undefined : params.subjectID,
+      task_id: ids.length ? undefined : params.taskID,
+      endpoint: ids.length ? undefined : params.endpoint,
+      status: ids.length ? undefined : params.status,
+      date_from: ids.length ? undefined : params.dateFrom,
+      date_to: ids.length ? undefined : params.dateTo
     })),
   deleteLogs: (token: string, ids: string[]) =>
     request<{ removed: number }>(token, "/api/logs/delete", {

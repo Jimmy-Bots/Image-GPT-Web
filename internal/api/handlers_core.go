@@ -546,6 +546,13 @@ func (s *Server) handleListLogs(w http.ResponseWriter, r *http.Request) {
 		PageSize:      queryInt(r, "page_size", 25),
 		Query:         strings.TrimSpace(r.URL.Query().Get("query")),
 		Type:          strings.TrimSpace(r.URL.Query().Get("type")),
+		ActorID:       strings.TrimSpace(r.URL.Query().Get("actor_id")),
+		SubjectID:     strings.TrimSpace(r.URL.Query().Get("subject_id")),
+		TaskID:        strings.TrimSpace(r.URL.Query().Get("task_id")),
+		Endpoint:      strings.TrimSpace(r.URL.Query().Get("endpoint")),
+		Status:        strings.TrimSpace(r.URL.Query().Get("status")),
+		DateFrom:      strings.TrimSpace(r.URL.Query().Get("date_from")),
+		DateTo:        strings.TrimSpace(r.URL.Query().Get("date_to")),
 		IncludeDetail: includeDetail,
 	}
 	items, total, err := s.store.ListLogsPage(r.Context(), query)

@@ -266,7 +266,7 @@ func (s *Server) handleListImageTasks(w http.ResponseWriter, r *http.Request) {
 	ids := compactStrings(strings.Split(r.URL.Query().Get("ids"), ","))
 	includeData := len(ids) > 0 || boolFromAny(r.URL.Query().Get("detail"))
 	if len(ids) > 0 {
-		items, err := s.store.ListImageTasks(r.Context(), identity.ID, ids, includeData)
+		items, err := s.store.ListImageTasks(r.Context(), identity.ID, ids, includeData, boolFromAny(r.URL.Query().Get("include_deleted")))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 			return
@@ -280,6 +280,12 @@ func (s *Server) handleListImageTasks(w http.ResponseWriter, r *http.Request) {
 		PageSize:       queryInt(r, "page_size", 25),
 		Query:          strings.TrimSpace(r.URL.Query().Get("query")),
 		Status:         strings.TrimSpace(r.URL.Query().Get("status")),
+		Mode:           strings.TrimSpace(r.URL.Query().Get("mode")),
+		Model:          strings.TrimSpace(r.URL.Query().Get("model")),
+		Size:           strings.TrimSpace(r.URL.Query().Get("size")),
+		DateFrom:       strings.TrimSpace(r.URL.Query().Get("date_from")),
+		DateTo:         strings.TrimSpace(r.URL.Query().Get("date_to")),
+		Deleted:        strings.TrimSpace(r.URL.Query().Get("deleted")),
 		IncludeDeleted: boolFromAny(r.URL.Query().Get("include_deleted")),
 	}
 	items, total, err := s.store.ListImageTasksPage(r.Context(), identity.ID, query)
@@ -302,7 +308,7 @@ func (s *Server) handleDeleteImageTasks(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	ids := compactStrings(req.IDs)
-	before, err := s.store.ListImageTasks(r.Context(), identity.ID, ids, false)
+	before, err := s.store.ListImageTasks(r.Context(), identity.ID, ids, false, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
@@ -321,7 +327,7 @@ func (s *Server) handleDeleteImageTasks(w http.ResponseWriter, r *http.Request) 
 		})
 	}
 	if len(deletedIDs) > 0 {
-		s.addLogContext(r.Context(), "task", "图片任务删除", map[string]any{
+		detail := map[string]any{
 			"owner_id":       identity.ID,
 			"name":           identity.Name,
 			"role":           identity.Role,
@@ -330,7 +336,11 @@ func (s *Server) handleDeleteImageTasks(w http.ResponseWriter, r *http.Request) 
 			"requested_ids":  ids,
 			"removed":        removed,
 			"retained_event": true,
-		})
+		}
+		if len(deletedIDs) == 1 {
+			detail["task_id"] = deletedIDs[0]
+		}
+		s.addLogContext(r.Context(), "task", "图片任务删除", detail)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
@@ -351,7 +361,7 @@ func (s *Server) handleListImageTaskEvents(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if len(items) == 0 {
-		tasks, err := s.store.ListImageTasks(r.Context(), identity.ID, []string{taskID}, false)
+		tasks, err := s.store.ListImageTasks(r.Context(), identity.ID, []string{taskID}, false, true)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 			return
@@ -439,7 +449,7 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 	if err := s.store.CreateImageTask(r.Context(), task); err != nil {
 		s.refundImageQuota(r.Context(), identity, receipt)
 		if strings.Contains(err.Error(), "UNIQUE") {
-			items, _ := s.store.ListImageTasks(r.Context(), identity.ID, []string{taskID}, true)
+			items, _ := s.store.ListImageTasks(r.Context(), identity.ID, []string{taskID}, true, false)
 			if len(items) > 0 {
 				writeJSON(w, http.StatusOK, items[0])
 				return

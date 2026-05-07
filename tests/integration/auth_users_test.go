@@ -36,6 +36,11 @@ func TestAdminCreatesUserWithSingleAPIKeyAndPasswordLogin(t *testing.T) {
 		t.Fatalf("create response missing user API key: %s", createRec.Body.String())
 	}
 	assertLogContains(t, server, "user", "创建用户")
+	assertLogQueryContains(t, server, map[string]string{
+		"type":       "user",
+		"subject_id": created.Item.ID,
+		"query":      "创建用户",
+	}, "创建用户")
 
 	loginReq := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"email":"user@example.com","password":"password123"}`))
 	loginReq.Header.Set("Content-Type", "application/json")

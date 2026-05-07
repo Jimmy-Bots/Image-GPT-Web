@@ -147,6 +147,11 @@ export type SystemLog = {
   time: string;
   type: string;
   summary: string;
+  actor_id?: string;
+  subject_id?: string;
+  task_id?: string;
+  endpoint?: string;
+  status?: string;
   detail?: unknown;
 };
 

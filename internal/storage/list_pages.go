@@ -44,6 +44,13 @@ type LogListQuery struct {
 	PageSize      int
 	Query         string
 	Type          string
+	ActorID       string
+	SubjectID     string
+	TaskID        string
+	Endpoint      string
+	Status        string
+	DateFrom      string
+	DateTo        string
 	IncludeDetail bool
 }
 
@@ -52,6 +59,12 @@ type ImageTaskPageQuery struct {
 	PageSize       int
 	Query          string
 	Status         string
+	Mode           string
+	Model          string
+	Size           string
+	DateFrom       string
+	DateTo         string
+	Deleted        string
 	IncludeDeleted bool
 }
 
@@ -160,7 +173,7 @@ func (s *Store) ListLogsPage(ctx context.Context, query LogListQuery) ([]domain.
 	if query.IncludeDetail {
 		detailExpr = `detail_json`
 	}
-	itemsQuery := `SELECT id, time, type, summary, ` + detailExpr + ` FROM system_logs` + where + ` ORDER BY time DESC LIMIT ? OFFSET ?`
+	itemsQuery := `SELECT id, time, type, summary, actor_id, subject_id, task_id, endpoint, status, ` + detailExpr + ` FROM system_logs` + where + ` ORDER BY time DESC LIMIT ? OFFSET ?`
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, itemsQuery, itemsArgs...)
 	if err != nil {
@@ -172,7 +185,7 @@ func (s *Store) ListLogsPage(ctx context.Context, query LogListQuery) ([]domain.
 		var item domain.SystemLog
 		var at string
 		var detail sql.NullString
-		if err := rows.Scan(&item.ID, &at, &item.Type, &item.Summary, &detail); err != nil {
+		if err := rows.Scan(&item.ID, &at, &item.Type, &item.Summary, &item.ActorID, &item.SubjectID, &item.TaskID, &item.Endpoint, &item.Status, &detail); err != nil {
 			return nil, 0, err
 		}
 		item.Time = parseTime(at)
@@ -258,15 +271,43 @@ func buildUserWhere(query UserListQuery) (string, []any) {
 
 func buildLogWhere(query LogListQuery) (string, []any) {
 	clauses := []string{`1=1`}
-	args := make([]any, 0, 4)
+	args := make([]any, 0, 12)
 	if logType := strings.TrimSpace(query.Type); logType != "" {
 		clauses = append(clauses, `type = ?`)
 		args = append(args, logType)
 	}
+	if actorID := strings.TrimSpace(query.ActorID); actorID != "" {
+		clauses = append(clauses, `actor_id = ?`)
+		args = append(args, actorID)
+	}
+	if subjectID := strings.TrimSpace(query.SubjectID); subjectID != "" {
+		clauses = append(clauses, `subject_id = ?`)
+		args = append(args, subjectID)
+	}
+	if taskID := strings.TrimSpace(query.TaskID); taskID != "" {
+		clauses = append(clauses, `task_id = ?`)
+		args = append(args, taskID)
+	}
+	if endpoint := strings.TrimSpace(query.Endpoint); endpoint != "" {
+		clauses = append(clauses, `endpoint = ?`)
+		args = append(args, endpoint)
+	}
+	if status := strings.TrimSpace(query.Status); status != "" {
+		clauses = append(clauses, `status = ?`)
+		args = append(args, status)
+	}
+	if from := strings.TrimSpace(query.DateFrom); from != "" {
+		clauses = append(clauses, `time >= ?`)
+		args = append(args, normalizeDateBoundary(from, false))
+	}
+	if to := strings.TrimSpace(query.DateTo); to != "" {
+		clauses = append(clauses, `time <= ?`)
+		args = append(args, normalizeDateBoundary(to, true))
+	}
 	if text := strings.ToLower(strings.TrimSpace(query.Query)); text != "" {
 		like := "%" + text + "%"
-		clauses = append(clauses, `(LOWER(summary) LIKE ? OR LOWER(detail_json) LIKE ?)`)
-		args = append(args, like, like)
+		clauses = append(clauses, `(LOWER(summary) LIKE ? OR LOWER(detail_json) LIKE ? OR LOWER(actor_id) LIKE ? OR LOWER(subject_id) LIKE ? OR LOWER(task_id) LIKE ? OR LOWER(endpoint) LIKE ? OR LOWER(status) LIKE ?)`)
+		args = append(args, like, like, like, like, like, like, like)
 	}
 	return ` WHERE ` + strings.Join(clauses, ` AND `), args
 }
@@ -274,19 +315,60 @@ func buildLogWhere(query LogListQuery) (string, []any) {
 func buildTaskWhere(ownerID string, query ImageTaskPageQuery) (string, []any) {
 	clauses := []string{`owner_id = ?`}
 	args := []any{ownerID}
-	if !query.IncludeDeleted {
+	switch strings.TrimSpace(query.Deleted) {
+	case "only":
+		clauses = append(clauses, `deleted_at IS NOT NULL`)
+	case "active":
 		clauses = append(clauses, `deleted_at IS NULL`)
+	default:
+		if !query.IncludeDeleted {
+			clauses = append(clauses, `deleted_at IS NULL`)
+		}
 	}
 	if status := strings.TrimSpace(query.Status); status != "" {
 		clauses = append(clauses, `status = ?`)
 		args = append(args, status)
 	}
+	if mode := strings.TrimSpace(query.Mode); mode != "" {
+		clauses = append(clauses, `mode = ?`)
+		args = append(args, mode)
+	}
+	if model := strings.TrimSpace(query.Model); model != "" {
+		clauses = append(clauses, `model = ?`)
+		args = append(args, model)
+	}
+	if size := strings.TrimSpace(query.Size); size != "" {
+		clauses = append(clauses, `size = ?`)
+		args = append(args, size)
+	}
+	if from := strings.TrimSpace(query.DateFrom); from != "" {
+		clauses = append(clauses, `created_at >= ?`)
+		args = append(args, normalizeDateBoundary(from, false))
+	}
+	if to := strings.TrimSpace(query.DateTo); to != "" {
+		clauses = append(clauses, `created_at <= ?`)
+		args = append(args, normalizeDateBoundary(to, true))
+	}
 	if text := strings.ToLower(strings.TrimSpace(query.Query)); text != "" {
 		like := "%" + text + "%"
-		clauses = append(clauses, `(LOWER(id) LIKE ? OR LOWER(mode) LIKE ? OR LOWER(status) LIKE ? OR LOWER(model) LIKE ? OR LOWER(size) LIKE ? OR LOWER(prompt) LIKE ? OR LOWER(error) LIKE ?)`)
-		args = append(args, like, like, like, like, like, like, like)
+		clauses = append(clauses, `(LOWER(id) LIKE ? OR LOWER(mode) LIKE ? OR LOWER(status) LIKE ? OR LOWER(model) LIKE ? OR LOWER(size) LIKE ? OR LOWER(prompt) LIKE ? OR LOWER(error) LIKE ? OR LOWER(deleted_by) LIKE ?)`)
+		args = append(args, like, like, like, like, like, like, like, like)
 	}
 	return ` WHERE ` + strings.Join(clauses, ` AND `), args
+}
+
+func normalizeDateBoundary(value string, end bool) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	if len(value) == len("2006-01-02") && strings.Count(value, "-") == 2 {
+		if end {
+			return value + "T23:59:59.999999999Z"
+		}
+		return value + "T00:00:00Z"
+	}
+	return value
 }
 
 func countWithWhere(ctx context.Context, db *sql.DB, base string, where string, args []any) (int, error) {
