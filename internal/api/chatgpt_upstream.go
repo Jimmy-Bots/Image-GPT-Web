@@ -565,6 +565,9 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 				replacedToken := token
 				if err == nil {
 					_, err = u.store.UpdateAccountRemoteInfo(jobCtx, token, info)
+					if err == nil {
+						_ = u.store.SetAccountRecovery(jobCtx, token, "", "")
+					}
 				}
 				if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
 					_ = u.store.SetAccountRecovery(jobCtx, token, "recovering", err.Error())
@@ -583,6 +586,7 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 						}
 						if err == nil {
 							_ = u.store.SetAccountRecovery(jobCtx, reloginResult.NewToken, "", "")
+							_ = u.store.SetAccountRecovery(jobCtx, token, "", "")
 							emitStructuredLog(jobCtx, "账号重登录刷新成功", map[string]any{
 								"status":        "relogin_success",
 								"token_ref":     accountTokenRef(reloginResult.NewToken),

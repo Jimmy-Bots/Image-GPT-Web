@@ -748,6 +748,41 @@ func TestSpamOKMailProviderWaitForCodeFallsBackToAddressWhenMetaMissing(t *testi
 	}
 }
 
+func TestSpamOKMailProviderWaitForCodePrefersLatestMail(t *testing.T) {
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body := `{"address":"vqphv9ioc","subscribed":false,"mails":[{"id":65220066,"subject":"Your temporary OpenAI login code","fromDisplay":"noreply@tm.openai.com","fromDomain":"tm.openai.com","fromLocal":"noreply","toDomain":"spamok.com","toLocal":"vqphv9ioc","date":"2026-05-07T16:03:51Z","dateSystem":"2026-05-07T16:03:53.284283Z","messagePreview":"Enter this temporary verification code to continue: 682766.","secondsAgo":145},{"id":65212172,"subject":"Your temporary OpenAI login code","fromDisplay":"noreply@tm.openai.com","fromDomain":"tm.openai.com","fromLocal":"noreply","toDomain":"spamok.com","toLocal":"vqphv9ioc","date":"2026-05-07T12:27:38Z","dateSystem":"2026-05-07T12:27:40.665458Z","messagePreview":"Enter this temporary verification code to continue: 185146.","secondsAgo":13118},{"id":65212163,"subject":"Your temporary OpenAI verification code","fromDisplay":"noreply@tm.openai.com","fromDomain":"tm.openai.com","fromLocal":"noreply","toDomain":"spamok.com","toLocal":"vqphv9ioc","date":"2026-05-07T12:27:29Z","dateSystem":"2026-05-07T12:27:31.629958Z","messagePreview":"Enter this temporary verification code to continue: 030836.","secondsAgo":13127}]}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    r,
+			}, nil
+		}),
+	}
+
+	provider, err := NewSpamOKMailProvider(SpamOKConfig{
+		BaseURL:        "https://spamok.test",
+		APIBaseURL:     "https://api.spamok.test/v2",
+		Domain:         "spamok.com",
+		RequestTimeout: time.Second,
+		WaitTimeout:    time.Second,
+		WaitInterval:   10 * time.Millisecond,
+		HTTPClient:     client,
+	}, &deterministicRandom{})
+	if err != nil {
+		t.Fatalf("NewSpamOKMailProvider() error = %v", err)
+	}
+
+	code, err := provider.WaitForCode(context.Background(), Mailbox{Address: "vqphv9ioc@spamok.com"})
+	if err != nil {
+		t.Fatalf("WaitForCode() error = %v", err)
+	}
+	if code != "682766" {
+		t.Fatalf("expected latest spamok code, got %s", code)
+	}
+}
+
 func TestExtractSpamOKCodeFromHTMLIgnoresScriptsAndFindsVisibleCode(t *testing.T) {
 	source := `
 	<html>

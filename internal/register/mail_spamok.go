@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"encoding/hex"
+	"cmp"
 	"errors"
 	"fmt"
 	"html"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -270,9 +272,12 @@ func (p *SpamOKMailProvider) extractCodeFromAPI(body []byte, seen map[string]str
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", "", false, err
 	}
-	latestRef := ""
-	latestTime := time.Unix(0, 0).UTC()
-	latestCode := ""
+	type candidate struct {
+		ref  string
+		at   time.Time
+		code string
+	}
+	candidates := make([]candidate, 0, len(payload.Mails))
 	for _, item := range payload.Mails {
 		ref := strings.TrimSpace(stringValue(item.ID))
 		if ref == "" {
@@ -282,21 +287,39 @@ func (p *SpamOKMailProvider) extractCodeFromAPI(body []byte, seen map[string]str
 		if itemTime.Equal(time.Unix(0, 0).UTC()) {
 			itemTime = parseMailTime(item.Date)
 		}
-		code := extractOTPCode(item.Subject, item.MessagePreview)
-		if itemTime.After(latestTime) {
-			latestTime = itemTime
-			latestRef = ref
-			latestCode = code
-		}
+		candidates = append(candidates, candidate{
+			ref:  ref,
+			at:   itemTime,
+			code: extractOTPCode(item.Subject, item.MessagePreview),
+		})
 	}
+	if len(candidates) == 0 {
+		return "", "", true, nil
+	}
+	slices.SortStableFunc(candidates, func(left, right candidate) int {
+		return cmp.Compare(right.at.UnixNano(), left.at.UnixNano())
+	})
+	latestRef := strings.TrimSpace(candidates[0].ref)
 	if latestRef == "" {
 		return "", "", true, nil
 	}
-	if _, ok := seen[latestRef]; ok {
-		return "", latestRef, true, nil
+	for _, item := range candidates[1:] {
+		if ref := strings.TrimSpace(item.ref); ref != "" {
+			seen[ref] = struct{}{}
+		}
 	}
-	if latestCode != "" {
-		return latestCode, latestRef, true, nil
+	for _, item := range candidates {
+		ref := strings.TrimSpace(item.ref)
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		if item.code != "" {
+			return item.code, ref, true, nil
+		}
+		return "", ref, true, nil
 	}
 	return "", latestRef, true, nil
 }
