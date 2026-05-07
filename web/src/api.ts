@@ -186,9 +186,9 @@ export const api = {
     request<{ item: ApiKey; key: string }>(token, `/api/users/${encodeURIComponent(id)}/api-key/reset`, {
       method: "POST"
     }),
-  tasks: (token: string, ids: string[] = [], params: { page?: number; pageSize?: number; query?: string; status?: string; mode?: string; model?: string; size?: string; dateFrom?: string; dateTo?: string; deleted?: string; includeDeleted?: boolean } = {}) =>
+  tasks: (token: string, ids: string[] = [], params: { page?: number; pageSize?: number; query?: string; status?: string; mode?: string; model?: string; size?: string; ownerID?: string; dateFrom?: string; dateTo?: string; deleted?: string; includeDeleted?: boolean } = {}) =>
     request<PagedResult<ImageTask> & { missing_ids: string[] }>(token, ids.length
-      ? withQuery("/api/image-tasks", { ids: ids.join(","), include_deleted: params.includeDeleted })
+      ? withQuery("/api/image-tasks", { ids: ids.join(","), owner_id: params.ownerID, include_deleted: params.includeDeleted })
       : withQuery("/api/image-tasks", {
           page: params.page,
           page_size: params.pageSize,
@@ -196,19 +196,20 @@ export const api = {
           status: params.status,
           mode: params.mode,
           model: params.model,
+          owner_id: params.ownerID,
           size: params.size,
           date_from: params.dateFrom,
           date_to: params.dateTo,
           deleted: params.deleted,
           include_deleted: params.includeDeleted
         })),
-  taskEvents: (token: string, id: string) =>
-    request<{ items: TaskEvent[]; total: number }>(token, `/api/image-tasks/${encodeURIComponent(id)}/events`),
-  deleteTasks: (token: string, ids: string[]) =>
+  taskEvents: (token: string, id: string, params: { ownerID?: string } = {}) =>
+    request<{ items: TaskEvent[]; total: number }>(token, withQuery(`/api/image-tasks/${encodeURIComponent(id)}/events`, { owner_id: params.ownerID })),
+  deleteTasks: (token: string, items: Array<{ id: string; owner_id?: string }>) =>
     request<{ removed: number }>(token, "/api/image-tasks/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids })
+      body: JSON.stringify({ items })
     }),
   createGenerationTask: (token: string, body: { client_task_id: string; prompt: string; model: string; size?: string; n?: number }) =>
     request<ImageTask>(token, "/api/image-tasks/generations", {

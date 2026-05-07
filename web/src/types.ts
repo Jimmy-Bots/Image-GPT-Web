@@ -100,6 +100,7 @@ export type ApiKey = {
 
 export type ImageTask = {
   id: string;
+  owner_id?: string;
   status: "queued" | "running" | "success" | "error";
   phase?: string;
   mode: "generate" | "edit";

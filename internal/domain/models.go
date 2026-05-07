@@ -100,7 +100,7 @@ type SystemLog struct {
 
 type ImageTask struct {
 	ID             string          `json:"id"`
-	OwnerID        string          `json:"-"`
+	OwnerID        string          `json:"owner_id,omitempty"`
 	Status         string          `json:"status"`
 	Phase          string          `json:"phase,omitempty"`
 	Mode           string          `json:"mode"`

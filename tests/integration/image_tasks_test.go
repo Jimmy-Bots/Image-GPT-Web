@@ -261,6 +261,156 @@ func TestImageTasksCanBeDeleted(t *testing.T) {
 	}, "图片任务删除")
 }
 
+func TestAdminCanListUserWorkbenchTasks(t *testing.T) {
+	upstream := &taskCaptureUpstream{requests: make(chan api.ImageGenerationPayload, 1)}
+	server, cleanup := newTestServer(t, upstream)
+	defer cleanup()
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"email":"task-user@example.com","name":"Task User","password":"password123","role":"user"}`))
+	createReq.Header.Set("Authorization", "Bearer dev-key")
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create user failed: %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created user: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/image-tasks/generations", strings.NewReader(`{"client_task_id":"user-task-visible","prompt":"visible prompt","model":"gpt-image-2"}`))
+	req.Header.Set("Authorization", "Bearer "+created.Key)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("create user task failed: %d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-upstream.requests:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for user task")
+	}
+
+	adminListReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks?owner_id=all&query=user-task-visible", nil)
+	adminListReq.Header.Set("Authorization", "Bearer dev-key")
+	adminListRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(adminListRec, adminListReq)
+	if adminListRec.Code != http.StatusOK {
+		t.Fatalf("admin list tasks failed: %d body=%s", adminListRec.Code, adminListRec.Body.String())
+	}
+	if !strings.Contains(adminListRec.Body.String(), `"id":"user-task-visible"`) || !strings.Contains(adminListRec.Body.String(), `"owner_id":"`+created.Item.ID+`"`) {
+		t.Fatalf("admin should see user task with owner id: %s", adminListRec.Body.String())
+	}
+
+	adminDetailReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks?ids=user-task-visible&owner_id="+created.Item.ID, nil)
+	adminDetailReq.Header.Set("Authorization", "Bearer dev-key")
+	adminDetailRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(adminDetailRec, adminDetailReq)
+	if adminDetailRec.Code != http.StatusOK || !strings.Contains(adminDetailRec.Body.String(), `"id":"user-task-visible"`) {
+		t.Fatalf("admin detail should read user task: %d body=%s", adminDetailRec.Code, adminDetailRec.Body.String())
+	}
+
+	adminEventsReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks/user-task-visible/events?owner_id="+created.Item.ID, nil)
+	adminEventsReq.Header.Set("Authorization", "Bearer dev-key")
+	adminEventsRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(adminEventsRec, adminEventsReq)
+	if adminEventsRec.Code != http.StatusOK || !strings.Contains(adminEventsRec.Body.String(), `"type":"submitted"`) {
+		t.Fatalf("admin should read user task events: %d body=%s", adminEventsRec.Code, adminEventsRec.Body.String())
+	}
+
+	adminDeleteReq := httptest.NewRequest(http.MethodPost, "/api/image-tasks/delete", strings.NewReader(`{"items":[{"owner_id":"`+created.Item.ID+`","id":"user-task-visible"}]}`))
+	adminDeleteReq.Header.Set("Authorization", "Bearer dev-key")
+	adminDeleteReq.Header.Set("Content-Type", "application/json")
+	adminDeleteRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(adminDeleteRec, adminDeleteReq)
+	if adminDeleteRec.Code != http.StatusOK || !strings.Contains(adminDeleteRec.Body.String(), `"removed":1`) {
+		t.Fatalf("admin should delete user task: %d body=%s", adminDeleteRec.Code, adminDeleteRec.Body.String())
+	}
+
+	adminDeletedReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks?ids=user-task-visible&owner_id="+created.Item.ID+"&include_deleted=true", nil)
+	adminDeletedReq.Header.Set("Authorization", "Bearer dev-key")
+	adminDeletedRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(adminDeletedRec, adminDeletedReq)
+	if adminDeletedRec.Code != http.StatusOK || !strings.Contains(adminDeletedRec.Body.String(), `"deleted_by"`) {
+		t.Fatalf("admin-deleted task should remain auditable: %d body=%s", adminDeletedRec.Code, adminDeletedRec.Body.String())
+	}
+	adminDeletedEventsReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks/user-task-visible/events?owner_id="+created.Item.ID, nil)
+	adminDeletedEventsReq.Header.Set("Authorization", "Bearer dev-key")
+	adminDeletedEventsRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(adminDeletedEventsRec, adminDeletedEventsReq)
+	if adminDeletedEventsRec.Code != http.StatusOK || !strings.Contains(adminDeletedEventsRec.Body.String(), `"type":"deleted"`) {
+		t.Fatalf("admin deletion should be recorded on owner task events: %d body=%s", adminDeletedEventsRec.Code, adminDeletedEventsRec.Body.String())
+	}
+
+	userListReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks?owner_id=all&query=user-task-visible", nil)
+	userListReq.Header.Set("Authorization", "Bearer "+created.Key)
+	userListRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(userListRec, userListReq)
+	if userListRec.Code != http.StatusOK || strings.Contains(userListRec.Body.String(), `"id":"user-task-visible"`) {
+		t.Fatalf("deleted user task should be hidden from active user list: %d body=%s", userListRec.Code, userListRec.Body.String())
+	}
+}
+
+func TestUserCannotDeleteOtherUserTasksWithOwnerID(t *testing.T) {
+	upstream := &taskCaptureUpstream{requests: make(chan api.ImageGenerationPayload, 2)}
+	server, cleanup := newTestServer(t, upstream)
+	defer cleanup()
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"email":"isolation-user@example.com","name":"Isolation User","password":"password123","role":"user"}`))
+	createReq.Header.Set("Authorization", "Bearer dev-key")
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create user failed: %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created user: %v", err)
+	}
+
+	adminReq := httptest.NewRequest(http.MethodPost, "/api/image-tasks/generations", strings.NewReader(`{"client_task_id":"admin-owned-task","prompt":"admin prompt","model":"gpt-image-2"}`))
+	adminReq.Header.Set("Authorization", "Bearer dev-key")
+	adminReq.Header.Set("Content-Type", "application/json")
+	adminRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(adminRec, adminReq)
+	if adminRec.Code != http.StatusAccepted {
+		t.Fatalf("create admin task failed: %d body=%s", adminRec.Code, adminRec.Body.String())
+	}
+	var adminTask struct {
+		OwnerID string `json:"owner_id"`
+	}
+	if err := json.Unmarshal(adminRec.Body.Bytes(), &adminTask); err != nil {
+		t.Fatalf("decode admin task: %v", err)
+	}
+
+	userDeleteReq := httptest.NewRequest(http.MethodPost, "/api/image-tasks/delete", strings.NewReader(`{"items":[{"owner_id":"`+adminTask.OwnerID+`","id":"admin-owned-task"}]}`))
+	userDeleteReq.Header.Set("Authorization", "Bearer "+created.Key)
+	userDeleteReq.Header.Set("Content-Type", "application/json")
+	userDeleteRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(userDeleteRec, userDeleteReq)
+	if userDeleteRec.Code != http.StatusOK || !strings.Contains(userDeleteRec.Body.String(), `"removed":0`) {
+		t.Fatalf("user should not delete another owner task: %d body=%s", userDeleteRec.Code, userDeleteRec.Body.String())
+	}
+
+	adminListReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks?ids=admin-owned-task&owner_id="+adminTask.OwnerID, nil)
+	adminListReq.Header.Set("Authorization", "Bearer dev-key")
+	adminListRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(adminListRec, adminListReq)
+	if adminListRec.Code != http.StatusOK || !strings.Contains(adminListRec.Body.String(), `"id":"admin-owned-task"`) || strings.Contains(adminListRec.Body.String(), `"deleted_at"`) {
+		t.Fatalf("admin task should remain active: %d body=%s", adminListRec.Code, adminListRec.Body.String())
+	}
+}
+
 type taskCaptureUpstream struct {
 	fakeStreamUpstream
 	requests chan api.ImageGenerationPayload

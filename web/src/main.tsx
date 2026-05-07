@@ -1876,6 +1876,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
   const [status, setStatus] = useState("");
   const [mode, setMode] = useState("");
   const [modelFilter, setModelFilter] = useState("");
+  const [ownerFilter, setOwnerFilter] = useState("all");
   const [sizeFilter, setSizeFilter] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -1891,10 +1892,10 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
   useHorizontalWheelScroll(tableWrapRef);
   const rows = tasks;
   const selectedSet = new Set(selected);
-  const allVisibleSelected = rows.length > 0 && rows.every((task) => selectedSet.has(task.id));
+  const allVisibleSelected = rows.length > 0 && rows.every((task) => selectedSet.has(taskSelectionKey(task)));
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  const taskQueryParams = { page, pageSize, query, status, mode, model: modelFilter, size: sizeFilter, dateFrom, dateTo, deleted: deletedScope === "deleted" ? "only" : "", includeDeleted: deletedScope !== "active" };
-  useEffect(() => setPage(1), [query, status, mode, modelFilter, sizeFilter, dateFrom, dateTo, pageSize, deletedScope]);
+  const taskQueryParams = { page, pageSize, query, status, mode, model: modelFilter, ownerID: ownerFilter, size: sizeFilter, dateFrom, dateTo, deleted: deletedScope === "deleted" ? "only" : "", includeDeleted: deletedScope !== "active" };
+  useEffect(() => setPage(1), [query, status, mode, modelFilter, ownerFilter, sizeFilter, dateFrom, dateTo, pageSize, deletedScope]);
   useEffect(() => {
     let cancelled = false;
     api.tasks(token, [], taskQueryParams).then((data) => {
@@ -1902,20 +1903,20 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
       setTasks(data.items || []);
       setTotal(Number(data.total || 0));
       setTaskTotal(Number(data.total || 0));
-      setSelected((prev) => prev.filter((id) => (data.items || []).some((item) => item.id === id)));
+      setSelected((prev) => prev.filter((key) => (data.items || []).some((item) => taskSelectionKey(item) === key)));
     }).catch((error) => toast("error", error instanceof Error ? error.message : "加载任务失败"));
     return () => {
       cancelled = true;
     };
-  }, [token, page, pageSize, query, status, mode, modelFilter, sizeFilter, dateFrom, dateTo, deletedScope, setTaskTotal]);
+  }, [token, page, pageSize, query, status, mode, modelFilter, ownerFilter, sizeFilter, dateFrom, dateTo, deletedScope, setTaskTotal]);
   const detailTask = detailTaskID ? rows.find((task) => task.id === detailTaskID) || null : null;
   function toggleVisible(checked: boolean) {
-    const visibleIDs = rows.map((task) => task.id);
-    setSelected((prev) => checked ? Array.from(new Set([...prev, ...visibleIDs])) : prev.filter((id) => !visibleIDs.includes(id)));
+    const visibleKeys = rows.map(taskSelectionKey);
+    setSelected((prev) => checked ? Array.from(new Set([...prev, ...visibleKeys])) : prev.filter((key) => !visibleKeys.includes(key)));
   }
   async function ensureTaskDetail(task: ImageTask) {
     if (task.data !== undefined) return task;
-    const data = await api.tasks(token, [task.id], { includeDeleted: Boolean(task.deleted_at) });
+    const data = await api.tasks(token, [task.id], { ownerID: task.owner_id || ownerFilter, includeDeleted: Boolean(task.deleted_at) });
     const item = (data.items || [])[0];
     if (!item) {
       throw new Error("任务详情不存在");
@@ -1955,7 +1956,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
   }
   async function removeSelected() {
     if (!selected.length || !confirm(`删除 ${selected.length} 个图片任务？`)) return;
-    const data = await api.deleteTasks(token, selected);
+    const data = await api.deleteTasks(token, selected.map(parseTaskSelectionKey));
     const next = await api.tasks(token, [], taskQueryParams);
     setTasks(next.items || []);
     setTotal(Number(next.total || 0));
@@ -1970,22 +1971,24 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
         <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>queued</option><option>running</option><option>success</option><option>error</option></select></ControlField>
         <ControlField label="模式"><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="">全部模式</option><option value="generate">generate</option><option value="edit">edit</option></select></ControlField>
         <ControlField label="模型"><input value={modelFilter} onChange={(event) => setModelFilter(event.target.value)} placeholder="gpt-image-2" /></ControlField>
+        <ControlField label="用户 ID"><input value={ownerFilter === "all" ? "" : ownerFilter} onChange={(event) => setOwnerFilter(event.target.value.trim() || "all")} placeholder="全部用户" /></ControlField>
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
         <ControlField label="范围"><select value={deletedScope} onChange={(event) => setDeletedScope(event.target.value)}><option value="active">未删除</option><option value="all">含已删除</option><option value="deleted">仅已删除</option></select></ControlField>
         <ControlField label="比例"><input value={sizeFilter} onChange={(event) => setSizeFilter(event.target.value)} placeholder="auto / 1:1" /></ControlField>
         <ControlField label="开始"><input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></ControlField>
         <ControlField label="结束"><input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></ControlField>
-        <div className="filter-actions"><button className="secondary" onClick={() => api.tasks(token, [], taskQueryParams).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="ghost small" onClick={() => { setQuery(""); setStatus(""); setMode(""); setModelFilter(""); setSizeFilter(""); setDateFrom(""); setDateTo(""); setDeletedScope("active"); }}>重置</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
+        <div className="filter-actions"><button className="secondary" onClick={() => api.tasks(token, [], taskQueryParams).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="ghost small" onClick={() => { setQuery(""); setStatus(""); setMode(""); setModelFilter(""); setOwnerFilter("all"); setSizeFilter(""); setDateFrom(""); setDateTo(""); setDeletedScope("active"); }}>重置</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
       </div>
-      <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
+      <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Owner</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
         const first = parseTaskData(task.data)[0];
         const src = first ? imageSrc(first, token) : "";
         const canPreview = Boolean(src) || task.status === "success";
         const deleted = Boolean(task.deleted_at);
         return (
           <tr key={task.id}>
-            <td><input type="checkbox" disabled={deleted} checked={selectedSet.has(task.id)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, task.id] : prev.filter((id) => id !== task.id))} /></td>
+            <td><input type="checkbox" disabled={deleted} checked={selectedSet.has(taskSelectionKey(task))} onChange={(event) => { const key = taskSelectionKey(task); setSelected((prev) => event.target.checked ? [...prev, key] : prev.filter((item) => item !== key)); }} /></td>
             <td><code>{task.id}</code></td>
+            <td><code>{task.owner_id || "-"}</code></td>
             <td>{task.mode}</td>
             <td>{deleted ? <Badge value="deleted" /> : <Badge value={task.status} />}</td>
             <td>{task.prompt || "-"}</td>
@@ -2016,7 +2019,7 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
     setEventsLoading(true);
     setEventsError("");
     setEvents([]);
-    api.taskEvents(token, task.id).then((data) => {
+    api.taskEvents(token, task.id, { ownerID: task.owner_id }).then((data) => {
       if (cancelled) return;
       setEvents(data.items || []);
     }).catch((error) => {
@@ -2028,11 +2031,12 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
     return () => {
       cancelled = true;
     };
-  }, [token, task.id]);
+  }, [token, task.id, task.owner_id]);
   return (
     <div className="detail-panel">
       <div className="detail-grid">
         <DetailItem label="任务 ID" value={task.id} code />
+        {task.owner_id ? <DetailItem label="用户 ID" value={task.owner_id} code /> : null}
         <DetailItem label="状态" value={task.status} />
         <DetailItem label="创建时间" value={fmtDate(task.created_at)} />
         <DetailItem label="更新时间" value={fmtDate(task.updated_at)} />
@@ -2051,6 +2055,15 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
       <pre className="detail-json">{safeJSON({ ...task, data: results })}</pre>
     </div>
   );
+}
+
+function taskSelectionKey(task: ImageTask) {
+  return `${task.owner_id || ""}::${task.id}`;
+}
+
+function parseTaskSelectionKey(key: string) {
+  const [ownerID, ...rest] = key.split("::");
+  return { owner_id: ownerID || undefined, id: rest.join("::") || key };
 }
 
 function TaskEventTimeline({ events, loading, error }: { events: TaskEvent[]; loading: boolean; error: string }) {

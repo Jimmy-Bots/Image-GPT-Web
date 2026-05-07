@@ -57,6 +57,7 @@ type LogListQuery struct {
 type ImageTaskPageQuery struct {
 	Page           int
 	PageSize       int
+	OwnerID        string
 	Query          string
 	Status         string
 	Mode           string
@@ -313,8 +314,16 @@ func buildLogWhere(query LogListQuery) (string, []any) {
 }
 
 func buildTaskWhere(ownerID string, query ImageTaskPageQuery) (string, []any) {
-	clauses := []string{`owner_id = ?`}
-	args := []any{ownerID}
+	clauses := make([]string, 0, 10)
+	args := make([]any, 0, 10)
+	if ownerID = strings.TrimSpace(ownerID); ownerID != "" {
+		clauses = append(clauses, `owner_id = ?`)
+		args = append(args, ownerID)
+	}
+	if queryOwnerID := strings.TrimSpace(query.OwnerID); queryOwnerID != "" {
+		clauses = append(clauses, `owner_id = ?`)
+		args = append(args, queryOwnerID)
+	}
 	switch strings.TrimSpace(query.Deleted) {
 	case "only":
 		clauses = append(clauses, `deleted_at IS NOT NULL`)
@@ -353,6 +362,9 @@ func buildTaskWhere(ownerID string, query ImageTaskPageQuery) (string, []any) {
 		like := "%" + text + "%"
 		clauses = append(clauses, `(LOWER(id) LIKE ? OR LOWER(mode) LIKE ? OR LOWER(status) LIKE ? OR LOWER(model) LIKE ? OR LOWER(size) LIKE ? OR LOWER(prompt) LIKE ? OR LOWER(error) LIKE ? OR LOWER(deleted_by) LIKE ?)`)
 		args = append(args, like, like, like, like, like, like, like, like)
+	}
+	if len(clauses) == 0 {
+		return ` WHERE 1=1`, args
 	}
 	return ` WHERE ` + strings.Join(clauses, ` AND `), args
 }

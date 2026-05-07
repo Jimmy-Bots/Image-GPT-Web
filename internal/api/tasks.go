@@ -286,7 +286,13 @@ type imageTaskCreateRequest struct {
 }
 
 type imageTaskDeleteRequest struct {
-	IDs []string `json:"ids"`
+	IDs   []string             `json:"ids"`
+	Items []imageTaskDeleteRef `json:"items"`
+}
+
+type imageTaskDeleteRef struct {
+	ID      string `json:"id"`
+	OwnerID string `json:"owner_id"`
 }
 
 func (s *Server) handleListImageTasks(w http.ResponseWriter, r *http.Request) {
@@ -296,8 +302,9 @@ func (s *Server) handleListImageTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	ids := compactStrings(strings.Split(r.URL.Query().Get("ids"), ","))
 	includeData := len(ids) > 0 || boolFromAny(r.URL.Query().Get("detail"))
+	ownerID := taskOwnerScope(identity, r.URL.Query().Get("owner_id"))
 	if len(ids) > 0 {
-		items, err := s.store.ListImageTasks(r.Context(), identity.ID, ids, includeData, boolFromAny(r.URL.Query().Get("include_deleted")))
+		items, err := s.store.ListImageTasks(r.Context(), ownerID, ids, includeData, boolFromAny(r.URL.Query().Get("include_deleted")))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 			return
@@ -313,13 +320,14 @@ func (s *Server) handleListImageTasks(w http.ResponseWriter, r *http.Request) {
 		Status:         strings.TrimSpace(r.URL.Query().Get("status")),
 		Mode:           strings.TrimSpace(r.URL.Query().Get("mode")),
 		Model:          strings.TrimSpace(r.URL.Query().Get("model")),
+		OwnerID:        taskOwnerFilter(identity, r.URL.Query().Get("owner_id")),
 		Size:           strings.TrimSpace(r.URL.Query().Get("size")),
 		DateFrom:       strings.TrimSpace(r.URL.Query().Get("date_from")),
 		DateTo:         strings.TrimSpace(r.URL.Query().Get("date_to")),
 		Deleted:        strings.TrimSpace(r.URL.Query().Get("deleted")),
 		IncludeDeleted: boolFromAny(r.URL.Query().Get("include_deleted")),
 	}
-	items, total, err := s.store.ListImageTasksPage(r.Context(), identity.ID, query)
+	items, total, err := s.store.ListImageTasksPage(r.Context(), taskOwnerScope(identity, r.URL.Query().Get("owner_id")), query)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
@@ -338,13 +346,21 @@ func (s *Server) handleDeleteImageTasks(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	ids := compactStrings(req.IDs)
-	before, err := s.store.ListImageTasks(r.Context(), identity.ID, ids, false, false)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+	refs := normalizeDeleteTaskRefs(identity, req)
+	if len(refs) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"removed": 0})
 		return
 	}
-	removed, err := s.store.DeleteImageTasks(r.Context(), identity.ID, identity.ID, ids)
+	before := make([]domain.ImageTask, 0, len(refs))
+	for _, ref := range refs {
+		items, err := s.store.ListImageTasks(r.Context(), ref.OwnerID, []string{ref.ID}, false, false)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+			return
+		}
+		before = append(before, items...)
+	}
+	removed, err := s.store.DeleteImageTasksByRef(r.Context(), refs, identity.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
@@ -358,20 +374,22 @@ func (s *Server) handleDeleteImageTasks(w http.ResponseWriter, r *http.Request) 
 		})
 	}
 	if len(deletedIDs) > 0 {
+		ownerIDs := uniqueTaskOwnerIDs(before)
 		detail := map[string]any{
-			"owner_id":       identity.ID,
-			"name":           identity.Name,
-			"role":           identity.Role,
-			"auth_type":      identity.AuthType,
 			"task_ids":       deletedIDs,
-			"requested_ids":  ids,
+			"requested_ids":  deleteTaskRefIDs(refs),
+			"owner_ids":      ownerIDs,
 			"removed":        removed,
 			"retained_event": true,
+		}
+		if len(ownerIDs) == 1 {
+			detail["owner_id"] = ownerIDs[0]
+			detail["subject_id"] = ownerIDs[0]
 		}
 		if len(deletedIDs) == 1 {
 			detail["task_id"] = deletedIDs[0]
 		}
-		s.addLogContext(r.Context(), "task", "图片任务删除", detail)
+		s.addAuditLog(r, identity, "task", "图片任务删除", detail)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
@@ -386,13 +404,14 @@ func (s *Server) handleListImageTaskEvents(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "bad_request", "task_id is required")
 		return
 	}
-	items, err := s.store.ListTaskEvents(r.Context(), identity.ID, taskID, true)
+	ownerID := taskOwnerScope(identity, r.URL.Query().Get("owner_id"))
+	items, err := s.store.ListTaskEvents(r.Context(), ownerID, taskID, true)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
 	if len(items) == 0 {
-		tasks, err := s.store.ListImageTasks(r.Context(), identity.ID, []string{taskID}, false, true)
+		tasks, err := s.store.ListImageTasks(r.Context(), ownerID, []string{taskID}, false, true)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 			return
@@ -640,14 +659,105 @@ func missingTaskIDs(requested []string, items []domain.ImageTask) []string {
 	return missing
 }
 
+func taskOwnerScope(identity Identity, requested string) string {
+	if identity.Role != domain.RoleAdmin {
+		return identity.ID
+	}
+	requested = strings.TrimSpace(requested)
+	if requested == "" || requested == "all" {
+		return ""
+	}
+	return requested
+}
+
+func taskOwnerFilter(identity Identity, requested string) string {
+	if identity.Role != domain.RoleAdmin {
+		return ""
+	}
+	requested = strings.TrimSpace(requested)
+	if requested == "all" {
+		return ""
+	}
+	return requested
+}
+
+func normalizeDeleteTaskRefs(identity Identity, req imageTaskDeleteRequest) []storage.ImageTaskRef {
+	seen := map[string]struct{}{}
+	refs := make([]storage.ImageTaskRef, 0, len(req.Items)+len(req.IDs))
+	add := func(ownerID string, id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if identity.Role != domain.RoleAdmin {
+			ownerID = identity.ID
+		} else {
+			ownerID = strings.TrimSpace(ownerID)
+			if ownerID == "" || ownerID == "all" {
+				ownerID = identity.ID
+			}
+		}
+		key := ownerID + "\x00" + id
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, storage.ImageTaskRef{OwnerID: ownerID, ID: id})
+	}
+	for _, item := range req.Items {
+		add(item.OwnerID, item.ID)
+	}
+	for _, id := range req.IDs {
+		add("", id)
+	}
+	return refs
+}
+
+func deleteTaskRefIDs(refs []storage.ImageTaskRef) []string {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.OwnerID) != "" {
+			out = append(out, strings.TrimSpace(ref.OwnerID)+":"+strings.TrimSpace(ref.ID))
+			continue
+		}
+		out = append(out, strings.TrimSpace(ref.ID))
+	}
+	return out
+}
+
+func uniqueTaskOwnerIDs(tasks []domain.ImageTask) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0)
+	for _, task := range tasks {
+		ownerID := strings.TrimSpace(task.OwnerID)
+		if ownerID == "" {
+			continue
+		}
+		if _, ok := seen[ownerID]; ok {
+			continue
+		}
+		seen[ownerID] = struct{}{}
+		out = append(out, ownerID)
+	}
+	return out
+}
+
 func (s *Server) addImageTaskEventContext(ctx context.Context, identity Identity, task domain.ImageTask, eventType string, summary string, detail map[string]any) {
+	ownerID := strings.TrimSpace(task.OwnerID)
+	if ownerID == "" {
+		ownerID = identity.ID
+	}
 	payload := map[string]any{}
 	payload["task_id"] = task.ID
-	payload["owner_id"] = identity.ID
-	payload["subject_id"] = identity.ID
+	payload["owner_id"] = ownerID
+	payload["subject_id"] = ownerID
 	payload["name"] = identity.Name
 	payload["role"] = identity.Role
 	payload["auth_type"] = identity.AuthType
+	payload["actor_id"] = identity.ID
+	payload["actor_name"] = identity.Name
+	payload["actor_role"] = identity.Role
+	payload["actor_auth_type"] = identity.AuthType
 	payload["mode"] = task.Mode
 	payload["model"] = task.Model
 	payload["size"] = task.Size
@@ -670,7 +780,7 @@ func (s *Server) addImageTaskEventContext(ctx context.Context, identity Identity
 	at := time.Now().UTC()
 	_ = s.store.AddTaskEvent(ctx, domain.TaskEvent{
 		ID:      randomLogID(),
-		OwnerID: identity.ID,
+		OwnerID: ownerID,
 		TaskID:  task.ID,
 		Time:    at,
 		Type:    eventType,

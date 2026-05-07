@@ -1600,8 +1600,14 @@ func (s *Store) ListTaskEvents(ctx context.Context, ownerID string, taskID strin
 	if includeDetail {
 		detailExpr = `detail_json`
 	}
+	where := `task_id = ?`
+	args := []any{strings.TrimSpace(taskID)}
+	if ownerID = strings.TrimSpace(ownerID); ownerID != "" {
+		where = `owner_id = ? AND ` + where
+		args = append([]any{ownerID}, args...)
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT owner_id, task_id, id, time, type, summary, `+detailExpr+`
-		FROM task_events WHERE owner_id = ? AND task_id = ? ORDER BY time ASC, id ASC LIMIT 500`, ownerID, strings.TrimSpace(taskID))
+		FROM task_events WHERE `+where+` ORDER BY time ASC, id ASC LIMIT 500`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1656,8 +1662,12 @@ func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string
 	if includeData {
 		dataExpr = `data_json`
 	}
-	query := `SELECT owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, ` + dataExpr + `, error, created_at, updated_at, deleted_at, deleted_by FROM image_tasks WHERE owner_id = ?`
-	args := []any{ownerID}
+	query := `SELECT owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, ` + dataExpr + `, error, created_at, updated_at, deleted_at, deleted_by FROM image_tasks WHERE 1=1`
+	args := make([]any, 0, len(ids)+1)
+	if ownerID = strings.TrimSpace(ownerID); ownerID != "" {
+		query += ` AND owner_id = ?`
+		args = append(args, ownerID)
+	}
 	if !includeDeleted {
 		query += ` AND deleted_at IS NULL`
 	}
@@ -1689,6 +1699,19 @@ func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string
 }
 
 func (s *Store) DeleteImageTasks(ctx context.Context, ownerID string, deletedBy string, ids []string) (int, error) {
+	refs := make([]ImageTaskRef, 0, len(ids))
+	for _, id := range ids {
+		refs = append(refs, ImageTaskRef{OwnerID: ownerID, ID: id})
+	}
+	return s.DeleteImageTasksByRef(ctx, refs, deletedBy)
+}
+
+type ImageTaskRef struct {
+	OwnerID string
+	ID      string
+}
+
+func (s *Store) DeleteImageTasksByRef(ctx context.Context, refs []ImageTaskRef, deletedBy string) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -1696,8 +1719,8 @@ func (s *Store) DeleteImageTasks(ctx context.Context, ownerID string, deletedBy 
 	defer tx.Rollback()
 	removed := 0
 	now := formatTime(time.Now().UTC())
-	for _, id := range ids {
-		res, err := tx.ExecContext(ctx, `UPDATE image_tasks SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE owner_id = ? AND id = ? AND deleted_at IS NULL`, now, deletedBy, now, ownerID, strings.TrimSpace(id))
+	for _, ref := range refs {
+		res, err := tx.ExecContext(ctx, `UPDATE image_tasks SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE owner_id = ? AND id = ? AND deleted_at IS NULL`, now, deletedBy, now, strings.TrimSpace(ref.OwnerID), strings.TrimSpace(ref.ID))
 		if err != nil {
 			return 0, err
 		}

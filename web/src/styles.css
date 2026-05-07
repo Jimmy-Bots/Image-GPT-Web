@@ -409,16 +409,17 @@ span.composer-pill { display: inline-flex; align-items: center; }
 .activity-table tbody tr:hover td:last-child { background: #fbfcfe; }
 .activity-table thead th:first-child,
 .activity-table thead th:last-child { background: #fbfcfe; z-index: 8; }
-.task-table { min-width: 1320px; }
+.task-table { min-width: 1480px; }
 .task-table th:nth-child(2), .task-table td:nth-child(2) { position: sticky; left: 42px; z-index: 4; width: 190px; min-width: 190px; background: inherit; box-shadow: 1px 0 0 #edf2f7; }
-.task-table th:nth-child(3), .task-table td:nth-child(3) { width: 76px; min-width: 76px; }
-.task-table th:nth-child(4), .task-table td:nth-child(4) { width: 92px; min-width: 92px; }
-.task-table th:nth-child(5), .task-table td:nth-child(5) { width: 300px; min-width: 300px; }
-.task-table th:nth-child(6), .task-table td:nth-child(6) { width: 116px; min-width: 116px; }
-.task-table th:nth-child(7), .task-table td:nth-child(7) { width: 74px; min-width: 74px; }
-.task-table th:nth-child(8), .task-table td:nth-child(8) { width: 86px; min-width: 86px; }
-.task-table th:nth-child(9), .task-table td:nth-child(9) { width: 82px; min-width: 82px; }
-.task-table th:nth-child(10), .task-table td:nth-child(10) { width: 156px; min-width: 156px; }
+.task-table th:nth-child(3), .task-table td:nth-child(3) { width: 170px; min-width: 170px; }
+.task-table th:nth-child(4), .task-table td:nth-child(4) { width: 76px; min-width: 76px; }
+.task-table th:nth-child(5), .task-table td:nth-child(5) { width: 92px; min-width: 92px; }
+.task-table th:nth-child(6), .task-table td:nth-child(6) { width: 300px; min-width: 300px; }
+.task-table th:nth-child(7), .task-table td:nth-child(7) { width: 116px; min-width: 116px; }
+.task-table th:nth-child(8), .task-table td:nth-child(8) { width: 74px; min-width: 74px; }
+.task-table th:nth-child(9), .task-table td:nth-child(9) { width: 86px; min-width: 86px; }
+.task-table th:nth-child(10), .task-table td:nth-child(10) { width: 82px; min-width: 82px; }
+.task-table th:nth-child(11), .task-table td:nth-child(11) { width: 156px; min-width: 156px; }
 .task-table tbody td:nth-child(2) { background: #fff; }
 .task-table tbody tr:hover td:nth-child(2) { background: #fbfcfe; }
 .task-table thead th:nth-child(2) { background: #fbfcfe; z-index: 8; }
