@@ -211,8 +211,9 @@ func (s *Store) ListImageTasksPage(ctx context.Context, ownerID string, query Im
 		return nil, 0, err
 	}
 
-	itemsQuery := `SELECT owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, NULL, error, created_at, updated_at, deleted_at, deleted_by
-		FROM image_tasks` + where + ` ORDER BY updated_at DESC LIMIT ? OFFSET ?`
+	itemsQuery := `SELECT image_tasks.owner_id, users.email, users.name, users.role, image_tasks.id, image_tasks.status, image_tasks.phase, image_tasks.mode, image_tasks.model, image_tasks.size, image_tasks.prompt, image_tasks.requested_count, image_tasks.reserved_quota_json, NULL, image_tasks.error, image_tasks.created_at, image_tasks.updated_at, image_tasks.deleted_at, image_tasks.deleted_by
+		FROM image_tasks
+		LEFT JOIN users ON users.id = image_tasks.owner_id` + where + ` ORDER BY image_tasks.updated_at DESC LIMIT ? OFFSET ?`
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, itemsQuery, itemsArgs...)
 	if err != nil {

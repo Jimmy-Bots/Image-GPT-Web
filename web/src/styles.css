@@ -422,7 +422,7 @@ button.composer-pill, span.composer-pill { display: inline-flex; align-items: ce
 .activity-table thead th:last-child { background: #fbfcfe; z-index: 8; }
 .task-table { min-width: 1480px; }
 .task-table th:nth-child(2), .task-table td:nth-child(2) { position: sticky; left: 42px; z-index: 4; width: 190px; min-width: 190px; background: inherit; box-shadow: 1px 0 0 #edf2f7; }
-.task-table th:nth-child(3), .task-table td:nth-child(3) { width: 170px; min-width: 170px; }
+.task-table th:nth-child(3), .task-table td:nth-child(3) { width: 220px; min-width: 220px; }
 .task-table th:nth-child(4), .task-table td:nth-child(4) { width: 76px; min-width: 76px; }
 .task-table th:nth-child(5), .task-table td:nth-child(5) { width: 92px; min-width: 92px; }
 .task-table th:nth-child(6), .task-table td:nth-child(6) { width: 300px; min-width: 300px; }
@@ -434,6 +434,10 @@ button.composer-pill, span.composer-pill { display: inline-flex; align-items: ce
 .task-table tbody td:nth-child(2) { background: #fff; }
 .task-table tbody tr:hover td:nth-child(2) { background: #fbfcfe; }
 .task-table thead th:nth-child(2) { background: #fbfcfe; z-index: 8; }
+.task-owner-cell { min-width: 0; display: grid; gap: 4px; }
+.task-owner-cell strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #17202a; font-size: 13px; }
+.task-owner-cell small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #778499; font-size: 11px; }
+.task-owner-cell .badge { justify-self: start; }
 .log-table { min-width: 1580px; }
 .log-table th:nth-child(2), .log-table td:nth-child(2) { position: sticky; left: 42px; z-index: 4; width: 156px; min-width: 156px; background: inherit; box-shadow: 1px 0 0 #edf2f7; }
 .log-table th:nth-child(3), .log-table td:nth-child(3) { width: 80px; min-width: 80px; }

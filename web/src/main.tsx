@@ -175,6 +175,14 @@ function quotaDetailFromUser(user: User | null) {
   return `永久 ${compact(Number(user.permanent_quota || 0))} · 当天 ${compact(Number(user.temporary_quota || 0))} · 可用 ${compact(Number(user.available_quota || 0))}`;
 }
 
+function taskOwnerSummary(task: ImageTask) {
+  return task.owner_name || task.owner_email || task.owner_id || "-";
+}
+
+function taskOwnerMeta(task: ImageTask) {
+  return task.owner_email || task.owner_id || "";
+}
+
 function QuotaBadge({ user, quota }: { user: User | null; quota: string }) {
   return (
     <span className="composer-pill passive quota-pill">
@@ -2212,7 +2220,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
         <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>queued</option><option>running</option><option>success</option><option>error</option></select></ControlField>
         <ControlField label="模式"><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="">全部模式</option><option value="generate">generate</option><option value="edit">edit</option></select></ControlField>
         <ControlField label="模型"><input value={modelFilter} onChange={(event) => setModelFilter(event.target.value)} placeholder="gpt-image-2" /></ControlField>
-        <ControlField label="用户 ID"><input value={ownerFilter === "all" ? "" : ownerFilter} onChange={(event) => setOwnerFilter(event.target.value.trim() || "all")} placeholder="全部用户" /></ControlField>
+        <ControlField label="用户"><input value={ownerFilter === "all" ? "" : ownerFilter} onChange={(event) => setOwnerFilter(event.target.value.trim() || "all")} placeholder="全部用户 ID" /></ControlField>
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
         <ControlField label="范围"><select value={deletedScope} onChange={(event) => setDeletedScope(event.target.value)}><option value="active">未删除</option><option value="all">含已删除</option><option value="deleted">仅已删除</option></select></ControlField>
         <ControlField label="比例"><input value={sizeFilter} onChange={(event) => setSizeFilter(event.target.value)} placeholder="auto / 1:1" /></ControlField>
@@ -2220,7 +2228,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
         <ControlField label="结束"><input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></ControlField>
         <div className="filter-actions"><button className="secondary" onClick={() => api.tasks(token, [], taskQueryParams).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="ghost small" onClick={() => { setQuery(""); setStatus(""); setMode(""); setModelFilter(""); setOwnerFilter("all"); setSizeFilter(""); setDateFrom(""); setDateTo(""); setDeletedScope("active"); }}>重置</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
       </div>
-      <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Owner</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
+      <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>User</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
         const first = parseTaskData(task.data)[0];
         const src = first ? imagePreviewSrc(first, token) : "";
         const canPreview = Boolean(src) || task.status === "success";
@@ -2229,7 +2237,13 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
           <tr key={task.id}>
             <td><input type="checkbox" disabled={deleted} checked={selectedSet.has(taskSelectionKey(task))} onChange={(event) => { const key = taskSelectionKey(task); setSelected((prev) => event.target.checked ? [...prev, key] : prev.filter((item) => item !== key)); }} /></td>
             <td><code>{task.id}</code></td>
-            <td><code>{task.owner_id || "-"}</code></td>
+            <td>
+              <div className="task-owner-cell">
+                <strong>{taskOwnerSummary(task)}</strong>
+                <small>{taskOwnerMeta(task) || "-"}</small>
+                {task.owner_role ? <Badge value={task.owner_role} /> : null}
+              </div>
+            </td>
             <td>{task.mode}</td>
             <td>{deleted ? <Badge value="deleted" /> : <Badge value={task.status} />}</td>
             <td>{task.prompt || "-"}</td>
@@ -2277,6 +2291,9 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
     <div className="detail-panel">
       <div className="detail-grid">
         <DetailItem label="任务 ID" value={task.id} code />
+        {task.owner_name ? <DetailItem label="用户名称" value={task.owner_name} /> : null}
+        {task.owner_email ? <DetailItem label="用户邮箱" value={task.owner_email} /> : null}
+        {task.owner_role ? <DetailItem label="用户角色" value={String(task.owner_role)} /> : null}
         {task.owner_id ? <DetailItem label="用户 ID" value={task.owner_id} code /> : null}
         <DetailItem label="状态" value={task.status} />
         <DetailItem label="创建时间" value={fmtDate(task.created_at)} />

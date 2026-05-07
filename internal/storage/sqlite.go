@@ -1784,7 +1784,10 @@ func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string
 	if includeData {
 		dataExpr = `data_json`
 	}
-	query := `SELECT owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, ` + dataExpr + `, error, created_at, updated_at, deleted_at, deleted_by FROM image_tasks WHERE 1=1`
+	query := `SELECT image_tasks.owner_id, users.email, users.name, users.role, image_tasks.id, image_tasks.status, image_tasks.phase, image_tasks.mode, image_tasks.model, image_tasks.size, image_tasks.prompt, image_tasks.requested_count, image_tasks.reserved_quota_json, ` + dataExpr + `, image_tasks.error, image_tasks.created_at, image_tasks.updated_at, image_tasks.deleted_at, image_tasks.deleted_by
+		FROM image_tasks
+		LEFT JOIN users ON users.id = image_tasks.owner_id
+		WHERE 1=1`
 	args := make([]any, 0, len(ids)+1)
 	if ownerID = strings.TrimSpace(ownerID); ownerID != "" {
 		query += ` AND owner_id = ?`
@@ -2074,17 +2077,21 @@ func defaultJSON(value json.RawMessage, fallback string) json.RawMessage {
 
 func scanImageTask(row rowScanner) (domain.ImageTask, error) {
 	var item domain.ImageTask
+	var ownerRole sql.NullString
 	var reservedQuota string
 	var data sql.NullString
 	var createdAt string
 	var updatedAt string
 	var deletedAt sql.NullString
-	err := row.Scan(&item.OwnerID, &item.ID, &item.Status, &item.Phase, &item.Mode, &item.Model, &item.Size, &item.Prompt, &item.RequestedCount, &reservedQuota, &data, &item.Error, &createdAt, &updatedAt, &deletedAt, &item.DeletedBy)
+	err := row.Scan(&item.OwnerID, &item.OwnerEmail, &item.OwnerName, &ownerRole, &item.ID, &item.Status, &item.Phase, &item.Mode, &item.Model, &item.Size, &item.Prompt, &item.RequestedCount, &reservedQuota, &data, &item.Error, &createdAt, &updatedAt, &deletedAt, &item.DeletedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ImageTask{}, ErrNotFound
 	}
 	if err != nil {
 		return domain.ImageTask{}, err
+	}
+	if ownerRole.Valid && strings.TrimSpace(ownerRole.String) != "" {
+		item.OwnerRole = domain.Role(strings.TrimSpace(ownerRole.String))
 	}
 	if strings.TrimSpace(reservedQuota) != "" {
 		item.ReservedQuota = json.RawMessage(reservedQuota)
