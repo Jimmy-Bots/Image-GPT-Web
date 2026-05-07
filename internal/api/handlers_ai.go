@@ -106,12 +106,30 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := s.store.CreateImageTask(r.Context(), task); err != nil {
 		log.Printf("image_generation task_record_failed user=%s task=%s err=%v", identity.ID, taskID, err)
+	} else {
+		s.addImageTaskEventContext(r.Context(), identity, task, "submitted", "同步图片生成请求已提交", map[string]any{
+			"endpoint":         "/v1/images/generations",
+			"requested_format": requestedFormat,
+			"quota_reserved":   receipt.Total,
+		})
 	}
 	result, err := s.upstream.GenerateImage(ctx, req)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
 		s.refundImageQuota(r.Context(), identity, receipt)
 		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, taskPhaseFinished, jsonData([]any{}), err.Error())
+		s.addImageTaskEventContext(r.Context(), identity, task, "error", "同步图片生成失败", map[string]any{
+			"endpoint":        "/v1/images/generations",
+			"status":          taskError,
+			"phase":           taskPhaseFinished,
+			"duration_ms":     duration,
+			"quota_reserved":  receipt.Total,
+			"quota_used":      0,
+			"quota_refund":    receipt.Total,
+			"available_quota": user.AvailableQuota,
+			"error":           err.Error(),
+			"attempts":        logAttempts(ctx),
+		})
 		log.Printf("image_generation failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, duration, err)
 		s.logCall(r, identity, "/v1/images/generations", req.Model, "failed", err.Error(), map[string]any{
 			"task_id":          taskID,
@@ -141,6 +159,20 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskSuccess, taskPhaseFinished, jsonData(result["data"]), "")
+	s.addImageTaskEventContext(r.Context(), identity, task, "success", "同步图片生成成功", map[string]any{
+		"endpoint":         "/v1/images/generations",
+		"status":           taskSuccess,
+		"phase":            taskPhaseFinished,
+		"duration_ms":      duration,
+		"requested_format": requestedFormat,
+		"items":            count,
+		"archived":         saved,
+		"quota_reserved":   receipt.Total,
+		"quota_used":       count,
+		"quota_refund":     maxInt(0, receipt.Total-count),
+		"available_quota":  finalUser.AvailableQuota,
+		"attempts":         logAttempts(ctx),
+	})
 	log.Printf("image_generation success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, count, saved, duration)
 	s.logCall(r, identity, "/v1/images/generations", req.Model, "success", "", map[string]any{
 		"task_id":          taskID,
@@ -230,12 +262,32 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CreateImageTask(r.Context(), task); err != nil {
 		log.Printf("image_edit task_record_failed user=%s task=%s err=%v", identity.ID, taskID, err)
+	} else {
+		s.addImageTaskEventContext(r.Context(), identity, task, "submitted", "同步图片编辑请求已提交", map[string]any{
+			"endpoint":         "/v1/images/edits",
+			"input_images":     len(req.Images),
+			"requested_format": requestedFormat,
+			"quota_reserved":   receipt.Total,
+		})
 	}
 	result, err := s.upstream.EditImage(ctx, req)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
 		s.refundImageQuota(r.Context(), identity, receipt)
 		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, taskPhaseFinished, jsonData([]any{}), err.Error())
+		s.addImageTaskEventContext(r.Context(), identity, task, "error", "同步图片编辑失败", map[string]any{
+			"endpoint":        "/v1/images/edits",
+			"status":          taskError,
+			"phase":           taskPhaseFinished,
+			"duration_ms":     duration,
+			"input_images":    len(req.Images),
+			"quota_reserved":  receipt.Total,
+			"quota_used":      0,
+			"quota_refund":    receipt.Total,
+			"available_quota": user.AvailableQuota,
+			"error":           err.Error(),
+			"attempts":        logAttempts(ctx),
+		})
 		log.Printf("image_edit failed user=%s model=%s duration_ms=%d err=%v", identity.ID, req.Model, duration, err)
 		s.logCall(r, identity, "/v1/images/edits", req.Model, "failed", err.Error(), map[string]any{
 			"task_id":          taskID,
@@ -266,6 +318,21 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskSuccess, taskPhaseFinished, jsonData(result["data"]), "")
+	s.addImageTaskEventContext(r.Context(), identity, task, "success", "同步图片编辑成功", map[string]any{
+		"endpoint":         "/v1/images/edits",
+		"status":           taskSuccess,
+		"phase":            taskPhaseFinished,
+		"duration_ms":      duration,
+		"requested_format": requestedFormat,
+		"input_images":     len(req.Images),
+		"items":            count,
+		"archived":         saved,
+		"quota_reserved":   receipt.Total,
+		"quota_used":       count,
+		"quota_refund":     maxInt(0, receipt.Total-count),
+		"available_quota":  finalUser.AvailableQuota,
+		"attempts":         logAttempts(ctx),
+	})
 	log.Printf("image_edit success user=%s model=%s items=%d archived=%d duration_ms=%d", identity.ID, req.Model, count, saved, duration)
 	s.logCall(r, identity, "/v1/images/edits", req.Model, "success", "", map[string]any{
 		"task_id":          taskID,

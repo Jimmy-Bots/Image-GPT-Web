@@ -21,25 +21,25 @@ const (
 )
 
 type User struct {
-	ID                 string     `json:"id"`
-	Email              string     `json:"email"`
-	Name               string     `json:"name"`
-	PasswordHash       string     `json:"-"`
-	Role               Role       `json:"role"`
-	Status             UserStatus `json:"status"`
-	QuotaUnlimited     bool       `json:"quota_unlimited"`
-	PermanentQuota     int        `json:"permanent_quota"`
-	TemporaryQuota     int        `json:"temporary_quota"`
-	TemporaryQuotaDate string     `json:"temporary_quota_date,omitempty"`
-	DailyTemporaryQuota int       `json:"daily_temporary_quota"`
-	QuotaUsedTotal     int        `json:"quota_used_total"`
-	QuotaUsedToday     int        `json:"quota_used_today"`
-	QuotaUsedDate      string     `json:"quota_used_date,omitempty"`
-	AvailableQuota     int        `json:"available_quota"`
-	APIKey             *APIKey    `json:"api_key,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
+	ID                  string     `json:"id"`
+	Email               string     `json:"email"`
+	Name                string     `json:"name"`
+	PasswordHash        string     `json:"-"`
+	Role                Role       `json:"role"`
+	Status              UserStatus `json:"status"`
+	QuotaUnlimited      bool       `json:"quota_unlimited"`
+	PermanentQuota      int        `json:"permanent_quota"`
+	TemporaryQuota      int        `json:"temporary_quota"`
+	TemporaryQuotaDate  string     `json:"temporary_quota_date,omitempty"`
+	DailyTemporaryQuota int        `json:"daily_temporary_quota"`
+	QuotaUsedTotal      int        `json:"quota_used_total"`
+	QuotaUsedToday      int        `json:"quota_used_today"`
+	QuotaUsedDate       string     `json:"quota_used_date,omitempty"`
+	AvailableQuota      int        `json:"available_quota"`
+	APIKey              *APIKey    `json:"api_key,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	LastLoginAt         *time.Time `json:"last_login_at,omitempty"`
 }
 
 type UserQuotaReceipt struct {
@@ -108,4 +108,16 @@ type ImageTask struct {
 	Error          string          `json:"error,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
+	DeletedAt      *time.Time      `json:"deleted_at,omitempty"`
+	DeletedBy      string          `json:"deleted_by,omitempty"`
+}
+
+type TaskEvent struct {
+	ID      string          `json:"id"`
+	OwnerID string          `json:"-"`
+	TaskID  string          `json:"task_id"`
+	Time    time.Time       `json:"time"`
+	Type    string          `json:"type"`
+	Summary string          `json:"summary"`
+	Detail  json.RawMessage `json:"detail,omitempty"`
 }

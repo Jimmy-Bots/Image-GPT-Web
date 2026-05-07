@@ -129,6 +129,53 @@ func TestImageTaskListUsesLightweightRowsAndDetailByID(t *testing.T) {
 	}
 }
 
+func TestImageTaskEventsFollowLifecycle(t *testing.T) {
+	upstream := &taskCaptureUpstream{requests: make(chan api.ImageGenerationPayload, 1)}
+	server, cleanup := newTestServer(t, upstream)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/image-tasks/generations", strings.NewReader(`{"client_task_id":"task-events","prompt":"event prompt","model":"gpt-image-2"}`))
+	req.Header.Set("Authorization", "Bearer dev-key")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("create task failed: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	waitForTaskDetail(t, server, "task-events")
+
+	eventReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks/task-events/events", nil)
+	eventReq.Header.Set("Authorization", "Bearer dev-key")
+	eventRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(eventRec, eventReq)
+	if eventRec.Code != http.StatusOK {
+		t.Fatalf("list task events failed: %d body=%s", eventRec.Code, eventRec.Body.String())
+	}
+	var payload struct {
+		Items []struct {
+			Type    string           `json:"type"`
+			Summary string           `json:"summary"`
+			Detail  *json.RawMessage `json:"detail,omitempty"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(eventRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode task events: %v body=%s", err, eventRec.Body.String())
+	}
+	seen := map[string]bool{}
+	for _, item := range payload.Items {
+		seen[item.Type] = true
+		if item.Detail == nil {
+			t.Fatalf("event %q missing detail", item.Type)
+		}
+	}
+	for _, eventType := range []string{"submitted", "queued", "processing", "success"} {
+		if !seen[eventType] {
+			t.Fatalf("missing task event %q: %#v", eventType, payload.Items)
+		}
+	}
+}
+
 func TestImageTasksCanBeDeleted(t *testing.T) {
 	server, cleanup := newTestServer(t, fakeStreamUpstream{})
 	defer cleanup()
@@ -160,6 +207,39 @@ func TestImageTasksCanBeDeleted(t *testing.T) {
 	}
 	if !strings.Contains(detailRec.Body.String(), `"missing_ids":["task-delete"]`) {
 		t.Fatalf("deleted task should be missing: %s", detailRec.Body.String())
+	}
+
+	includeDeletedReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks?include_deleted=true&query=task-delete", nil)
+	includeDeletedReq.Header.Set("Authorization", "Bearer dev-key")
+	includeDeletedRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(includeDeletedRec, includeDeletedReq)
+	if includeDeletedRec.Code != http.StatusOK {
+		t.Fatalf("list including deleted failed: %d body=%s", includeDeletedRec.Code, includeDeletedRec.Body.String())
+	}
+	if !strings.Contains(includeDeletedRec.Body.String(), `"id":"task-delete"`) || !strings.Contains(includeDeletedRec.Body.String(), `"deleted_at"`) {
+		t.Fatalf("soft-deleted task should be available for audit: %s", includeDeletedRec.Body.String())
+	}
+
+	eventReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks/task-delete/events", nil)
+	eventReq.Header.Set("Authorization", "Bearer dev-key")
+	eventRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(eventRec, eventReq)
+	if eventRec.Code != http.StatusOK {
+		t.Fatalf("deleted task events should be retained: %d body=%s", eventRec.Code, eventRec.Body.String())
+	}
+	if !strings.Contains(eventRec.Body.String(), `"type":"deleted"`) {
+		t.Fatalf("deleted task events should include deletion marker: %s", eventRec.Body.String())
+	}
+
+	logReq := httptest.NewRequest(http.MethodGet, "/api/logs?type=task&detail=true", nil)
+	logReq.Header.Set("Authorization", "Bearer dev-key")
+	logRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(logRec, logReq)
+	if logRec.Code != http.StatusOK {
+		t.Fatalf("task audit log should be readable: %d body=%s", logRec.Code, logRec.Body.String())
+	}
+	if !strings.Contains(logRec.Body.String(), `"图片任务删除"`) {
+		t.Fatalf("task deletion audit log missing: %s", logRec.Body.String())
 	}
 }
 

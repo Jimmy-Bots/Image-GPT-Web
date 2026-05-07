@@ -163,9 +163,23 @@ func (s *Store) migrate(ctx context.Context) error {
 			error TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
+			deleted_at TEXT,
+			deleted_by TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY(owner_id, id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_image_tasks_updated_at ON image_tasks(updated_at)`,
+		`CREATE TABLE IF NOT EXISTS task_events (
+			owner_id TEXT NOT NULL,
+			task_id TEXT NOT NULL,
+			id TEXT NOT NULL,
+			time TEXT NOT NULL,
+			type TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			detail_json TEXT NOT NULL DEFAULT '{}',
+			PRIMARY KEY(owner_id, task_id, id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_task_events_task_time ON task_events(owner_id, task_id, time)`,
+		`CREATE INDEX IF NOT EXISTS idx_task_events_time ON task_events(owner_id, time)`,
 	}
 	for _, stmt := range statements {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -226,7 +240,77 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.addColumnIfMissing(ctx, "image_tasks", "reserved_quota_json", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing(ctx, "image_tasks", "deleted_at", "TEXT"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "image_tasks", "deleted_by", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureTaskEventsRetainAfterTaskDelete(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Store) ensureTaskEventsRetainAfterTaskDelete(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA foreign_key_list(task_events)`)
+	if err != nil {
+		return err
+	}
+	hasImageTaskFK := false
+	for rows.Next() {
+		var id int
+		var seq int
+		var table string
+		var from string
+		var to string
+		var onUpdate string
+		var onDelete string
+		var match string
+		if err := rows.Scan(&id, &seq, &table, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+			rows.Close()
+			return err
+		}
+		if table == "image_tasks" {
+			hasImageTaskFK = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !hasImageTaskFK {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`DROP TABLE IF EXISTS task_events_next`,
+		`CREATE TABLE task_events_next (
+			owner_id TEXT NOT NULL,
+			task_id TEXT NOT NULL,
+			id TEXT NOT NULL,
+			time TEXT NOT NULL,
+			type TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			detail_json TEXT NOT NULL DEFAULT '{}',
+			PRIMARY KEY(owner_id, task_id, id)
+		)`,
+		`INSERT OR IGNORE INTO task_events_next (owner_id, task_id, id, time, type, summary, detail_json)
+			SELECT owner_id, task_id, id, time, type, summary, detail_json FROM task_events`,
+		`DROP TABLE task_events`,
+		`ALTER TABLE task_events_next RENAME TO task_events`,
+		`CREATE INDEX IF NOT EXISTS idx_task_events_task_time ON task_events(owner_id, task_id, time)`,
+		`CREATE INDEX IF NOT EXISTS idx_task_events_time ON task_events(owner_id, time)`,
+	}
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ensureSingleAPIKeyPerUser(ctx context.Context) error {
@@ -1293,11 +1377,60 @@ func (s *Store) DeleteLogs(ctx context.Context, ids []string) (int, error) {
 	return removed, tx.Commit()
 }
 
+func (s *Store) AddTaskEvent(ctx context.Context, item domain.TaskEvent) error {
+	if len(item.Detail) == 0 {
+		item.Detail = json.RawMessage(`{}`)
+	}
+	_, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO task_events (owner_id, task_id, id, time, type, summary, detail_json) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		item.OwnerID,
+		item.TaskID,
+		item.ID,
+		formatTime(item.Time),
+		item.Type,
+		item.Summary,
+		string(item.Detail),
+	)
+	return err
+}
+
+func (s *Store) ListTaskEvents(ctx context.Context, ownerID string, taskID string, includeDetail bool) ([]domain.TaskEvent, error) {
+	detailExpr := `NULL`
+	if includeDetail {
+		detailExpr = `detail_json`
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT owner_id, task_id, id, time, type, summary, `+detailExpr+`
+		FROM task_events WHERE owner_id = ? AND task_id = ? ORDER BY time ASC, id ASC LIMIT 500`, ownerID, strings.TrimSpace(taskID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]domain.TaskEvent, 0)
+	for rows.Next() {
+		var item domain.TaskEvent
+		var at string
+		var detail sql.NullString
+		if err := rows.Scan(&item.OwnerID, &item.TaskID, &item.ID, &at, &item.Type, &item.Summary, &detail); err != nil {
+			return nil, err
+		}
+		item.Time = parseTime(at)
+		if detail.Valid && detail.String != "" {
+			item.Detail = json.RawMessage(detail.String)
+		}
+		items = append(items, item)
+	}
+	if items == nil {
+		items = []domain.TaskEvent{}
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) CreateImageTask(ctx context.Context, task domain.ImageTask) error {
 	_, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO image_tasks (owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, data_json, error, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO image_tasks (owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, data_json, error, created_at, updated_at, deleted_at, deleted_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.OwnerID,
 		task.ID,
 		task.Status,
@@ -1312,6 +1445,8 @@ func (s *Store) CreateImageTask(ctx context.Context, task domain.ImageTask) erro
 		task.Error,
 		formatTime(task.CreatedAt),
 		formatTime(task.UpdatedAt),
+		formatTimePtr(task.DeletedAt),
+		task.DeletedBy,
 	)
 	return err
 }
@@ -1321,7 +1456,7 @@ func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string
 	if includeData {
 		dataExpr = `data_json`
 	}
-	query := `SELECT owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, ` + dataExpr + `, error, created_at, updated_at FROM image_tasks WHERE owner_id = ?`
+	query := `SELECT owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, ` + dataExpr + `, error, created_at, updated_at, deleted_at, deleted_by FROM image_tasks WHERE owner_id = ? AND deleted_at IS NULL`
 	args := []any{ownerID}
 	if len(ids) > 0 {
 		placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
@@ -1350,15 +1485,16 @@ func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string
 	return items, rows.Err()
 }
 
-func (s *Store) DeleteImageTasks(ctx context.Context, ownerID string, ids []string) (int, error) {
+func (s *Store) DeleteImageTasks(ctx context.Context, ownerID string, deletedBy string, ids []string) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
 	removed := 0
+	now := formatTime(time.Now().UTC())
 	for _, id := range ids {
-		res, err := tx.ExecContext(ctx, `DELETE FROM image_tasks WHERE owner_id = ? AND id = ?`, ownerID, strings.TrimSpace(id))
+		res, err := tx.ExecContext(ctx, `UPDATE image_tasks SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE owner_id = ? AND id = ? AND deleted_at IS NULL`, now, deletedBy, now, ownerID, strings.TrimSpace(id))
 		if err != nil {
 			return 0, err
 		}
@@ -1564,7 +1700,8 @@ func scanImageTask(row rowScanner) (domain.ImageTask, error) {
 	var data sql.NullString
 	var createdAt string
 	var updatedAt string
-	err := row.Scan(&item.OwnerID, &item.ID, &item.Status, &item.Phase, &item.Mode, &item.Model, &item.Size, &item.Prompt, &item.RequestedCount, &reservedQuota, &data, &item.Error, &createdAt, &updatedAt)
+	var deletedAt sql.NullString
+	err := row.Scan(&item.OwnerID, &item.ID, &item.Status, &item.Phase, &item.Mode, &item.Model, &item.Size, &item.Prompt, &item.RequestedCount, &reservedQuota, &data, &item.Error, &createdAt, &updatedAt, &deletedAt, &item.DeletedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ImageTask{}, ErrNotFound
 	}
@@ -1579,6 +1716,10 @@ func scanImageTask(row rowScanner) (domain.ImageTask, error) {
 	}
 	item.CreatedAt = parseTime(createdAt)
 	item.UpdatedAt = parseTime(updatedAt)
+	if deletedAt.Valid && strings.TrimSpace(deletedAt.String) != "" {
+		parsed := parseTime(deletedAt.String)
+		item.DeletedAt = &parsed
+	}
 	return item, nil
 }
 

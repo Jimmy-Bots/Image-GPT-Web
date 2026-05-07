@@ -80,6 +80,7 @@ func saveSettings(t *testing.T, server *api.Server, settings map[string]any) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("save settings failed: %d body=%s", rec.Code, rec.Body.String())
 	}
+	assertLogContains(t, server, "settings", "保存系统设置")
 }
 
 func writeTestJSON(w http.ResponseWriter, value any) {

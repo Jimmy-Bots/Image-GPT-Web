@@ -111,6 +111,17 @@ export type ImageTask = {
   error?: string;
   created_at: string;
   updated_at: string;
+  deleted_at?: string;
+  deleted_by?: string;
+};
+
+export type TaskEvent = {
+  id: string;
+  task_id: string;
+  time: string;
+  type: string;
+  summary: string;
+  detail?: unknown;
 };
 
 export type ImageResult = {

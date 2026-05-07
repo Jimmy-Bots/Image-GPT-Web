@@ -3,8 +3,8 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -65,7 +65,8 @@ func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteImages(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	var req imagesDeleteRequest
@@ -84,6 +85,11 @@ func (s *Server) handleDeleteImages(w http.ResponseWriter, r *http.Request) {
 			removed++
 		}
 	}
+	s.addAuditLog(r, identity, "image", "删除归档图片", map[string]any{
+		"requested": len(compactStrings(req.Paths)),
+		"removed":   removed,
+		"paths":     compactStrings(req.Paths),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 

@@ -50,6 +50,7 @@ func TestImageGenerationPersistsLocalArchive(t *testing.T) {
 	if deleteRec.Code != http.StatusOK || !strings.Contains(deleteRec.Body.String(), `"removed":1`) {
 		t.Fatalf("delete failed: %d body=%s", deleteRec.Code, deleteRec.Body.String())
 	}
+	assertLogContains(t, server, "image", "删除归档图片")
 }
 
 func TestImageGenerationURLResponseUsesLocalArchive(t *testing.T) {
@@ -75,6 +76,28 @@ func TestImageGenerationURLResponseUsesLocalArchive(t *testing.T) {
 	}
 	if strings.Contains(body, `"b64_json"`) {
 		t.Fatalf("url response leaked b64_json: %s", body)
+	}
+
+	tasksReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks", nil)
+	tasksReq.Header.Set("Authorization", "Bearer dev-key")
+	tasksRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(tasksRec, tasksReq)
+	if tasksRec.Code != http.StatusOK {
+		t.Fatalf("list tasks failed: %d body=%s", tasksRec.Code, tasksRec.Body.String())
+	}
+	if !strings.Contains(tasksRec.Body.String(), `"mode":"generate"`) {
+		t.Fatalf("sync image call should create an auditable task: %s", tasksRec.Body.String())
+	}
+	taskID := strings.Split(strings.Split(tasksRec.Body.String(), `"id":"`)[1], `"`)[0]
+	eventReq := httptest.NewRequest(http.MethodGet, "/api/image-tasks/"+taskID+"/events", nil)
+	eventReq.Header.Set("Authorization", "Bearer dev-key")
+	eventRec := httptest.NewRecorder()
+	server.Routes().ServeHTTP(eventRec, eventReq)
+	if eventRec.Code != http.StatusOK {
+		t.Fatalf("list sync task events failed: %d body=%s", eventRec.Code, eventRec.Body.String())
+	}
+	if !strings.Contains(eventRec.Body.String(), `"type":"submitted"`) || !strings.Contains(eventRec.Body.String(), `"type":"success"`) {
+		t.Fatalf("sync image task events missing lifecycle markers: %s", eventRec.Body.String())
 	}
 }
 

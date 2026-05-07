@@ -35,6 +35,7 @@ func TestAdminCreatesUserWithSingleAPIKeyAndPasswordLogin(t *testing.T) {
 	if created.Item.ID == "" || created.Item.APIKey.ID == "" || !strings.HasPrefix(created.Key, "sk-") {
 		t.Fatalf("create response missing user API key: %s", createRec.Body.String())
 	}
+	assertLogContains(t, server, "user", "创建用户")
 
 	loginReq := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"email":"user@example.com","password":"password123"}`))
 	loginReq.Header.Set("Content-Type", "application/json")
@@ -60,6 +61,7 @@ func TestAdminCreatesUserWithSingleAPIKeyAndPasswordLogin(t *testing.T) {
 	if reset.Key == "" || reset.Key == created.Key {
 		t.Fatalf("reset did not return a new key: old=%q new=%q", created.Key, reset.Key)
 	}
+	assertLogContains(t, server, "user", "重置用户 API Key")
 	oldKeyReq := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	oldKeyReq.Header.Set("Authorization", "Bearer "+created.Key)
 	oldKeyRec := httptest.NewRecorder()

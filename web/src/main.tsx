@@ -28,7 +28,7 @@ import {
   X
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
-import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, SystemLog, Toast, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, SystemLog, TaskEvent, Toast, User } from "./types";
 import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass, storedImageURL } from "./utils";
 import "./styles.css";
 
@@ -1860,8 +1860,8 @@ function ActivityPanel({ token, tasks, setTasks, setTaskTotal, logs, setLogs, op
   return (
     <section className="panel">
       <PanelHead
-        title="任务日志"
-        subtitle="图片任务与系统日志统一查看，详情通过弹窗查看完整上下文"
+        title="任务中心"
+        subtitle="图片任务独立保存生命周期，系统日志保留账号、调用与后台审计"
         action={<><div className="segmented"><button className={classNames(view === "tasks" && "active")} onClick={() => setView("tasks")}>任务</button><button className={classNames(view === "logs" && "active")} onClick={() => setView("logs")}>日志</button></div><button className="secondary" onClick={() => refresh().catch((error) => toast("error", error.message))}>刷新</button></>}
       />
       {view === "tasks"
@@ -1880,6 +1880,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
   const [loadingPreview, setLoadingPreview] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [includeDeleted, setIncludeDeleted] = useState(false);
   const [total, setTotal] = useState(0);
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   useHorizontalWheelScroll(tableWrapRef);
@@ -1887,10 +1888,10 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
   const selectedSet = new Set(selected);
   const allVisibleSelected = rows.length > 0 && rows.every((task) => selectedSet.has(task.id));
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  useEffect(() => setPage(1), [query, status, pageSize]);
+  useEffect(() => setPage(1), [query, status, pageSize, includeDeleted]);
   useEffect(() => {
     let cancelled = false;
-    api.tasks(token, [], { page, pageSize, query, status }).then((data) => {
+    api.tasks(token, [], { page, pageSize, query, status, includeDeleted }).then((data) => {
       if (cancelled) return;
       setTasks(data.items || []);
       setTotal(Number(data.total || 0));
@@ -1900,7 +1901,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
     return () => {
       cancelled = true;
     };
-  }, [token, page, pageSize, query, status, setTaskTotal]);
+  }, [token, page, pageSize, query, status, includeDeleted, setTaskTotal]);
   const detailTask = detailTaskID ? rows.find((task) => task.id === detailTaskID) || null : null;
   function toggleVisible(checked: boolean) {
     const visibleIDs = rows.map((task) => task.id);
@@ -1949,7 +1950,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
   async function removeSelected() {
     if (!selected.length || !confirm(`删除 ${selected.length} 个图片任务？`)) return;
     const data = await api.deleteTasks(token, selected);
-    const next = await api.tasks(token, [], { page, pageSize, query, status });
+    const next = await api.tasks(token, [], { page, pageSize, query, status, includeDeleted });
     setTasks(next.items || []);
     setTotal(Number(next.total || 0));
     setTaskTotal(Number(next.total || 0));
@@ -1962,24 +1963,26 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
         <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务 ID、模型、提示词、状态" />
         <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>queued</option><option>running</option><option>success</option><option>error</option></select></ControlField>
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
-        <div className="filter-actions"><button className="secondary" onClick={() => api.tasks(token, [], { page, pageSize, query, status }).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
+        <ControlField label="范围"><select value={includeDeleted ? "all" : "active"} onChange={(event) => setIncludeDeleted(event.target.value === "all")}><option value="active">未删除</option><option value="all">含已删除</option></select></ControlField>
+        <div className="filter-actions"><button className="secondary" onClick={() => api.tasks(token, [], { page, pageSize, query, status, includeDeleted }).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
       </div>
       <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
         const first = parseTaskData(task.data)[0];
         const src = first ? imageSrc(first, token) : "";
         const canPreview = Boolean(src) || task.status === "success";
+        const deleted = Boolean(task.deleted_at);
         return (
           <tr key={task.id}>
-            <td><input type="checkbox" checked={selectedSet.has(task.id)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, task.id] : prev.filter((id) => id !== task.id))} /></td>
+            <td><input type="checkbox" disabled={deleted} checked={selectedSet.has(task.id)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, task.id] : prev.filter((id) => id !== task.id))} /></td>
             <td><code>{task.id}</code></td>
             <td>{task.mode}</td>
-            <td><Badge value={task.status} /></td>
+            <td>{deleted ? <Badge value="deleted" /> : <Badge value={task.status} />}</td>
             <td>{task.prompt || "-"}</td>
             <td>{task.model || "-"}</td>
             <td>{task.size || "-"}</td>
             <td>{taskDuration(task)}</td>
             <td>{canPreview ? <button className="link-button" onClick={() => openPreview(task)}>{loadingPreview === task.id ? "加载" : "预览"}</button> : "-"}</td>
-            <td>{fmtDate(task.updated_at)}</td>
+            <td>{fmtDate(task.deleted_at || task.updated_at)}</td>
             <td><button className="ghost small" onClick={() => openDetail(task)}>{loadingDetail === task.id ? "加载" : "详情"}</button></td>
           </tr>
         );
@@ -1994,6 +1997,27 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
 
 function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageTask; openLightbox: (src: string, title?: string) => void }) {
   const results = parseTaskData(task.data);
+  const [events, setEvents] = useState<TaskEvent[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(true);
+  const [eventsError, setEventsError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    setEventsLoading(true);
+    setEventsError("");
+    setEvents([]);
+    api.taskEvents(token, task.id).then((data) => {
+      if (cancelled) return;
+      setEvents(data.items || []);
+    }).catch((error) => {
+      if (cancelled) return;
+      setEventsError(error instanceof Error ? error.message : "读取任务事件失败");
+    }).finally(() => {
+      if (!cancelled) setEventsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, task.id]);
   return (
     <div className="detail-panel">
       <div className="detail-grid">
@@ -2001,6 +2025,8 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
         <DetailItem label="状态" value={task.status} />
         <DetailItem label="创建时间" value={fmtDate(task.created_at)} />
         <DetailItem label="更新时间" value={fmtDate(task.updated_at)} />
+        {task.deleted_at ? <DetailItem label="删除时间" value={fmtDate(task.deleted_at)} /> : null}
+        {task.deleted_by ? <DetailItem label="删除人" value={task.deleted_by} code /> : null}
         <DetailItem label="生成时间" value={taskDuration(task)} />
         <DetailItem label="模型" value={task.model || "-"} />
         <DetailItem label="比例" value={task.size || "-"} />
@@ -2010,7 +2036,39 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
       {task.prompt ? <div className="detail-prompt"><span>提示词</span><p>{task.prompt}</p></div> : null}
       {task.error ? <p className="detail-error">{task.error}</p> : null}
       {results.length ? <div className="detail-images">{results.map((item, index) => { const src = imageSrc(item, token); return src ? <button key={index} onClick={() => openLightbox(src, task.id)}><img src={src} alt={`task ${index + 1}`} /></button> : null; })}</div> : null}
+      <TaskEventTimeline events={events} loading={eventsLoading} error={eventsError} />
       <pre className="detail-json">{safeJSON({ ...task, data: results })}</pre>
+    </div>
+  );
+}
+
+function TaskEventTimeline({ events, loading, error }: { events: TaskEvent[]; loading: boolean; error: string }) {
+  return (
+    <div className="task-timeline">
+      <div className="task-timeline-head">
+        <strong>任务事件</strong>
+        <span>{loading ? "加载中" : `${events.length} 条`}</span>
+      </div>
+      {error ? <p className="detail-error">{error}</p> : null}
+      {!loading && !error && events.length === 0 ? <p className="task-timeline-empty">暂无事件记录</p> : null}
+      {events.map((event) => {
+        const detail = taskEventDetail(event);
+        return (
+          <article key={event.id} className="task-event">
+            <time>{fmtDate(event.time)}</time>
+            <div>
+              <div className="task-event-title"><Badge value={event.type} /><strong>{event.summary}</strong></div>
+              <div className="task-event-meta">
+                {detail.phase ? <span>phase={String(detail.phase)}</span> : null}
+                {detail.attempt ? <span>attempt={String(detail.attempt)}</span> : null}
+                {detail.quota_used !== undefined ? <span>quota={String(detail.quota_used)}</span> : null}
+                {detail.items !== undefined ? <span>items={String(detail.items)}</span> : null}
+              </div>
+              {detail.error ? <p className="task-event-error">{String(detail.error)}</p> : null}
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -2086,7 +2144,7 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
     <>
       <div className="filters filters-card activity-filters">
         <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索日志内容、接口、模型" />
-        <ControlField label="类型"><select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="account">账号</option><option value="register">注册</option><option value="backup">备份</option></select></ControlField>
+        <ControlField label="类型"><select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="account">账号</option><option value="task">任务拒绝</option><option value="register">注册</option><option value="backup">备份</option></select></ControlField>
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
         <div className="filter-actions"><button className="secondary" onClick={() => load().catch((error) => toast("error", error.message))}>刷新日志</button><button className="danger" disabled={!selected.length} onClick={() => clear().catch((error) => toast("error", error.message))}>清理选中</button></div>
       </div>
@@ -2160,6 +2218,11 @@ function DetailItem({ label, value, code }: { label: string; value: string; code
 function logDetail(log: SystemLog): Record<string, unknown> {
   if (!log.detail || typeof log.detail !== "object" || Array.isArray(log.detail)) return {};
   return log.detail as Record<string, unknown>;
+}
+
+function taskEventDetail(event: TaskEvent): Record<string, unknown> {
+  if (!event.detail || typeof event.detail !== "object" || Array.isArray(event.detail)) return {};
+  return event.detail as Record<string, unknown>;
 }
 
 function formatRegisterLogLine(log: SystemLog) {

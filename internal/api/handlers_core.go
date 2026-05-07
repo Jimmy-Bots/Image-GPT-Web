@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -179,7 +180,8 @@ func (s *Server) handleGetAccountRefreshStatus(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) handleDeleteAccounts(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	var req accountDeleteRequest
@@ -197,12 +199,19 @@ func (s *Server) handleDeleteAccounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
-	s.addLog(r, "account", "删除账号", map[string]any{"removed": removed})
+	refs := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if strings.TrimSpace(token) != "" {
+			refs = append(refs, accountTokenRef(token))
+		}
+	}
+	s.addAuditLog(r, identity, "account", "删除账号", map[string]any{"removed": removed, "token_refs": refs})
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
 func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	var req accountUpdateRequest
@@ -224,6 +233,16 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, storageStatus(err), "update_account_failed", err.Error())
 		return
 	}
+	s.addAuditLog(r, identity, "account", "更新账号", map[string]any{
+		"token_ref":           accountTokenRef(token),
+		"updated_fields":      accountUpdateFieldNames(req),
+		"status":              item.Status,
+		"type":                item.Type,
+		"quota":               item.Quota,
+		"max_concurrency":     item.MaxConcurrency,
+		"password_updated":    req.Password != nil,
+		"access_token_masked": maskToken(token),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"item": publicAccount(item, s.pool.Stats(r.Context()).Accounts)})
 }
 
@@ -306,7 +325,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	var settings map[string]any
@@ -322,6 +342,10 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	if s.backup != nil {
 		s.backup.RefreshSchedule()
 	}
+	s.addAuditLog(r, identity, "settings", "保存系统设置", map[string]any{
+		"keys":     sortedSettingKeys(settings),
+		"settings": redactForLog(settings),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"config": saved})
 }
 
@@ -372,7 +396,8 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	if s.backup == nil {
@@ -394,6 +419,7 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "backup_delete_failed", err.Error())
 		return
 	}
+	s.addAuditLog(r, identity, "backup", "删除备份", map[string]any{"key": req.Key})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -531,7 +557,8 @@ func (s *Server) handleListLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteLogs(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	var req logsDeleteRequest
@@ -544,6 +571,7 @@ func (s *Server) handleDeleteLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
+	s.addAuditLog(r, identity, "audit", "清理系统日志", map[string]any{"requested": len(compactStrings(req.IDs)), "removed": removed})
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
@@ -560,6 +588,89 @@ func (s *Server) addLogContext(ctx context.Context, logType string, summary stri
 		Summary: summary,
 		Detail:  payload,
 	})
+}
+
+func (s *Server) addAuditLog(r *http.Request, identity Identity, logType string, summary string, detail map[string]any) {
+	payload := cloneLogDetail(detail)
+	payload["actor_id"] = identity.ID
+	payload["actor_name"] = identity.Name
+	payload["actor_role"] = identity.Role
+	payload["actor_auth_type"] = identity.AuthType
+	if identity.KeyID != "" {
+		payload["actor_key_id"] = identity.KeyID
+	}
+	payload["ip"] = clientIP(r)
+	payload["path"] = safeLogPath(r)
+	s.addLogContext(r.Context(), logType, summary, payload)
+}
+
+func accountUpdateFieldNames(req accountUpdateRequest) []string {
+	fields := make([]string, 0, 5)
+	if req.Type != nil {
+		fields = append(fields, "type")
+	}
+	if req.Status != nil {
+		fields = append(fields, "status")
+	}
+	if req.Quota != nil {
+		fields = append(fields, "quota")
+	}
+	if req.Password != nil {
+		fields = append(fields, "password")
+	}
+	if req.MaxConcurrency != nil {
+		fields = append(fields, "max_concurrency")
+	}
+	return fields
+}
+
+func sortedSettingKeys(settings map[string]any) []string {
+	keys := make([]string, 0, len(settings))
+	for key := range settings {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func redactForLog(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if isSensitiveLogKey(key) {
+				if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+					out[key] = maskToken(text)
+				} else {
+					out[key] = ""
+				}
+				continue
+			}
+			out[key] = redactForLog(item)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, redactForLog(item))
+		}
+		return out
+	default:
+		return typed
+	}
+}
+
+func isSensitiveLogKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	return strings.Contains(key, "password") ||
+		strings.Contains(key, "passphrase") ||
+		strings.Contains(key, "secret") ||
+		strings.Contains(key, "token") ||
+		strings.Contains(key, "api_key") ||
+		strings.Contains(key, "access_key")
 }
 
 func compactStrings(values []string) []string {

@@ -48,10 +48,11 @@ type LogListQuery struct {
 }
 
 type ImageTaskPageQuery struct {
-	Page     int
-	PageSize int
-	Query    string
-	Status   string
+	Page           int
+	PageSize       int
+	Query          string
+	Status         string
+	IncludeDeleted bool
 }
 
 func (s *Store) ListAccountsPage(ctx context.Context, query AccountListQuery) ([]domain.Account, int, AccountListSummary, error) {
@@ -195,7 +196,7 @@ func (s *Store) ListImageTasksPage(ctx context.Context, ownerID string, query Im
 		return nil, 0, err
 	}
 
-	itemsQuery := `SELECT owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, NULL, error, created_at, updated_at
+	itemsQuery := `SELECT owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, NULL, error, created_at, updated_at, deleted_at, deleted_by
 		FROM image_tasks` + where + ` ORDER BY updated_at DESC LIMIT ? OFFSET ?`
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, itemsQuery, itemsArgs...)
@@ -273,6 +274,9 @@ func buildLogWhere(query LogListQuery) (string, []any) {
 func buildTaskWhere(ownerID string, query ImageTaskPageQuery) (string, []any) {
 	clauses := []string{`owner_id = ?`}
 	args := []any{ownerID}
+	if !query.IncludeDeleted {
+		clauses = append(clauses, `deleted_at IS NULL`)
+	}
 	if status := strings.TrimSpace(query.Status); status != "" {
 		clauses = append(clauses, `status = ?`)
 		args = append(args, status)

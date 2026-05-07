@@ -73,17 +73,17 @@ type userCreateResponse struct {
 }
 
 type userUpdateRequest struct {
-	Email              *string      `json:"email"`
-	Name               *string      `json:"name"`
-	Password           *string      `json:"password"`
-	Role               *domain.Role `json:"role"`
-	Status             *string      `json:"status"`
-	QuotaUnlimited     *bool        `json:"quota_unlimited"`
-	PermanentQuota     *int         `json:"permanent_quota"`
-	TemporaryQuota     *int         `json:"temporary_quota"`
-	TemporaryQuotaDate *string      `json:"temporary_quota_date"`
-	DailyTemporaryQuota *int        `json:"daily_temporary_quota"`
-	AddPermanentQuota  *int         `json:"add_permanent_quota"`
+	Email               *string      `json:"email"`
+	Name                *string      `json:"name"`
+	Password            *string      `json:"password"`
+	Role                *domain.Role `json:"role"`
+	Status              *string      `json:"status"`
+	QuotaUnlimited      *bool        `json:"quota_unlimited"`
+	PermanentQuota      *int         `json:"permanent_quota"`
+	TemporaryQuota      *int         `json:"temporary_quota"`
+	TemporaryQuotaDate  *string      `json:"temporary_quota_date"`
+	DailyTemporaryQuota *int         `json:"daily_temporary_quota"`
+	AddPermanentQuota   *int         `json:"add_permanent_quota"`
 }
 
 type userBatchRequest struct {
@@ -395,7 +395,8 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	var req userCreateRequest
@@ -417,11 +418,25 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user.APIKey = &keyItem
+	s.addAuditLog(r, identity, "user", "创建用户", map[string]any{
+		"user_id":          user.ID,
+		"email":            user.Email,
+		"name":             user.Name,
+		"role":             user.Role,
+		"quota_unlimited":  user.QuotaUnlimited,
+		"permanent_quota":  user.PermanentQuota,
+		"temporary_quota":  user.TemporaryQuota,
+		"daily_temp_quota": user.DailyTemporaryQuota,
+		"api_key_id":       keyItem.ID,
+		"api_key_enabled":  keyItem.Enabled,
+		"raw_key_returned": raw != "",
+	})
 	writeJSON(w, http.StatusCreated, userCreateResponse{Item: user, APIKey: publicKey(keyItem), Key: raw})
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	var req userUpdateRequest
@@ -430,15 +445,15 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	update := storage.UserUpdate{
-		Email:              req.Email,
-		Name:               req.Name,
-		Role:               req.Role,
-		QuotaUnlimited:     req.QuotaUnlimited,
-		PermanentQuota:     req.PermanentQuota,
-		TemporaryQuota:     req.TemporaryQuota,
-		TemporaryQuotaDate: req.TemporaryQuotaDate,
+		Email:               req.Email,
+		Name:                req.Name,
+		Role:                req.Role,
+		QuotaUnlimited:      req.QuotaUnlimited,
+		PermanentQuota:      req.PermanentQuota,
+		TemporaryQuota:      req.TemporaryQuota,
+		TemporaryQuotaDate:  req.TemporaryQuotaDate,
 		DailyTemporaryQuota: req.DailyTemporaryQuota,
-		AddPermanentQuota:  req.AddPermanentQuota,
+		AddPermanentQuota:   req.AddPermanentQuota,
 	}
 	if req.Password != nil {
 		hash, err := auth.HashPassword(*req.Password)
@@ -460,11 +475,21 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
 		user.APIKey = &key
 	}
+	s.addAuditLog(r, identity, "user", "更新用户", map[string]any{
+		"user_id":          user.ID,
+		"email":            user.Email,
+		"name":             user.Name,
+		"role":             user.Role,
+		"status":           user.Status,
+		"updated_fields":   userUpdateFieldNames(req),
+		"password_updated": req.Password != nil,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"item": user})
 }
 
 func (s *Server) handleBatchUsers(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	var req userBatchRequest
@@ -507,27 +532,27 @@ func (s *Server) handleBatchUsers(w http.ResponseWriter, r *http.Request) {
 			results = append(results, user)
 			updated++
 		}
-		case "grant_temporary_quota":
-			if req.TemporaryQuota == nil {
-				writeError(w, http.StatusBadRequest, "bad_request", "temporary_quota is required")
+	case "grant_temporary_quota":
+		if req.TemporaryQuota == nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "temporary_quota is required")
+			return
+		}
+		for _, id := range ids {
+			today := quotaDayString(time.Now())
+			user, err := s.store.UpdateUser(r.Context(), id, storage.UserUpdate{
+				TemporaryQuota:     req.TemporaryQuota,
+				TemporaryQuotaDate: &today,
+			})
+			if err != nil {
+				writeError(w, storageStatus(err), "batch_user_failed", err.Error())
 				return
 			}
-			for _, id := range ids {
-				today := quotaDayString(time.Now())
-				user, err := s.store.UpdateUser(r.Context(), id, storage.UserUpdate{
-					TemporaryQuota:     req.TemporaryQuota,
-					TemporaryQuotaDate: &today,
-				})
-				if err != nil {
-					writeError(w, storageStatus(err), "batch_user_failed", err.Error())
-					return
-				}
-				if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
-					user.APIKey = &key
-				}
-				results = append(results, user)
-				updated++
+			if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
+				user.APIKey = &key
 			}
+			results = append(results, user)
+			updated++
+		}
 	case "grant_permanent_quota":
 		if req.PermanentQuota == nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "permanent_quota is required")
@@ -545,37 +570,51 @@ func (s *Server) handleBatchUsers(w http.ResponseWriter, r *http.Request) {
 			results = append(results, user)
 			updated++
 		}
-		case "set_temporary_quota":
-			if req.TemporaryQuota == nil {
-				writeError(w, http.StatusBadRequest, "bad_request", "temporary_quota is required")
+	case "set_temporary_quota":
+		if req.TemporaryQuota == nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "temporary_quota is required")
+			return
+		}
+		for _, id := range ids {
+			today := quotaDayString(time.Now())
+			user, err := s.store.UpdateUser(r.Context(), id, storage.UserUpdate{
+				DailyTemporaryQuota: req.TemporaryQuota,
+				TemporaryQuota:      req.TemporaryQuota,
+				TemporaryQuotaDate:  &today,
+			})
+			if err != nil {
+				writeError(w, storageStatus(err), "batch_user_failed", err.Error())
 				return
 			}
-			for _, id := range ids {
-				today := quotaDayString(time.Now())
-				user, err := s.store.UpdateUser(r.Context(), id, storage.UserUpdate{
-					DailyTemporaryQuota: req.TemporaryQuota,
-					TemporaryQuota:      req.TemporaryQuota,
-					TemporaryQuotaDate:  &today,
-				})
-				if err != nil {
-					writeError(w, storageStatus(err), "batch_user_failed", err.Error())
-					return
-				}
-				if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
-					user.APIKey = &key
-				}
-				results = append(results, user)
-				updated++
+			if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
+				user.APIKey = &key
 			}
+			results = append(results, user)
+			updated++
+		}
 	default:
 		writeError(w, http.StatusBadRequest, "bad_request", "unsupported action")
 		return
 	}
+	resultIDs := make([]string, 0, len(results))
+	for _, user := range results {
+		resultIDs = append(resultIDs, user.ID)
+	}
+	s.addAuditLog(r, identity, "user", "批量用户操作", map[string]any{
+		"action":          action,
+		"requested_ids":   ids,
+		"updated":         updated,
+		"user_ids":        resultIDs,
+		"status":          statusStringFromAction(action),
+		"temporary_quota": req.TemporaryQuota,
+		"permanent_quota": req.PermanentQuota,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"updated": updated, "items": results})
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	status := domain.UserStatusDeleted
@@ -587,11 +626,19 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
 		user.APIKey = &key
 	}
+	s.addAuditLog(r, identity, "user", "删除用户", map[string]any{
+		"user_id": user.ID,
+		"email":   user.Email,
+		"name":    user.Name,
+		"role":    user.Role,
+		"status":  user.Status,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"item": user})
 }
 
 func (s *Server) handleResetUserAPIKey(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	user, err := s.store.GetUserByID(r.Context(), r.PathValue("user_id"))
@@ -604,6 +651,15 @@ func (s *Server) handleResetUserAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "reset_key_failed", err.Error())
 		return
 	}
+	s.addAuditLog(r, identity, "user", "重置用户 API Key", map[string]any{
+		"user_id":          user.ID,
+		"email":            user.Email,
+		"name":             user.Name,
+		"role":             user.Role,
+		"api_key_id":       item.ID,
+		"api_key_enabled":  item.Enabled,
+		"raw_key_returned": raw != "",
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"item": publicKey(item), "key": raw})
 }
 
@@ -764,6 +820,57 @@ func (s *Server) syncUserAPIKey(ctx context.Context, user domain.User) (domain.A
 		return domain.APIKey{}, err
 	}
 	return item, nil
+}
+
+func userUpdateFieldNames(req userUpdateRequest) []string {
+	fields := make([]string, 0, 10)
+	if req.Email != nil {
+		fields = append(fields, "email")
+	}
+	if req.Name != nil {
+		fields = append(fields, "name")
+	}
+	if req.Password != nil {
+		fields = append(fields, "password")
+	}
+	if req.Role != nil {
+		fields = append(fields, "role")
+	}
+	if req.Status != nil {
+		fields = append(fields, "status")
+	}
+	if req.QuotaUnlimited != nil {
+		fields = append(fields, "quota_unlimited")
+	}
+	if req.PermanentQuota != nil {
+		fields = append(fields, "permanent_quota")
+	}
+	if req.TemporaryQuota != nil {
+		fields = append(fields, "temporary_quota")
+	}
+	if req.TemporaryQuotaDate != nil {
+		fields = append(fields, "temporary_quota_date")
+	}
+	if req.DailyTemporaryQuota != nil {
+		fields = append(fields, "daily_temporary_quota")
+	}
+	if req.AddPermanentQuota != nil {
+		fields = append(fields, "add_permanent_quota")
+	}
+	return fields
+}
+
+func statusStringFromAction(action string) string {
+	switch action {
+	case "enable":
+		return string(domain.UserStatusActive)
+	case "disable":
+		return string(domain.UserStatusDisabled)
+	case "delete":
+		return string(domain.UserStatusDeleted)
+	default:
+		return ""
+	}
 }
 
 func remoteAddr(r *http.Request) string {

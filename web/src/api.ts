@@ -1,4 +1,4 @@
-import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, BackupArtifact, BackupRemoteItem, BackupState, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, RegisterStatus, Settings, StoredImage, SystemLog, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, BackupArtifact, BackupRemoteItem, BackupState, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, RegisterStatus, Settings, StoredImage, SystemLog, TaskEvent, User } from "./types";
 
 const storageKey = "gpt_image_web_token";
 
@@ -186,15 +186,18 @@ export const api = {
     request<{ item: ApiKey; key: string }>(token, `/api/users/${encodeURIComponent(id)}/api-key/reset`, {
       method: "POST"
     }),
-  tasks: (token: string, ids: string[] = [], params: { page?: number; pageSize?: number; query?: string; status?: string } = {}) =>
+  tasks: (token: string, ids: string[] = [], params: { page?: number; pageSize?: number; query?: string; status?: string; includeDeleted?: boolean } = {}) =>
     request<PagedResult<ImageTask> & { missing_ids: string[] }>(token, ids.length
       ? `/api/image-tasks?ids=${encodeURIComponent(ids.join(","))}`
       : withQuery("/api/image-tasks", {
           page: params.page,
           page_size: params.pageSize,
           query: params.query,
-          status: params.status
+          status: params.status,
+          include_deleted: params.includeDeleted
         })),
+  taskEvents: (token: string, id: string) =>
+    request<{ items: TaskEvent[]; total: number }>(token, `/api/image-tasks/${encodeURIComponent(id)}/events`),
   deleteTasks: (token: string, ids: string[]) =>
     request<{ removed: number }>(token, "/api/image-tasks/delete", {
       method: "POST",
