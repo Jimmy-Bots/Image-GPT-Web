@@ -189,15 +189,27 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 }
 
 func (q *TaskQueue) addTaskEventContext(ctx context.Context, job taskJob, eventType string, summary string, detail map[string]any) {
-	payload, _ := json.Marshal(q.taskEventDetail(job, detail))
+	payload := q.taskEventDetail(job, detail)
+	payload["event_type"] = eventType
+	payload["actor_id"] = "system"
+	payload["actor_name"] = "Image task worker"
+	raw, _ := json.Marshal(payload)
+	at := time.Now().UTC()
 	_ = q.store.AddTaskEvent(ctx, domain.TaskEvent{
 		ID:      randomLogID(),
 		OwnerID: job.OwnerID,
 		TaskID:  job.TaskID,
-		Time:    time.Now().UTC(),
+		Time:    at,
 		Type:    eventType,
 		Summary: summary,
-		Detail:  payload,
+		Detail:  raw,
+	})
+	_ = q.store.AddLog(ctx, domain.SystemLog{
+		ID:      randomLogID(),
+		Time:    at,
+		Type:    "task",
+		Summary: summary,
+		Detail:  raw,
 	})
 }
 
@@ -215,6 +227,7 @@ func (q *TaskQueue) taskEventDetail(job taskJob, detail map[string]any) map[stri
 	payload := cloneLogDetail(detail)
 	payload["task_id"] = job.TaskID
 	payload["owner_id"] = job.OwnerID
+	payload["subject_id"] = job.OwnerID
 	payload["name"] = job.OwnerName
 	payload["role"] = job.OwnerRole
 	payload["auth_type"] = job.OwnerAuthType
@@ -222,6 +235,10 @@ func (q *TaskQueue) taskEventDetail(job taskJob, detail map[string]any) map[stri
 	payload["model"] = imageTaskModel(job)
 	payload["size"] = imageTaskSize(job)
 	payload["requested_count"] = imageTaskCount(job)
+	payload["endpoint"] = imageTaskEndpoint(job.Mode)
+	if prompt := imageTaskPrompt(job); prompt != "" {
+		payload["prompt"] = prompt
+	}
 	return payload
 }
 
@@ -237,6 +254,20 @@ func imageTaskSize(job taskJob) string {
 		return job.Edit.Size
 	}
 	return job.Gen.Size
+}
+
+func imageTaskPrompt(job taskJob) string {
+	if job.Mode == "edit" {
+		return job.Edit.Prompt
+	}
+	return job.Gen.Prompt
+}
+
+func imageTaskEndpoint(mode string) string {
+	if mode == "edit" {
+		return "/api/image-tasks/edits"
+	}
+	return "/api/image-tasks/generations"
 }
 
 func imageTaskCount(job taskJob) int {
@@ -613,6 +644,7 @@ func (s *Server) addImageTaskEventContext(ctx context.Context, identity Identity
 	payload := map[string]any{}
 	payload["task_id"] = task.ID
 	payload["owner_id"] = identity.ID
+	payload["subject_id"] = identity.ID
 	payload["name"] = identity.Name
 	payload["role"] = identity.Role
 	payload["auth_type"] = identity.AuthType
@@ -620,6 +652,11 @@ func (s *Server) addImageTaskEventContext(ctx context.Context, identity Identity
 	payload["model"] = task.Model
 	payload["size"] = task.Size
 	payload["requested_count"] = task.RequestedCount
+	payload["endpoint"] = imageTaskEndpoint(task.Mode)
+	payload["event_type"] = eventType
+	if task.Prompt != "" {
+		payload["prompt"] = task.Prompt
+	}
 	if task.Status != "" {
 		payload["status"] = task.Status
 	}
@@ -630,12 +667,20 @@ func (s *Server) addImageTaskEventContext(ctx context.Context, identity Identity
 		payload[key] = value
 	}
 	raw, _ := json.Marshal(payload)
+	at := time.Now().UTC()
 	_ = s.store.AddTaskEvent(ctx, domain.TaskEvent{
 		ID:      randomLogID(),
 		OwnerID: identity.ID,
 		TaskID:  task.ID,
-		Time:    time.Now().UTC(),
+		Time:    at,
 		Type:    eventType,
+		Summary: summary,
+		Detail:  raw,
+	})
+	_ = s.store.AddLog(ctx, domain.SystemLog{
+		ID:      randomLogID(),
+		Time:    at,
+		Type:    "task",
 		Summary: summary,
 		Detail:  raw,
 	})

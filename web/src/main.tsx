@@ -2163,7 +2163,7 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
     <>
       <div className="filters filters-card activity-filters">
         <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索日志内容、接口、模型、用户或任务" />
-        <ControlField label="类型"><select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="account">账号</option><option value="task">任务拒绝</option><option value="register">注册</option><option value="backup">备份</option></select></ControlField>
+        <ControlField label="类型"><select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="call">调用</option><option value="task">任务</option><option value="image">图片</option><option value="account">账号</option><option value="user">用户</option><option value="settings">设置</option><option value="mail">邮件</option><option value="register">注册</option><option value="backup">备份</option></select></ControlField>
         <ControlField label="状态"><select value={logStatus} onChange={(event) => setLogStatus(event.target.value)}><option value="">全部状态</option><option value="success">success</option><option value="failed">failed</option><option value="error">error</option><option value="partial_failed">partial_failed</option></select></ControlField>
         <ControlField label="端点"><input value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="/v1/images/generations" /></ControlField>
         <ControlField label="任务 ID"><input value={taskID} onChange={(event) => setTaskID(event.target.value)} placeholder="task id" /></ControlField>

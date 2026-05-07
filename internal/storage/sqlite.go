@@ -153,11 +153,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_system_logs_time ON system_logs(time)`,
 		`CREATE INDEX IF NOT EXISTS idx_system_logs_type ON system_logs(type)`,
-		`CREATE INDEX IF NOT EXISTS idx_system_logs_actor_id ON system_logs(actor_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_system_logs_subject_id ON system_logs(subject_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_system_logs_task_id ON system_logs(task_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_system_logs_endpoint ON system_logs(endpoint)`,
-		`CREATE INDEX IF NOT EXISTS idx_system_logs_status ON system_logs(status)`,
 		`CREATE TABLE IF NOT EXISTS image_tasks (
 			owner_id TEXT NOT NULL,
 			id TEXT NOT NULL,
@@ -270,6 +265,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureTaskEventsRetainAfterTaskDelete(ctx); err != nil {
 		return err
 	}
+	if err := s.backfillTaskEventsToSystemLogs(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -348,6 +346,66 @@ func (s *Store) ensureLogIndexes(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) backfillTaskEventsToSystemLogs(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT owner_id, task_id, id, time, summary, detail_json FROM task_events ORDER BY time ASC, id ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type item struct {
+		ownerID string
+		taskID  string
+		id      string
+		at      string
+		summary string
+		detail  string
+		fields  logIndexFields
+	}
+	items := make([]item, 0)
+	for rows.Next() {
+		var item item
+		if err := rows.Scan(&item.ownerID, &item.taskID, &item.id, &item.at, &item.summary, &item.detail); err != nil {
+			return err
+		}
+		item.fields = logIndexFieldsFromRaw([]byte(item.detail))
+		if item.fields.SubjectID == "" {
+			item.fields.SubjectID = item.ownerID
+		}
+		if item.fields.TaskID == "" {
+			item.fields.TaskID = item.taskID
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, item := range items {
+		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO system_logs (id, time, type, summary, detail_json, actor_id, subject_id, task_id, endpoint, status) VALUES (?, ?, 'task', ?, ?, ?, ?, ?, ?, ?)`,
+			"task_event_"+item.id,
+			item.at,
+			item.summary,
+			item.detail,
+			item.fields.ActorID,
+			item.fields.SubjectID,
+			item.fields.TaskID,
+			item.fields.Endpoint,
+			item.fields.Status,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) backfillLogIndexColumns(ctx context.Context) error {

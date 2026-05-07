@@ -174,6 +174,19 @@ func TestImageTaskEventsFollowLifecycle(t *testing.T) {
 			t.Fatalf("missing task event %q: %#v", eventType, payload.Items)
 		}
 	}
+	for _, summary := range []string{"图片任务已提交", "任务进入等待队列", "开始处理图片任务", "图片任务成功"} {
+		assertLogQueryContains(t, server, map[string]string{
+			"type":    "task",
+			"task_id": "task-events",
+			"query":   summary,
+		}, summary)
+	}
+	assertLogQueryContains(t, server, map[string]string{
+		"type":     "task",
+		"task_id":  "task-events",
+		"endpoint": "/api/image-tasks/generations",
+		"status":   "success",
+	}, "event prompt")
 }
 
 func TestImageTasksCanBeDeleted(t *testing.T) {
