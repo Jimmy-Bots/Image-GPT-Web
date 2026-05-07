@@ -118,6 +118,18 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email })
     }),
+  sendPasswordResetCode: (email: string) =>
+    request<{ ok: boolean }>("", "/auth/password-reset/send-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    }),
+  resetPassword: (body: { email: string; password: string; verification_code: string }) =>
+    request<{ ok: boolean }>("", "/auth/password-reset/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }),
   me: (token: string) => request<MeResponse>(token, "/api/me"),
   version: (token: string) => request<{ version: string }>(token, "/version"),
   models: (token: string) => request<{ data: ModelItem[] }>(token, "/v1/models"),

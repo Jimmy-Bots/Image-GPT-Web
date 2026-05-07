@@ -55,6 +55,16 @@ type registerSendCodeRequest struct {
 	Email string `json:"email"`
 }
 
+type passwordResetSendCodeRequest struct {
+	Email string `json:"email"`
+}
+
+type passwordResetConfirmRequest struct {
+	Email            string `json:"email"`
+	Password         string `json:"password"`
+	VerificationCode string `json:"verification_code"`
+}
+
 type userCreateRequest struct {
 	Email              string      `json:"email"`
 	Name               string      `json:"name"`
@@ -334,20 +344,149 @@ func (s *Server) handleRegisterSendCode(w http.ResponseWriter, r *http.Request) 
 	if err := sendSMTPMail(r.Context(), cfg, email, subject, body); err != nil {
 		s.regCodes.Delete(email)
 		s.addLog(r, "auth", "注册验证码发送失败", map[string]any{
-			"status": "failed",
-			"email":  email,
-			"ip":     clientIP,
-			"ips":    clientIPs,
-			"error":  err.Error(),
+			"status":            "failed",
+			"email":             email,
+			"verification_code": code,
+			"ip":                clientIP,
+			"ips":               clientIPs,
+			"error":             err.Error(),
 		})
 		writeError(w, http.StatusBadRequest, "register_send_code_failed", err.Error())
 		return
 	}
 	s.addLog(r, "auth", "注册验证码已发送", map[string]any{
-		"status": "sent",
-		"email":  email,
-		"ip":     clientIP,
-		"ips":    clientIPs,
+		"status":            "sent",
+		"email":             email,
+		"verification_code": code,
+		"ip":                clientIP,
+		"ips":               clientIPs,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handlePasswordResetSendCode(w http.ResponseWriter, r *http.Request) {
+	clientIP, clientIPs := requestIPInfo(r)
+	var req passwordResetSendCodeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	email := normalizeRegistrationEmail(req.Email)
+	if email == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "email is required")
+		return
+	}
+	user, err := s.store.GetUserByEmail(r.Context(), email)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "email_not_found", "email is not registered")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	if user.Status != domain.UserStatusActive {
+		writeError(w, http.StatusForbidden, "user_not_active", "user is not active")
+		return
+	}
+	settings, err := s.store.GetSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	if remaining := s.resetCodes.CooldownRemaining(email, s.registerCodeCooldown(email, settings)); remaining > 0 {
+		writeError(w, http.StatusTooManyRequests, "password_reset_code_cooldown", fmt.Sprintf("please wait %ds before requesting another code", int(remaining.Seconds())+1))
+		return
+	}
+	cfg := smtpMailConfigFromSettings(settings)
+	if err := validateSMTPMailConfig(cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "smtp_config_invalid", err.Error())
+		return
+	}
+	code := generateVerificationCode()
+	s.resetCodes.Put(email, code)
+	subject := "GPT Image Web 重置密码验证码"
+	body := strings.Join([]string{
+		"你的重置密码验证码如下：",
+		"",
+		fmt.Sprintf("验证码：%s", code),
+		"",
+		"该验证码 10 分钟内有效，仅用于 GPT Image Web 重置密码。",
+	}, "\n")
+	if err := sendSMTPMail(r.Context(), cfg, email, subject, body); err != nil {
+		s.resetCodes.Delete(email)
+		s.addLog(r, "auth", "重置密码验证码发送失败", map[string]any{
+			"status":            "failed",
+			"email":             email,
+			"user_id":           user.ID,
+			"verification_code": code,
+			"ip":                clientIP,
+			"ips":               clientIPs,
+			"error":             err.Error(),
+		})
+		writeError(w, http.StatusBadRequest, "password_reset_send_code_failed", err.Error())
+		return
+	}
+	s.addLog(r, "auth", "重置密码验证码已发送", map[string]any{
+		"status":            "sent",
+		"email":             email,
+		"user_id":           user.ID,
+		"verification_code": code,
+		"ip":                clientIP,
+		"ips":               clientIPs,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handlePasswordResetConfirm(w http.ResponseWriter, r *http.Request) {
+	clientIP, clientIPs := requestIPInfo(r)
+	var req passwordResetConfirmRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	email := normalizeRegistrationEmail(req.Email)
+	password := strings.TrimSpace(req.Password)
+	code := strings.TrimSpace(req.VerificationCode)
+	if email == "" || password == "" || code == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "email, password and verification code are required")
+		return
+	}
+	if err := s.resetCodes.Verify(email, code); err != nil {
+		writeError(w, http.StatusBadRequest, "password_reset_verification_failed", err.Error())
+		return
+	}
+	user, err := s.store.GetUserByEmail(r.Context(), email)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "email_not_found", "email is not registered")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	if user.Status != domain.UserStatusActive {
+		writeError(w, http.StatusForbidden, "user_not_active", "user is not active")
+		return
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_password", err.Error())
+		return
+	}
+	user, err = s.store.UpdateUser(r.Context(), user.ID, storage.UserUpdate{PasswordHash: &hash})
+	if err != nil {
+		writeError(w, storageStatus(err), "password_reset_failed", err.Error())
+		return
+	}
+	s.addLog(r, "auth", "重置密码成功", map[string]any{
+		"status":  "success",
+		"email":   user.Email,
+		"user_id": user.ID,
+		"name":    user.Name,
+		"role":    user.Role,
+		"ip":      clientIP,
+		"ips":     clientIPs,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

@@ -64,6 +64,8 @@ small { display: block; margin-top: 3px; color: #8792a2; font-size: 11px; }
 .auth-switch button.active { background: white; color: #1d2939; border-color: #dde6f0; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
 .auth-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; color: #7b8797; font-size: 12px; line-height: 1.5; }
 .verify-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.auth-secondary-link { justify-self: center; margin-top: -4px; color: #6c7b8d; font-size: 12px; font-weight: 700; }
+.auth-secondary-link:hover { color: #2b6dde; }
 .login-notice { display: grid; gap: 8px; padding: 12px; border: 1px solid #e6edf5; border-radius: 12px; background: linear-gradient(180deg, #fbfcfe 0%, #f6f9fc 100%); }
 .login-notice p { margin: 0; color: #5f6d7d; font-size: 12px; line-height: 1.65; }
 .login-agreement { display: flex; align-items: flex-start; gap: 8px; }

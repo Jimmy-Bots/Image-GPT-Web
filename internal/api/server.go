@@ -33,6 +33,7 @@ type Server struct {
 	autoRef  *accountAutoRefresher
 	backup   *backupManager
 	regCodes *registerCodeStore
+	resetCodes *registerCodeStore
 }
 
 func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
@@ -44,6 +45,7 @@ func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
 		pool:     pool,
 		limiter:  newLoginLimiter(cfg.LoginRateLimitMax, time.Duration(cfg.LoginRateLimitWindowSec)*time.Second),
 		regCodes: newRegisterCodeStore(10 * time.Minute),
+		resetCodes: newRegisterCodeStore(10 * time.Minute),
 	}
 	s.upstream = NewChatGPTUpstream(store, pool, cfg.ProxyURL)
 	if upstreamImpl, ok := s.upstream.(*ChatGPTUpstream); ok {
@@ -92,6 +94,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /auth/login", s.handleLogin)
 	mux.HandleFunc("POST /auth/register/send-code", s.handleRegisterSendCode)
 	mux.HandleFunc("POST /auth/register", s.handleRegister)
+	mux.HandleFunc("POST /auth/password-reset/send-code", s.handlePasswordResetSendCode)
+	mux.HandleFunc("POST /auth/password-reset/confirm", s.handlePasswordResetConfirm)
 	mux.HandleFunc("POST /auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /api/me/api-keys", s.handleMyAPIKeys)

@@ -233,8 +233,11 @@ function describeRegisterError(error: unknown) {
     if (normalized.includes("verification code")) return "请填写正确的邮箱验证码。";
     if (normalized.includes("name")) return "请输入名字后再继续。";
     if (normalized.includes("email")) return "请输入邮箱后再继续。";
+    if (normalized.includes("password")) return "请输入符合要求的密码后再继续。";
+    return "注册信息不完整，请检查后重试。";
   }
   if (code === "verification_failed") {
+    if (normalized.includes("not found")) return "验证码不存在或已过期，请重新发送。";
     if (normalized.includes("expired")) return "验证码已过期，请重新发送。";
     if (normalized.includes("invalid")) return "验证码不正确，请重新输入。";
     return "验证码校验失败，请重试。";
@@ -247,13 +250,61 @@ function describeRegisterError(error: unknown) {
   if (code === "register_send_code_failed") return "验证码发送失败，请稍后再试；如果多次失败，请联系管理员检查邮件配置。";
   if (code === "create_user_failed") {
     if (normalized.includes("already exists") || normalized.includes("duplicate")) return "这个邮箱已经注册过了，可以直接登录。";
+    if (normalized.includes("password must be at least")) return "密码至少需要 8 位，请换一个更安全的密码。";
+    if (normalized.includes("email is required")) return "请输入邮箱后再继续。";
+    if (normalized.includes("invalid role")) return "当前注册配置无效，请稍后重试。";
     return "注册失败，请稍后重试。";
   }
+  if (code === "create_key_failed") return "注册成功，但初始化 API Key 失败，请联系管理员处理。";
   if (code === "session_error") return "注册成功，但登录态创建失败，请稍后直接登录。";
+  if (code === "storage_error") return "注册服务暂时不可用，请稍后再试。";
   if (normalized.includes("failed to fetch") || normalized.includes("networkerror") || normalized.includes("network request failed")) {
     return "网络连接失败，请确认服务在线后重试。";
   }
   return message;
+}
+
+function describePasswordResetError(error: unknown) {
+  const message = error instanceof Error ? error.message : "操作失败";
+  const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code || "") : "";
+  const normalized = message.toLowerCase();
+
+  if (code === "bad_request") {
+    if (normalized.includes("email")) return "请输入正确的邮箱后再继续。";
+    if (normalized.includes("verification code")) return "请填写正确的邮箱验证码。";
+    if (normalized.includes("password")) return "请输入符合要求的新密码后再继续。";
+    return "重置信息不完整，请检查后重试。";
+  }
+  if (code === "email_not_found") return "这个邮箱还没有注册账号，请先注册。";
+  if (code === "user_not_active") return "当前账号不可用，请联系管理员处理。";
+  if (code === "password_reset_code_cooldown") {
+    const match = message.match(/(\d+)/);
+    return match ? `发送过于频繁，请等待 ${match[1]} 秒后再试。` : "发送过于频繁，请稍后再试。";
+  }
+  if (code === "smtp_config_invalid") return "管理员尚未完成邮件配置，暂时无法发送验证码。";
+  if (code === "password_reset_send_code_failed") return "验证码发送失败，请稍后再试；如果多次失败，请联系管理员检查邮件配置。";
+  if (code === "password_reset_verification_failed") {
+    if (normalized.includes("not found")) return "验证码不存在或已过期，请重新发送。";
+    if (normalized.includes("expired")) return "验证码已过期，请重新发送。";
+    if (normalized.includes("invalid")) return "验证码不正确，请重新输入。";
+    return "验证码校验失败，请重试。";
+  }
+  if (code === "invalid_password") {
+    if (normalized.includes("at least")) return "新密码至少需要 8 位，请换一个更安全的密码。";
+    return "新密码不符合要求，请重新输入。";
+  }
+  if (code === "password_reset_failed" || code === "storage_error") return "重置密码失败，请稍后再试。";
+  if (normalized.includes("failed to fetch") || normalized.includes("networkerror") || normalized.includes("network request failed")) {
+    return "网络连接失败，请确认服务在线后重试。";
+  }
+  return message;
+}
+
+function describeRegisterStatusError(status: RegisterStatus | null) {
+  return describeRegisterError({
+    code: "registration_disabled",
+    message: status?.disabled_reason || "public registration is disabled"
+  });
 }
 
 function extractWorkbenchTaskError(task: ImageTask, fallback?: string) {
@@ -546,6 +597,26 @@ function App() {
     }
   }
 
+  async function submitPasswordReset(email: string, password: string, verificationCode: string) {
+    if (busy) return;
+    setBusy("login");
+    setLoginError("");
+    try {
+      await api.resetPassword({
+        email: email.trim(),
+        password,
+        verification_code: verificationCode.trim()
+      });
+      setLoginError("");
+      toast("success", "密码已重置，请使用新密码登录。");
+    } catch (error) {
+      setLoginError(describePasswordResetError(error));
+      throw error;
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function logout() {
     setStoredToken("");
     setToken("");
@@ -556,7 +627,7 @@ function App() {
   }
 
   if (!token || !identity) {
-    return <LoginView busy={busy === "login"} error={loginError} version={version} healthBadge={healthBadge} registerStatus={registerStatus} onLogin={submitLogin} onRegister={submitRegister} />;
+    return <LoginView busy={busy === "login"} error={loginError} version={version} healthBadge={healthBadge} registerStatus={registerStatus} onLogin={submitLogin} onRegister={submitRegister} onResetPassword={submitPasswordReset} />;
   }
 
   if (!adminMode || !isAdmin) {
@@ -655,8 +726,8 @@ function App() {
   );
 }
 
-function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin, onRegister }: { busy: boolean; error: string; version: string; healthBadge: "healthy" | "offline"; registerStatus: RegisterStatus | null; onLogin: (email: string, password: string) => void; onRegister: (email: string, name: string, password: string, verificationCode: string) => void }) {
-  const [mode, setMode] = useState<"login" | "register">("login");
+function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin, onRegister, onResetPassword }: { busy: boolean; error: string; version: string; healthBadge: "healthy" | "offline"; registerStatus: RegisterStatus | null; onLogin: (email: string, password: string) => void; onRegister: (email: string, name: string, password: string, verificationCode: string) => void; onResetPassword: (email: string, password: string, verificationCode: string) => Promise<void> }) {
+  const [mode, setMode] = useState<"login" | "register" | "reset">("login");
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -688,7 +759,7 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
     setLocalError("");
     setNotice("");
     if (registerDisabled) {
-      setLocalError(registerStatus?.disabled_reason || "当前无法注册");
+      setLocalError(describeRegisterStatusError(registerStatus));
       return;
     }
     if (cooldownRemaining > 0) {
@@ -701,13 +772,17 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
     }
     setSendingCode(true);
     try {
-      await api.sendRegisterCode(value);
+      if (mode === "reset") {
+        await api.sendPasswordResetCode(value);
+      } else {
+        await api.sendRegisterCode(value);
+      }
       const seconds = Math.max(1, Number(registerStatus?.code_cooldown_seconds || 60));
       setCooldownUntil(Date.now() + seconds * 1000);
       setCooldownNow(Date.now());
       setNotice(`验证码已发送到 ${value}，请注意查收。`);
     } catch (error) {
-      setLocalError(describeRegisterError(error));
+      setLocalError(mode === "reset" ? describePasswordResetError(error) : describeRegisterError(error));
     } finally {
       setSendingCode(false);
     }
@@ -722,7 +797,7 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
     }
     if (mode === "register") {
       if (registerDisabled) {
-        setLocalError(registerStatus?.disabled_reason || "当前无法注册");
+        setLocalError(describeRegisterStatusError(registerStatus));
         return;
       }
       if (!name.trim()) {
@@ -746,6 +821,28 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
         return;
       }
       onRegister(email, name, password, verificationCode);
+      return;
+    }
+    if (mode === "reset") {
+      if (!verificationCode.trim()) {
+        setLocalError("请输入邮箱验证码");
+        return;
+      }
+      if (!confirmPassword.trim()) {
+        setLocalError("请再次输入新密码");
+        return;
+      }
+      if (password !== confirmPassword) {
+        setLocalError("两次输入的密码不一致，请重新检查");
+        return;
+      }
+      onResetPassword(email, password, verificationCode).then(() => {
+        setMode("login");
+        setPassword("");
+        setConfirmPassword("");
+        setVerificationCode("");
+        setNotice("密码已重置，请使用新密码登录。");
+      }).catch(() => {});
       return;
     }
     onLogin(email, password);
@@ -791,19 +888,19 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
         ) : null}
         {mode === "register" ? <label><span>Name</span><input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" placeholder="你的名字" /></label> : null}
         <label><span>Email</span><input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" placeholder="cc98@zju.edu.cn" /></label>
-        {mode === "register" ? (
+        {mode === "register" || mode === "reset" ? (
           <label>
             <span>Verification Code</span>
             <div className="verify-row">
               <input value={verificationCode} onChange={(event) => setVerificationCode(event.target.value)} inputMode="numeric" placeholder="6 位验证码" />
-              <button type="button" className="secondary small" disabled={sendingCode || cooldownRemaining > 0 || registerDisabled} onClick={() => sendCode().catch((error) => setLocalError(error instanceof Error ? error.message : "验证码发送失败"))}>
+              <button type="button" className="secondary small" disabled={sendingCode || cooldownRemaining > 0 || (mode === "register" && registerDisabled)} onClick={() => sendCode().catch((error) => setLocalError(error instanceof Error ? error.message : "验证码发送失败"))}>
                 {sendingCode ? "发送中" : (cooldownRemaining > 0 ? `${cooldownRemaining}s` : "发送验证码")}
               </button>
             </div>
           </label>
         ) : null}
-        <label><span>Password</span><input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder="账户密码" /></label>
-        {mode === "register" ? <label><span>Confirm Password</span><input value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="再次输入密码" /></label> : null}
+        <label><span>{mode === "reset" ? "New Password" : "Password"}</span><input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder={mode === "reset" ? "输入新的账户密码" : "账户密码"} /></label>
+        {mode === "register" || mode === "reset" ? <label><span>Confirm Password</span><input value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} type="password" autoComplete="new-password" placeholder={mode === "reset" ? "再次输入新密码" : "再次输入密码"} /></label> : null}
         {mode === "register" ? (
           <div className="login-notice">
             <p>为完成功能实现，服务端可能会暂存你的部分账户信息、请求内容、任务日志和图片结果，并在用户使用结束后按系统策略删除。</p>
@@ -816,9 +913,18 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
           </div>
         ) : null}
         {notice ? <p className="form-success">{notice}</p> : null}
-        {mode === "register" && registerDisabled ? <p className="form-error">{describeRegisterError({ code: "registration_disabled", message: registerStatus?.disabled_reason || "public registration is disabled" })}</p> : null}
+        {mode === "register" && registerDisabled ? <p className="form-error">{describeRegisterStatusError(registerStatus)}</p> : null}
         {localError || error ? <p className="form-error">{localError || error}</p> : null}
-        <button disabled={busy || registerDisabled}>{busy ? <LoaderCircle className="spin" size={16} /> : null}{mode === "login" ? "登录" : "注册"}</button>
+        <button disabled={busy || (mode === "register" && registerDisabled)}>{busy ? <LoaderCircle className="spin" size={16} /> : null}{mode === "login" ? "登录" : mode === "register" ? "注册" : "重置密码"}</button>
+        {mode !== "register" ? (
+          <button
+            type="button"
+            className="link-button auth-secondary-link"
+            onClick={() => setMode(mode === "reset" ? "login" : "reset")}
+          >
+            {mode === "reset" ? "返回登录" : "忘记密码？"}
+          </button>
+        ) : null}
       </form>
     </main>
   );
