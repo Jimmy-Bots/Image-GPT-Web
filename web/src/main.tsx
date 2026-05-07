@@ -856,8 +856,8 @@ function ImageHome({
         </div>
         <div className="home-actions">
           <HealthStatusBadge status={healthBadge} />
-          {isAdmin ? <button className="secondary compact" onClick={openAdmin}><LayoutDashboard size={15} />管理后台</button> : null}
-          <button className="ghost compact" onClick={logout}><LogOut size={15} />退出</button>
+          {isAdmin ? <button className="secondary compact" onClick={openAdmin}><LayoutDashboard size={15} /><span>管理后台</span></button> : null}
+          <button className="ghost compact" onClick={logout}><LogOut size={15} /><span>退出</span></button>
         </div>
       </header>
 
