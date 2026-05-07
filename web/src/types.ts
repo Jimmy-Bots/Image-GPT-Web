@@ -30,6 +30,7 @@ export type RegisterStatus = {
   max_ordinary_users: number;
   remaining_ordinary: number;
   allowed_email_domains: string[];
+  invite_enabled?: boolean;
   code_cooldown_seconds: number;
   can_register: boolean;
   disabled_reason?: string;
@@ -37,9 +38,22 @@ export type RegisterStatus = {
 
 export type RegistrationSettingsState = {
   public_registration_enabled?: boolean;
+  invite_registration_enabled?: boolean;
   register_code_cooldown_seconds?: number;
   register_allowed_email_domains?: string[];
   register_max_ordinary_users?: number;
+};
+
+export type InviteCode = {
+  code: string;
+  enabled: boolean;
+  max_uses: number;
+  used_count: number;
+  created_at: string;
+  updated_at: string;
+  last_used_at?: string;
+  last_used_by?: string;
+  description?: string;
 };
 
 export type Account = {

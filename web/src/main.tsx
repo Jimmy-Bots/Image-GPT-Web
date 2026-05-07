@@ -29,7 +29,7 @@ import {
   X
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
-import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, Toast, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, InviteCode, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, Toast, User } from "./types";
 import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imagePreviewSrc, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass, storedImagePreviewURL, storedImageURL, storedReferencePreviewURL } from "./utils";
 import "./styles.css";
 
@@ -226,7 +226,13 @@ function describeRegisterError(error: unknown) {
     if (normalized.includes("quota is full")) return "当前注册名额已满，暂时无法继续注册。";
     return "当前暂未开放公开注册。";
   }
+  if (code === "invite_registration_disabled") return "当前暂未开放邀请码注册。";
   if (code === "email_exists") return "这个邮箱已经注册过了，可以直接登录。";
+  if (code === "invite_code_invalid") {
+    if (normalized.includes("usage limit")) return "邀请码使用次数已耗尽，请更换一个邀请码。";
+    if (normalized.includes("disabled")) return "这个邀请码已被停用，请更换一个邀请码。";
+    return "邀请码无效，请检查后重试。";
+  }
   if (code === "bad_request") {
     if (normalized.includes("invalid email address")) return "邮箱格式不正确，请检查后重试。";
     if (normalized.includes("email domain is not allowed")) return "该邮箱后缀暂不支持注册，请更换符合要求的邮箱。";
@@ -576,17 +582,22 @@ function App() {
     }
   }
 
-  async function submitRegister(email: string, name: string, password: string, verificationCode: string) {
+  async function submitRegister(email: string, name: string, password: string, verificationCode: string, inviteCode: string) {
     if (busy) return;
     setBusy("login");
     setLoginError("");
     try {
-      const data = await api.registerWithPassword({
+      const payload: { email: string; name: string; password: string; verification_code?: string; invite_code?: string } = {
         email: email.trim(),
         name: name.trim(),
-        password,
-        verification_code: verificationCode.trim()
-      });
+        password
+      };
+      if (inviteCode.trim()) {
+        payload.invite_code = inviteCode.trim();
+      } else {
+        payload.verification_code = verificationCode.trim();
+      }
+      const data = await api.registerWithPassword(payload);
       setStoredToken(data.token);
       setToken(data.token);
       await bootstrap(data.token);
@@ -726,13 +737,14 @@ function App() {
   );
 }
 
-function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin, onRegister, onResetPassword }: { busy: boolean; error: string; version: string; healthBadge: "healthy" | "offline"; registerStatus: RegisterStatus | null; onLogin: (email: string, password: string) => void; onRegister: (email: string, name: string, password: string, verificationCode: string) => void; onResetPassword: (email: string, password: string, verificationCode: string) => Promise<void> }) {
+function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin, onRegister, onResetPassword }: { busy: boolean; error: string; version: string; healthBadge: "healthy" | "offline"; registerStatus: RegisterStatus | null; onLogin: (email: string, password: string) => void; onRegister: (email: string, name: string, password: string, verificationCode: string, inviteCode: string) => void; onResetPassword: (email: string, password: string, verificationCode: string) => Promise<void> }) {
   const [mode, setMode] = useState<"login" | "register" | "reset">("login");
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [localError, setLocalError] = useState("");
   const [notice, setNotice] = useState("");
   const [agreementChecked, setAgreementChecked] = useState(false);
@@ -804,7 +816,7 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
         setLocalError("请输入名字");
         return;
       }
-      if (!verificationCode.trim()) {
+      if (!inviteCode.trim() && !verificationCode.trim()) {
         setLocalError("请输入邮箱验证码");
         return;
       }
@@ -820,7 +832,7 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
         setLocalError("请先阅读并确认使用说明");
         return;
       }
-      onRegister(email, name, password, verificationCode);
+      onRegister(email, name, password, verificationCode, inviteCode);
       return;
     }
     if (mode === "reset") {
@@ -852,6 +864,7 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
     setLocalError("");
     setNotice("");
     setVerificationCode("");
+    setInviteCode("");
     setConfirmPassword("");
   }, [mode]);
 
@@ -884,11 +897,13 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
           <div className="auth-meta">
             <span>剩余名额 {quotaText}</span>
             <span>邮箱后缀 {domainText}</span>
+            <span>邀请码注册 {registerStatus?.invite_enabled ? "已启用" : "未启用"}</span>
           </div>
         ) : null}
         {mode === "register" ? <label><span>Name</span><input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" placeholder="你的名字" /></label> : null}
         <label><span>Email</span><input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" placeholder="cc98@zju.edu.cn" /></label>
-        {mode === "register" || mode === "reset" ? (
+        {mode === "register" ? <label><span>Invite Code</span><input value={inviteCode} onChange={(event) => setInviteCode(event.target.value.toUpperCase())} placeholder="有邀请码可直接填写" /></label> : null}
+        {(mode === "reset" || (mode === "register" && !inviteCode.trim())) ? (
           <label>
             <span>Verification Code</span>
             <div className="verify-row">
@@ -899,6 +914,7 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
             </div>
           </label>
         ) : null}
+        {mode === "register" && inviteCode.trim() ? <p className="form-success">已填写邀请码，本次注册将跳过邮箱验证码校验。</p> : null}
         <label><span>{mode === "reset" ? "New Password" : "Password"}</span><input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder={mode === "reset" ? "输入新的账户密码" : "账户密码"} /></label>
         {mode === "register" || mode === "reset" ? <label><span>Confirm Password</span><input value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} type="password" autoComplete="new-password" placeholder={mode === "reset" ? "再次输入新密码" : "再次输入密码"} /></label> : null}
         {mode === "register" ? (
@@ -2509,6 +2525,7 @@ function formatRegisterLogLine(log: SystemLog) {
   const fields = [
     ["email", detail.email],
     ["code", detail.code],
+    ["invite_code", detail.invite_code],
     ["reason", detail.reason],
     ["status", detail.status],
     ["mode", detail.mode],
@@ -3016,6 +3033,9 @@ function UserRow({ token, user, reload, toast, showKey, selected, onSelect, onEd
 
 function SettingsPanel({ token, settings, setSettings, toast, openLightbox }: { token: string; settings: SettingsType; setSettings: (settings: SettingsType) => void; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [json, setJson] = useState(safeJSON(settings));
+  const [inviteCodes, setInviteCodes] = useState<InviteCode[]>([]);
+  const [inviteCodeForm, setInviteCodeForm] = useState({ code: "", maxUses: "0", description: "", enabled: true });
+  const [inviteBusy, setInviteBusy] = useState<"" | "list" | "save" | "delete">("");
   const [backupState, setBackupState] = useState<BackupState | null>(null);
   const [backupItems, setBackupItems] = useState<BackupRemoteItem[]>([]);
   const [referenceItems, setReferenceItems] = useState<StoredReferenceImage[]>([]);
@@ -3044,6 +3064,9 @@ function SettingsPanel({ token, settings, setSettings, toast, openLightbox }: { 
   async function save(next = settings) { const data = await api.saveSettings(token, next); setSettings(data.config || {}); toast("success", "设置已保存"); }
   useEffect(() => {
     let cancelled = false;
+    api.inviteCodes(token).then((data) => {
+      if (!cancelled) setInviteCodes(data.items || []);
+    }).catch(() => {});
     api.backupState(token).then((data) => {
       if (!cancelled) setBackupState(data.state || null);
     }).catch(() => {});
@@ -3054,6 +3077,46 @@ function SettingsPanel({ token, settings, setSettings, toast, openLightbox }: { 
       cancelled = true;
     };
   }, [token]);
+  async function reloadInviteCodes() {
+    setInviteBusy("list");
+    try {
+      const data = await api.inviteCodes(token);
+      setInviteCodes(data.items || []);
+    } finally {
+      setInviteBusy("");
+    }
+  }
+  async function saveInviteCode() {
+    if (!inviteCodeForm.code.trim()) {
+      toast("error", "请先填写邀请码");
+      return;
+    }
+    setInviteBusy("save");
+    try {
+      await api.saveInviteCode(token, {
+        code: inviteCodeForm.code.trim(),
+        enabled: inviteCodeForm.enabled,
+        max_uses: Math.max(0, Number(inviteCodeForm.maxUses) || 0),
+        description: inviteCodeForm.description.trim()
+      });
+      setInviteCodeForm({ code: "", maxUses: "0", description: "", enabled: true });
+      await reloadInviteCodes();
+      toast("success", "邀请码已保存");
+    } finally {
+      setInviteBusy("");
+    }
+  }
+  async function removeInviteCode(code: string) {
+    if (!code || !confirm(`删除邀请码？\n${code}`)) return;
+    setInviteBusy("delete");
+    try {
+      await api.deleteInviteCode(token, code);
+      await reloadInviteCodes();
+      toast("success", "邀请码已删除");
+    } finally {
+      setInviteBusy("");
+    }
+  }
   useEffect(() => setReferencePage(1), [referenceQuery, referencePageSize]);
   useEffect(() => {
     let cancelled = false;
@@ -3221,6 +3284,7 @@ function SettingsPanel({ token, settings, setSettings, toast, openLightbox }: { 
           <label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label>
           <label><span>新用户默认临时额度</span><input type="number" min={0} value={Number(settings.default_new_user_temporary_quota || 0)} onChange={(event) => updateField("default_new_user_temporary_quota", Math.max(0, Number(event.target.value) || 0))} /></label>
           <label className="inline"><input type="checkbox" checked={Boolean(settings.public_registration_enabled)} onChange={(event) => updateField("public_registration_enabled", event.target.checked)} /><span>启用公开注册</span></label>
+          <label className="inline"><input type="checkbox" checked={Boolean(settings.invite_registration_enabled)} onChange={(event) => updateField("invite_registration_enabled", event.target.checked)} /><span>启用邀请码注册</span></label>
           <label><span>注册验证码冷却（秒）</span><input type="number" min={1} value={Number(settings.register_code_cooldown_seconds || 60)} onChange={(event) => updateField("register_code_cooldown_seconds", Math.max(1, Number(event.target.value) || 60))} /></label>
           <label><span>普通用户上限</span><input type="number" min={0} value={Number(settings.register_max_ordinary_users || 0)} onChange={(event) => updateField("register_max_ordinary_users", Math.max(0, Number(event.target.value) || 0))} placeholder="0 表示不限" /></label>
           <label className="wide"><span>可注册邮箱后缀，每行一个</span><textarea value={Array.isArray(settings.register_allowed_email_domains) ? settings.register_allowed_email_domains.join("\n") : ""} onChange={(event) => updateField("register_allowed_email_domains", event.target.value.split("\n").map((line) => line.trim().replace(/^@+/, "")).filter(Boolean))} placeholder={"gmail.com\nzju.edu.cn"} /></label>
@@ -3228,6 +3292,49 @@ function SettingsPanel({ token, settings, setSettings, toast, openLightbox }: { 
           <label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label>
           <label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label>
         </div>
+      </section>
+
+      <section className="panel">
+        <PanelHead
+          title="邀请码"
+          subtitle="填写邀请码可跳过邮箱验证码，但仍然受允许邮箱后缀限制"
+          action={<button className="secondary" disabled={inviteBusy === "list"} onClick={() => reloadInviteCodes().catch((error) => toast("error", error.message))}>{inviteBusy === "list" ? "刷新中" : "刷新列表"}</button>}
+        />
+        <div className="settings-form">
+          <label><span>邀请码</span><input value={inviteCodeForm.code} onChange={(event) => setInviteCodeForm((current) => ({ ...current, code: event.target.value.toUpperCase() }))} placeholder="例如 VIP2026" /></label>
+          <label><span>最大使用次数</span><input type="number" min={0} value={inviteCodeForm.maxUses} onChange={(event) => setInviteCodeForm((current) => ({ ...current, maxUses: event.target.value }))} placeholder="0 表示永久有效" /></label>
+          <label><span>备注</span><input value={inviteCodeForm.description} onChange={(event) => setInviteCodeForm((current) => ({ ...current, description: event.target.value }))} placeholder="渠道 / 用途说明" /></label>
+          <label className="inline"><input type="checkbox" checked={inviteCodeForm.enabled} onChange={(event) => setInviteCodeForm((current) => ({ ...current, enabled: event.target.checked }))} /><span>启用该邀请码</span></label>
+        </div>
+        <div className="register-actions">
+          <button disabled={inviteBusy === "save"} onClick={() => saveInviteCode().catch((error) => toast("error", error.message))}>{inviteBusy === "save" ? "保存中" : "保存邀请码"}</button>
+        </div>
+        <ScrollableTable tableRef={backupTableRef} className="data-table-wrap" height="medium">
+          <table className="activity-table backup-table">
+            <thead>
+              <tr>
+                <th>邀请码</th>
+                <th>状态</th>
+                <th>使用情况</th>
+                <th>最近使用</th>
+                <th>备注</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {inviteCodes.length ? inviteCodes.map((item) => (
+                <tr key={item.code}>
+                  <td><code>{item.code}</code></td>
+                  <td><span className={classNames("badge", item.enabled ? "ok" : "muted")}>{item.enabled ? "Enabled" : "Disabled"}</span></td>
+                  <td>{item.max_uses > 0 ? `${item.used_count}/${item.max_uses}` : `永久 · 已用 ${item.used_count}`}</td>
+                  <td>{item.last_used_at ? `${fmtDate(item.last_used_at)}${item.last_used_by ? ` · ${item.last_used_by}` : ""}` : "-"}</td>
+                  <td>{item.description || "-"}</td>
+                  <td className="users-actions-cell"><div className="row-actions"><button className="danger small" disabled={inviteBusy === "delete"} onClick={() => removeInviteCode(item.code).catch((error) => toast("error", error.message))}>删除</button></div></td>
+                </tr>
+              )) : <tr><td colSpan={6} className="empty">暂无邀请码</td></tr>}
+            </tbody>
+          </table>
+        </ScrollableTable>
       </section>
 
       <section className="panel">

@@ -1,4 +1,4 @@
-import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, BackupArtifact, BackupRemoteItem, BackupState, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, RegisterStatus, Settings, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, BackupArtifact, BackupRemoteItem, BackupState, ImageTask, InviteCode, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, RegisterStatus, Settings, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, User } from "./types";
 
 const storageKey = "gpt_image_web_token";
 
@@ -106,7 +106,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password })
     }),
-  registerWithPassword: (body: { email: string; name?: string; password: string; verification_code: string }) =>
+  registerWithPassword: (body: { email: string; name?: string; password: string; verification_code?: string; invite_code?: string }) =>
     request<{ user: User; token: string; expires_at?: string }>("", "/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -268,6 +268,19 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(settings)
+    }),
+  inviteCodes: (token: string) => request<{ items: InviteCode[] }>(token, "/api/invite-codes"),
+  saveInviteCode: (token: string, body: { code: string; enabled?: boolean; max_uses?: number; description?: string }) =>
+    request<{ item: InviteCode }>(token, "/api/invite-codes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }),
+  deleteInviteCode: (token: string, code: string) =>
+    request<{ ok: boolean }>(token, "/api/invite-codes/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code })
     }),
   testSMTPMail: (token: string, to: string) =>
     request<{ ok: boolean }>(token, "/api/settings/mail/test", {

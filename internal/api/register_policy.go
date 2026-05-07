@@ -17,6 +17,7 @@ type publicRegisterStatus struct {
 	MaxOrdinaryUsers    int      `json:"max_ordinary_users"`
 	RemainingOrdinary   int      `json:"remaining_ordinary"`
 	AllowedEmailDomains []string `json:"allowed_email_domains"`
+	InviteEnabled       bool     `json:"invite_enabled"`
 	CodeCooldownSeconds int      `json:"code_cooldown_seconds"`
 	CanRegister         bool     `json:"can_register"`
 	DisabledReason      string   `json:"disabled_reason,omitempty"`
@@ -53,6 +54,7 @@ func (s *Server) publicRegisterStatus(ctx context.Context) (publicRegisterStatus
 		MaxOrdinaryUsers:    maxOrdinaryUsers,
 		RemainingOrdinary:   remaining,
 		AllowedEmailDomains: allowedDomains,
+		InviteEnabled:       boolMapValue(settings, "invite_registration_enabled"),
 		CodeCooldownSeconds: registerCodeCooldownSeconds(settings),
 		CanRegister:         canRegister,
 	}
@@ -168,6 +170,17 @@ func (s *Server) ensurePublicRegistrationAllowed(ctx context.Context, settings m
 		return fmt.Errorf("public registration is disabled")
 	}
 	if !status.CanRegister {
+		return fmt.Errorf("registration quota is full")
+	}
+	return nil
+}
+
+func (s *Server) ensureRegistrationCapacity(ctx context.Context) error {
+	status, err := s.publicRegisterStatus(ctx)
+	if err != nil {
+		return err
+	}
+	if status.MaxOrdinaryUsers > 0 && status.RemainingOrdinary <= 0 {
 		return fmt.Errorf("registration quota is full")
 	}
 	return nil

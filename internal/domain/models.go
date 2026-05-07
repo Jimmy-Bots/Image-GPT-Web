@@ -60,6 +60,18 @@ type APIKey struct {
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 }
 
+type InviteCode struct {
+	Code        string     `json:"code"`
+	Enabled     bool       `json:"enabled"`
+	MaxUses     int        `json:"max_uses"`
+	UsedCount   int        `json:"used_count"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
+	LastUsedBy  string     `json:"last_used_by,omitempty"`
+	Description string     `json:"description,omitempty"`
+}
+
 type Account struct {
 	AccessToken        string          `json:"access_token"`
 	Password           string          `json:"password,omitempty"`

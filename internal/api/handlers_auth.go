@@ -49,6 +49,7 @@ type registerRequest struct {
 	Name             string `json:"name"`
 	Password         string `json:"password"`
 	VerificationCode string `json:"verification_code"`
+	InviteCode       string `json:"invite_code"`
 }
 
 type registerSendCodeRequest struct {
@@ -235,8 +236,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.Password = strings.TrimSpace(req.Password)
 	req.VerificationCode = strings.TrimSpace(req.VerificationCode)
-	if req.Email == "" || req.Name == "" || req.Password == "" || req.VerificationCode == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "email, name, password and verification code are required")
+	req.InviteCode = strings.TrimSpace(req.InviteCode)
+	if req.Email == "" || req.Name == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "email, name and password are required")
 		return
 	}
 	settings, err := s.store.GetSettings(r.Context())
@@ -244,17 +246,75 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
-	if err := s.ensurePublicRegistrationAllowed(r.Context(), settings); err != nil {
-		writeError(w, http.StatusForbidden, "registration_disabled", err.Error())
-		return
-	}
 	if err := validateRegisterEmail(req.Email, settings); err != nil {
+		if req.InviteCode != "" {
+			s.addLog(r, "auth", "邀请码注册失败", map[string]any{
+				"status":      "invalid_email_domain",
+				"email":       req.Email,
+				"invite_code": strings.ToUpper(req.InviteCode),
+				"error":       err.Error(),
+				"ip":          clientIP,
+				"ips":         clientIPs,
+			})
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	if err := s.regCodes.Verify(req.Email, req.VerificationCode); err != nil {
-		writeError(w, http.StatusBadRequest, "verification_failed", err.Error())
+	if err := s.ensureRegistrationCapacity(r.Context()); err != nil {
+		if req.InviteCode != "" {
+			s.addLog(r, "auth", "邀请码注册失败", map[string]any{
+				"status":      "quota_full",
+				"email":       req.Email,
+				"invite_code": strings.ToUpper(req.InviteCode),
+				"error":       err.Error(),
+				"ip":          clientIP,
+				"ips":         clientIPs,
+			})
+		}
+		writeError(w, http.StatusForbidden, "registration_disabled", err.Error())
 		return
+	}
+	inviteUsed := ""
+	if req.InviteCode != "" {
+		if !boolMapValue(settings, "invite_registration_enabled") {
+			s.addLog(r, "auth", "邀请码注册失败", map[string]any{
+				"status":      "invite_disabled",
+				"email":       req.Email,
+				"invite_code": strings.ToUpper(req.InviteCode),
+				"error":       "invite registration is disabled",
+				"ip":          clientIP,
+				"ips":         clientIPs,
+			})
+			writeError(w, http.StatusForbidden, "invite_registration_disabled", "invite registration is disabled")
+			return
+		}
+		invite, err := s.store.ConsumeInviteCode(r.Context(), req.InviteCode, req.Email)
+		if err != nil {
+			s.addLog(r, "auth", "邀请码注册失败", map[string]any{
+				"status":      "invite_invalid",
+				"email":       req.Email,
+				"invite_code": strings.ToUpper(req.InviteCode),
+				"error":       err.Error(),
+				"ip":          clientIP,
+				"ips":         clientIPs,
+			})
+			writeError(w, http.StatusBadRequest, "invite_code_invalid", err.Error())
+			return
+		}
+		inviteUsed = invite.Code
+	} else {
+		if err := s.ensurePublicRegistrationAllowed(r.Context(), settings); err != nil {
+			writeError(w, http.StatusForbidden, "registration_disabled", err.Error())
+			return
+		}
+		if req.VerificationCode == "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "verification code is required")
+			return
+		}
+		if err := s.regCodes.Verify(req.Email, req.VerificationCode); err != nil {
+			writeError(w, http.StatusBadRequest, "verification_failed", err.Error())
+			return
+		}
 	}
 	role := domain.RoleUser
 	if count == 0 {
@@ -262,6 +322,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := s.createUser(r.Context(), req.Email, req.Name, req.Password, role, nil, nil, nil, nil, nil)
 	if err != nil {
+		if inviteUsed != "" {
+			_ = s.store.RestoreInviteCodeUse(r.Context(), inviteUsed)
+			s.addLog(r, "auth", "邀请码注册失败", map[string]any{
+				"status":      "create_user_failed",
+				"email":       req.Email,
+				"invite_code": inviteUsed,
+				"error":       err.Error(),
+				"ip":          clientIP,
+				"ips":         clientIPs,
+			})
+		}
 		writeError(w, http.StatusBadRequest, "create_user_failed", err.Error())
 		return
 	}
@@ -283,6 +354,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		"name":      user.Name,
 		"role":      user.Role,
 		"auth_type": "session",
+		"invite_code": inviteUsed,
 		"ip":        clientIP,
 		"ips":       clientIPs,
 	})

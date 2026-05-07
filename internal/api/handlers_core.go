@@ -349,6 +349,87 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"config": settings})
 }
 
+func (s *Server) handleListInviteCodes(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	items, err := s.store.ListInviteCodes(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleUpsertInviteCode(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Code        string `json:"code"`
+		Enabled     *bool  `json:"enabled"`
+		MaxUses     *int   `json:"max_uses"`
+		Description string `json:"description"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "invite code is required")
+		return
+	}
+	item := domain.InviteCode{
+		Code:        req.Code,
+		Enabled:     req.Enabled == nil || *req.Enabled,
+		MaxUses:     0,
+		Description: strings.TrimSpace(req.Description),
+	}
+	if req.MaxUses != nil {
+		item.MaxUses = maxInt(0, *req.MaxUses)
+	}
+	saved, err := s.store.UpsertInviteCode(r.Context(), item)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invite_code_save_failed", err.Error())
+		return
+	}
+	s.addAuditLog(r, identity, "invite_code", "保存邀请码", map[string]any{
+		"code":        saved.Code,
+		"enabled":     saved.Enabled,
+		"max_uses":    saved.MaxUses,
+		"used_count":  saved.UsedCount,
+		"description": saved.Description,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"item": saved})
+}
+
+func (s *Server) handleDeleteInviteCode(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "invite code is required")
+		return
+	}
+	if err := s.store.DeleteInviteCode(r.Context(), req.Code); err != nil {
+		writeError(w, http.StatusInternalServerError, "invite_code_delete_failed", err.Error())
+		return
+	}
+	s.addAuditLog(r, identity, "invite_code", "删除邀请码", map[string]any{
+		"code": strings.ToUpper(strings.TrimSpace(req.Code)),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	identity, ok := s.requireAdmin(w, r)
 	if !ok {

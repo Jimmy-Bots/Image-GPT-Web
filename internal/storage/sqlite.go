@@ -139,6 +139,18 @@ func (s *Store) migrate(ctx context.Context) error {
 			value_json TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS invite_codes (
+			code TEXT PRIMARY KEY,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			max_uses INTEGER NOT NULL DEFAULT 0,
+			used_count INTEGER NOT NULL DEFAULT 0,
+			last_used_by TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			last_used_at TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_invite_codes_enabled ON invite_codes(enabled)`,
 		`CREATE TABLE IF NOT EXISTS system_logs (
 			id TEXT PRIMARY KEY,
 			time TEXT NOT NULL,
@@ -511,6 +523,116 @@ func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE status != 'deleted'`).Scan(&count)
 	return count, err
+}
+
+func normalizeInviteCode(code string) string {
+	return strings.ToUpper(strings.TrimSpace(code))
+}
+
+func (s *Store) ListInviteCodes(ctx context.Context) ([]domain.InviteCode, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT code, enabled, max_uses, used_count, last_used_by, description, created_at, updated_at, last_used_at FROM invite_codes ORDER BY updated_at DESC, code ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]domain.InviteCode, 0)
+	for rows.Next() {
+		item, err := scanInviteCode(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) UpsertInviteCode(ctx context.Context, item domain.InviteCode) (domain.InviteCode, error) {
+	item.Code = normalizeInviteCode(item.Code)
+	if item.Code == "" {
+		return domain.InviteCode{}, fmt.Errorf("invite code is required")
+	}
+	item.MaxUses = maxInt(0, item.MaxUses)
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = time.Now().UTC()
+	}
+	item.UpdatedAt = time.Now().UTC()
+	_, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO invite_codes (code, enabled, max_uses, used_count, last_used_by, description, created_at, updated_at, last_used_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(code) DO UPDATE SET
+			enabled = excluded.enabled,
+			max_uses = excluded.max_uses,
+			description = excluded.description,
+			updated_at = excluded.updated_at`,
+		item.Code,
+		boolInt(item.Enabled),
+		item.MaxUses,
+		item.UsedCount,
+		strings.TrimSpace(item.LastUsedBy),
+		strings.TrimSpace(item.Description),
+		formatTime(item.CreatedAt),
+		formatTime(item.UpdatedAt),
+		formatTimePtr(item.LastUsedAt),
+	)
+	if err != nil {
+		return domain.InviteCode{}, err
+	}
+	return s.GetInviteCode(ctx, item.Code)
+}
+
+func (s *Store) GetInviteCode(ctx context.Context, code string) (domain.InviteCode, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT code, enabled, max_uses, used_count, last_used_by, description, created_at, updated_at, last_used_at FROM invite_codes WHERE code = ?`, normalizeInviteCode(code))
+	return scanInviteCode(row)
+}
+
+func (s *Store) DeleteInviteCode(ctx context.Context, code string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM invite_codes WHERE code = ?`, normalizeInviteCode(code))
+	return err
+}
+
+func (s *Store) ConsumeInviteCode(ctx context.Context, code string, email string) (domain.InviteCode, error) {
+	key := normalizeInviteCode(code)
+	if key == "" {
+		return domain.InviteCode{}, fmt.Errorf("invite code is required")
+	}
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.InviteCode{}, err
+	}
+	defer tx.Rollback()
+	row := tx.QueryRowContext(ctx, `SELECT code, enabled, max_uses, used_count, last_used_by, description, created_at, updated_at, last_used_at FROM invite_codes WHERE code = ?`, key)
+	item, err := scanInviteCode(row)
+	if err != nil {
+		return domain.InviteCode{}, err
+	}
+	if !item.Enabled {
+		return domain.InviteCode{}, fmt.Errorf("invite code is disabled")
+	}
+	if item.MaxUses > 0 && item.UsedCount >= item.MaxUses {
+		return domain.InviteCode{}, fmt.Errorf("invite code usage limit reached")
+	}
+	item.UsedCount++
+	item.LastUsedAt = &now
+	item.LastUsedBy = normalizeEmail(email)
+	item.UpdatedAt = now
+	if _, err := tx.ExecContext(ctx, `UPDATE invite_codes SET used_count = ?, last_used_by = ?, updated_at = ?, last_used_at = ? WHERE code = ?`, item.UsedCount, item.LastUsedBy, formatTime(item.UpdatedAt), formatTimePtr(item.LastUsedAt), item.Code); err != nil {
+		return domain.InviteCode{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.InviteCode{}, err
+	}
+	return item, nil
+}
+
+func (s *Store) RestoreInviteCodeUse(ctx context.Context, code string) error {
+	key := normalizeInviteCode(code)
+	if key == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE invite_codes SET used_count = CASE WHEN used_count > 0 THEN used_count - 1 ELSE 0 END, updated_at = ? WHERE code = ?`, formatTime(time.Now().UTC()), key)
+	return err
 }
 
 func (s *Store) CreateUser(ctx context.Context, user domain.User) error {
@@ -1759,6 +1881,7 @@ func defaultSettings() map[string]any {
 		"image_account_concurrency":         1,
 		"default_new_user_temporary_quota":  10,
 		"public_registration_enabled":       false,
+		"invite_registration_enabled":       false,
 		"register_code_cooldown_seconds":    60,
 		"register_allowed_email_domains":    []any{},
 		"register_max_ordinary_users":       0,
@@ -1866,6 +1989,33 @@ func scanAPIKey(row rowScanner) (domain.APIKey, error) {
 	item.Enabled = enabled == 1
 	item.CreatedAt = parseTime(createdAt)
 	if lastUsed.Valid && lastUsed.String != "" {
+		value := parseTime(lastUsed.String)
+		item.LastUsedAt = &value
+	}
+	return item, nil
+}
+
+func scanInviteCode(row rowScanner) (domain.InviteCode, error) {
+	var item domain.InviteCode
+	var enabled int
+	var lastUsedBy string
+	var description string
+	var createdAt string
+	var updatedAt string
+	var lastUsed sql.NullString
+	err := row.Scan(&item.Code, &enabled, &item.MaxUses, &item.UsedCount, &lastUsedBy, &description, &createdAt, &updatedAt, &lastUsed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.InviteCode{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.InviteCode{}, err
+	}
+	item.Enabled = enabled == 1
+	item.LastUsedBy = strings.TrimSpace(lastUsedBy)
+	item.Description = strings.TrimSpace(description)
+	item.CreatedAt = parseTime(createdAt)
+	item.UpdatedAt = parseTime(updatedAt)
+	if lastUsed.Valid && strings.TrimSpace(lastUsed.String) != "" {
 		value := parseTime(lastUsed.String)
 		item.LastUsedAt = &value
 	}
