@@ -1,4 +1,4 @@
-package tests
+package chatgpt
 
 import (
 	"context"
@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"gpt-image-web/internal/upstream/chatgpt"
 )
 
 func TestChatGPTUserInfoNormalizesAccount(t *testing.T) {
@@ -40,11 +38,11 @@ func TestChatGPTUserInfoNormalizesAccount(t *testing.T) {
 	}))
 	defer server.Close()
 
-	httpClient, err := chatgpt.NewHTTPClient("")
+	httpClient, err := NewHTTPClient("")
 	if err != nil {
 		t.Fatalf("NewHTTPClient returned error: %v", err)
 	}
-	account, err := chatgpt.NewClient("token-1", chatgpt.WithBaseURL(server.URL), chatgpt.WithHTTPClient(httpClient)).UserInfo(context.Background())
+	account, err := NewClient("token-1", WithBaseURL(server.URL), WithHTTPClient(httpClient)).UserInfo(context.Background())
 	if err != nil {
 		t.Fatalf("UserInfo returned error: %v", err)
 	}
@@ -81,11 +79,11 @@ func TestChatGPTUserInfoMarksFreeUnknownQuotaLimited(t *testing.T) {
 	}))
 	defer server.Close()
 
-	httpClient, err := chatgpt.NewHTTPClient("")
+	httpClient, err := NewHTTPClient("")
 	if err != nil {
 		t.Fatalf("NewHTTPClient returned error: %v", err)
 	}
-	account, err := chatgpt.NewClient("token-2", chatgpt.WithBaseURL(server.URL), chatgpt.WithHTTPClient(httpClient)).UserInfo(context.Background())
+	account, err := NewClient("token-2", WithBaseURL(server.URL), WithHTTPClient(httpClient)).UserInfo(context.Background())
 	if err != nil {
 		t.Fatalf("UserInfo returned error: %v", err)
 	}

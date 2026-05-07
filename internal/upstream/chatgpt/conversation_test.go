@@ -1,4 +1,4 @@
-package tests
+package chatgpt
 
 import (
 	"context"
@@ -7,8 +7,6 @@ import (
 	"testing"
 
 	fhttp "github.com/bogdanfinn/fhttp"
-
-	"gpt-image-web/internal/upstream/chatgpt"
 )
 
 func TestChatGPTCollectTextFromAssistantMessageSSE(t *testing.T) {
@@ -36,8 +34,8 @@ data: [DONE]
 
 func collectTextFromSSE(t *testing.T, sse string) string {
 	t.Helper()
-	client := chatgpt.NewClient("token", chatgpt.WithHTTPClient(conversationDoer{t: t, sse: sse}))
-	text, err := client.CollectText(context.Background(), []chatgpt.Message{{Role: "user", Content: "hi"}}, "auto")
+	client := NewClient("token", WithHTTPClient(conversationDoer{t: t, sse: sse}))
+	text, err := client.CollectText(context.Background(), []Message{{Role: "user", Content: "hi"}}, "auto")
 	if err != nil {
 		t.Fatalf("CollectText returned error: %v", err)
 	}

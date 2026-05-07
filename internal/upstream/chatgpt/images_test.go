@@ -1,4 +1,4 @@
-package tests
+package chatgpt
 
 import (
 	"bytes"
@@ -13,21 +13,19 @@ import (
 	"testing"
 
 	fhttp "github.com/bogdanfinn/fhttp"
-
-	"gpt-image-web/internal/upstream/chatgpt"
 )
 
 func TestChatGPTEditImageUploadsReferenceAndReturnsB64(t *testing.T) {
 	imageData := tinyPNG(t)
 	editedData := []byte("edited-image-bytes")
 	doer := &imageEditDoer{t: t, imageData: imageData, editedData: editedData}
-	client := chatgpt.NewClient("token", chatgpt.WithHTTPClient(doer))
+	client := NewClient("token", WithHTTPClient(doer))
 
-	results, err := client.EditImage(context.Background(), chatgpt.ImageRequest{
+	results, err := client.EditImage(context.Background(), ImageRequest{
 		Prompt:         "make it brighter",
 		Model:          "gpt-image-2",
 		ResponseFormat: "b64_json",
-		Images: []chatgpt.ImageInput{{
+		Images: []ImageInput{{
 			Name:        "source.png",
 			ContentType: "image/png",
 			Data:        imageData,
