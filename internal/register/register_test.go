@@ -2,6 +2,8 @@ package register
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -292,6 +294,134 @@ func TestLoginAndExchangeTokensRetriesFreshSessionMultipleTimes(t *testing.T) {
 	}
 	if factory.count.Load() != 3 {
 		t.Fatalf("expected 3 fresh-session retries, got %d", factory.count.Load())
+	}
+}
+
+type tokenExchangeRetryFactory struct {
+	count atomic.Int32
+}
+
+func (f *tokenExchangeRetryFactory) New(Config) (HTTPClient, error) {
+	f.count.Add(1)
+	return &tokenExchangeRetryClient{}, nil
+}
+
+type tokenExchangeRetryClient struct{}
+
+func (c *tokenExchangeRetryClient) Do(req *fhttp.Request) (*fhttp.Response, error) {
+	status := 200
+	body := ""
+	switch {
+	case strings.Contains(req.URL.String(), "/api/accounts/authorize"):
+		body = `{}`
+	case strings.Contains(req.URL.String(), "/api/accounts/password/verify"):
+		body = `{"continue_url":"https://auth.openai.com/api/auth/callback?state=test"}`
+	case strings.Contains(req.URL.String(), "/api/accounts/workspace/select"):
+		body = `{"continue_url":"https://auth.openai.com/api/auth/callback?state=test","data":{"orgs":[{"id":"org_123","projects":[{"id":"proj_123"}]}]}}`
+	case strings.Contains(req.URL.String(), "/api/accounts/organization/select"):
+		status = 302
+	case strings.Contains(req.URL.String(), "/oauth/token"):
+		status = 500
+		body = `{"error":"upstream"}`
+	default:
+		body = `{}`
+	}
+	resp := &fhttp.Response{
+		StatusCode: status,
+		Header:     make(fhttp.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+	if strings.Contains(req.URL.String(), "/api/accounts/organization/select") {
+		resp.Header.Set("Location", "https://platform.openai.com/auth/callback?code=oauth_code")
+	}
+	return resp, nil
+}
+
+func (c *tokenExchangeRetryClient) SetFollowRedirect(bool) {}
+func (c *tokenExchangeRetryClient) SetCookies(*url.URL, []*fhttp.Cookie) {}
+func (c *tokenExchangeRetryClient) GetCookies(*url.URL) []*fhttp.Cookie {
+	payload, _ := json.Marshal(map[string]any{
+		"workspaces": []map[string]any{
+			{"id": "ws_test"},
+		},
+	})
+	return []*fhttp.Cookie{
+		{
+			Name:  "oai-client-auth-session",
+			Value: base64.RawURLEncoding.EncodeToString(payload) + ".sig",
+		},
+	}
+}
+func (c *tokenExchangeRetryClient) CloseIdleConnections() {}
+
+func TestLoginAndExchangeTokensRetriesOAuthTokenFailures(t *testing.T) {
+	factory := &tokenExchangeRetryFactory{}
+	registrar, err := New(Options{
+		MailProvider: fakeMailProvider{
+			create: func(context.Context) (Mailbox, error) { return Mailbox{Address: "test@example.com"}, nil },
+			wait:   func(context.Context, Mailbox) (string, error) { return "123456", nil },
+		},
+		AccountRepo: fakeAccountRepo{},
+		HTTPFactory: factory,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stateClient, err := factory.New(registrar.cfg)
+	if err != nil {
+		t.Fatalf("factory.New() error = %v", err)
+	}
+	state := flowState{
+		client:      stateClient,
+		deviceID:    "device",
+		cfg:         registrar.cfg,
+		httpFactory: registrar.httpFactory,
+		random:      registrar.random,
+		now:         registrar.now,
+		logger:      registrar.logger,
+	}
+	_, err = registrar.loginAndExchangeTokens(context.Background(), state, "test@example.com", "pass", Mailbox{Address: "test@example.com"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "oauth_token_http_500") {
+		t.Fatalf("expected oauth token error, got %v", err)
+	}
+	if factory.count.Load() != 8 {
+		t.Fatalf("expected initial client plus 3 retries with fresh exchange clients, got %d", factory.count.Load())
+	}
+}
+
+func TestLoginOnlyRetriesOAuthTokenFailuresThreeTimes(t *testing.T) {
+	factory := &tokenExchangeRetryFactory{}
+	loginOnly, err := NewLoginOnlyWithMail(Config{}, fakeMailProvider{
+		create: func(context.Context) (Mailbox, error) { return Mailbox{Address: "test@example.com"}, nil },
+		wait:   func(context.Context, Mailbox) (string, error) { return "123456", nil },
+	})
+	if err != nil {
+		t.Fatalf("NewLoginOnlyWithMail() error = %v", err)
+	}
+	loginOnly.httpFactory = factory
+	_, err = loginOnly.LoginAndExchangeTokens(context.Background(), "test@example.com", "pass")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "oauth_token_http_500") {
+		t.Fatalf("expected oauth token error, got %v", err)
+	}
+	if factory.count.Load() != 8 {
+		t.Fatalf("expected initial client plus 3 retries with fresh exchange clients, got %d", factory.count.Load())
+	}
+}
+
+func TestShouldRetryFreshLoginSkipsAccountDeactivated(t *testing.T) {
+	err := errors.New("password_verify_http_403: account_deactivated - You do not have an account because it has been deleted or deactivated. If you believe this was an error, please contact us through our help center at help.openai.com.")
+	if shouldRetryFreshLogin(err) {
+		t.Fatal("expected account_deactivated to be non-retryable")
+	}
+	if got := classifyFreshLoginRetryReason(err); got != "account_deactivated" {
+		t.Fatalf("expected account_deactivated reason, got %q", got)
 	}
 }
 

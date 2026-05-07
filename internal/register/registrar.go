@@ -93,6 +93,7 @@ func (r *Registrar) Register(ctx context.Context) (RegisterResult, error) {
 		client:   client,
 		deviceID: randomID(r.random, 12),
 		cfg:      r.cfg,
+		httpFactory: r.httpFactory,
 		random:   r.random,
 		now:      r.now,
 		logger:   r.logger,
@@ -225,6 +226,7 @@ func (r *Registrar) loginAndExchangeTokens(ctx context.Context, state flowState,
 			client:   client,
 			deviceID: randomID(r.random, 12),
 			cfg:      r.cfg,
+			httpFactory: r.httpFactory,
 			random:   r.random,
 			now:      r.now,
 			logger:   r.logger,
@@ -289,6 +291,7 @@ func (l *LoginOnly) LoginAndExchangeTokens(ctx context.Context, email string, pa
 		client:   client,
 		deviceID: randomID(l.random, 12),
 		cfg:      l.cfg,
+		httpFactory: l.httpFactory,
 		random:   l.random,
 		now:      l.now,
 		logger:   l.logger,
@@ -320,20 +323,34 @@ func (l *LoginOnly) loginAndExchange(ctx context.Context, state flowState, email
 	if !shouldRetryFreshLogin(err) {
 		return tokenBundle{}, err
 	}
-	client, newErr := l.httpFactory.New(l.cfg)
-	if newErr != nil {
-		return tokenBundle{}, newErr
+	lastErr := err
+	for retry := 1; retry <= 3; retry++ {
+		reason := classifyFreshLoginRetryReason(lastErr)
+		l.logger.Printf(ctx, "warn", "login-only fresh session retry reason=%s retry=%d error=%v", reason, retry, lastErr)
+		client, newErr := l.httpFactory.New(l.cfg)
+		if newErr != nil {
+			return tokenBundle{}, newErr
+		}
+		freshState := flowState{
+			client:      client,
+			deviceID:    randomID(l.random, 12),
+			cfg:         l.cfg,
+			httpFactory: l.httpFactory,
+			random:      l.random,
+			now:         l.now,
+			logger:      l.logger,
+		}
+		tokens, err = freshState.loginAndExchangeTokens(ctx, email, password, emptyMailbox, mail)
+		client.CloseIdleConnections()
+		if err == nil {
+			return tokens, nil
+		}
+		lastErr = err
+		if !shouldRetryFreshLogin(err) {
+			return tokenBundle{}, err
+		}
 	}
-	defer client.CloseIdleConnections()
-	freshState := flowState{
-		client:   client,
-		deviceID: randomID(l.random, 12),
-		cfg:      l.cfg,
-		random:   l.random,
-		now:      l.now,
-		logger:   l.logger,
-	}
-	return freshState.loginAndExchangeTokens(ctx, email, password, emptyMailbox, mail)
+	return tokenBundle{}, lastErr
 }
 
 type loginOnlyMailProvider struct{}
@@ -360,6 +377,7 @@ type flowState struct {
 	client   HTTPClient
 	deviceID string
 	cfg      Config
+	httpFactory HTTPClientFactory
 	random   RandomSource
 	now      func() time.Time
 	logger   Logger
@@ -612,7 +630,18 @@ func (f flowState) exchangePlatformTokens(ctx context.Context, codeVerifier stri
 	}
 	reqCtx, cancel := withTimeout(ctx, f.cfg.TokenExchangeTimeout)
 	defer cancel()
-	resp, err := doWithRetry(reqCtx, f.client, f.cfg.LocalRetryAttempts, func() (*fhttp.Request, error) {
+	exchangeClient := f.client
+	closeExchangeClient := func() {}
+	if f.httpFactory != nil {
+		freshClient, newErr := f.httpFactory.New(f.cfg)
+		if newErr != nil {
+			return tokenBundle{}, newErr
+		}
+		exchangeClient = freshClient
+		closeExchangeClient = freshClient.CloseIdleConnections
+	}
+	defer closeExchangeClient()
+	resp, err := doWithRetry(reqCtx, exchangeClient, f.cfg.LocalRetryAttempts, func() (*fhttp.Request, error) {
 		return newRequest("POST", f.cfg.AuthBaseURL+"/oauth/token", headers, []byte(values.Encode()))
 	})
 	if err != nil {
@@ -854,12 +883,18 @@ func shouldRetryFreshLogin(err error) bool {
 		return false
 	}
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(text, "account_deactivated") ||
+		strings.Contains(text, "you do not have an account because it has been deleted or deactivated") {
+		return false
+	}
 	return strings.Contains(text, "invalid session") ||
 		strings.Contains(text, "invalid_state") ||
 		strings.Contains(text, "missing workspace id") ||
 		strings.Contains(text, "missing orgs in workspace selection") ||
 		strings.Contains(text, "missing org id") ||
 		strings.Contains(text, "missing oauth callback after consent") ||
+		strings.Contains(text, "oauth_token_http_") ||
+		strings.Contains(text, "token exchange failed") ||
 		strings.Contains(text, "password_verify_http_409") ||
 		strings.Contains(text, "password_verify_http_401")
 }
@@ -870,6 +905,9 @@ func classifyFreshLoginRetryReason(err error) string {
 	}
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
 	switch {
+	case strings.Contains(text, "account_deactivated"),
+		strings.Contains(text, "you do not have an account because it has been deleted or deactivated"):
+		return "account_deactivated"
 	case strings.Contains(text, "missing workspace id"):
 		return "missing_workspace_id"
 	case strings.Contains(text, "missing orgs in workspace selection"):
@@ -878,6 +916,10 @@ func classifyFreshLoginRetryReason(err error) string {
 		return "missing_org_id"
 	case strings.Contains(text, "missing oauth callback after consent"):
 		return "missing_oauth_callback_after_consent"
+	case strings.Contains(text, "oauth_token_http_"):
+		return "oauth_token_http"
+	case strings.Contains(text, "token exchange failed"):
+		return "token_exchange_failed"
 	case strings.Contains(text, "invalid_state"):
 		return "invalid_state"
 	case strings.Contains(text, "invalid session"):
