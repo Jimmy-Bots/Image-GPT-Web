@@ -90,13 +90,13 @@ func (r *Registrar) Register(ctx context.Context) (RegisterResult, error) {
 	defer client.CloseIdleConnections()
 
 	state := flowState{
-		client:   client,
-		deviceID: randomID(r.random, 12),
-		cfg:      r.cfg,
+		client:      client,
+		deviceID:    randomUUID(r.random),
+		cfg:         r.cfg,
 		httpFactory: r.httpFactory,
-		random:   r.random,
-		now:      r.now,
-		logger:   r.logger,
+		random:      r.random,
+		now:         r.now,
+		logger:      r.logger,
 	}
 
 	r.logRegistration(ctx, "info", "creating mailbox", nil)
@@ -140,7 +140,7 @@ func (r *Registrar) Register(ctx context.Context) (RegisterResult, error) {
 	}
 	r.logRegistration(ctx, "info", "verification code received", map[string]any{"email": email, "code": code})
 	r.logRegistration(ctx, "info", "validate email otp", map[string]any{"email": email, "code": code})
-	if err := state.validateOTP(ctx, code); err != nil {
+	if _, err := state.validateOTP(ctx, code); err != nil {
 		r.logRegistration(ctx, "error", "validate email otp failed", map[string]any{"email": email, "code": code, "error": err.Error()})
 		return RegisterResult{}, err
 	}
@@ -212,6 +212,7 @@ func (r *Registrar) loginAndExchangeTokens(ctx context.Context, state flowState,
 	reason := classifyFreshLoginRetryReason(err)
 	lastErr := err
 	for retry := 1; retry <= 3; retry++ {
+		reason = classifyFreshLoginRetryReason(lastErr)
 		r.logRegistration(ctx, "warn", "reset login session and retry exchange", map[string]any{
 			"email":  email,
 			"reason": reason,
@@ -223,13 +224,13 @@ func (r *Registrar) loginAndExchangeTokens(ctx context.Context, state flowState,
 			return tokenBundle{}, newErr
 		}
 		freshState := flowState{
-			client:   client,
-			deviceID: randomID(r.random, 12),
-			cfg:      r.cfg,
+			client:      client,
+			deviceID:    randomUUID(r.random),
+			cfg:         r.cfg,
 			httpFactory: r.httpFactory,
-			random:   r.random,
-			now:      r.now,
-			logger:   r.logger,
+			random:      r.random,
+			now:         r.now,
+			logger:      r.logger,
 		}
 		r.logRegistration(ctx, "info", "retry exchange platform tokens", map[string]any{
 			"email":  email,
@@ -288,13 +289,13 @@ func (l *LoginOnly) LoginAndExchangeTokens(ctx context.Context, email string, pa
 	}
 	defer client.CloseIdleConnections()
 	state := flowState{
-		client:   client,
-		deviceID: randomID(l.random, 12),
-		cfg:      l.cfg,
+		client:      client,
+		deviceID:    randomUUID(l.random),
+		cfg:         l.cfg,
 		httpFactory: l.httpFactory,
-		random:   l.random,
-		now:      l.now,
-		logger:   l.logger,
+		random:      l.random,
+		now:         l.now,
+		logger:      l.logger,
 	}
 	tokens, err := l.loginAndExchange(ctx, state, strings.TrimSpace(email), strings.TrimSpace(password))
 	if err != nil {
@@ -333,7 +334,7 @@ func (l *LoginOnly) loginAndExchange(ctx context.Context, state flowState, email
 		}
 		freshState := flowState{
 			client:      client,
-			deviceID:    randomID(l.random, 12),
+			deviceID:    randomUUID(l.random),
 			cfg:         l.cfg,
 			httpFactory: l.httpFactory,
 			random:      l.random,
@@ -471,7 +472,7 @@ func (f flowState) sendOTP(ctx context.Context) error {
 	return nil
 }
 
-func (f flowState) validateOTP(ctx context.Context, code string) error {
+func (f flowState) validateOTP(ctx context.Context, code string) (string, error) {
 	f.client.SetFollowRedirect(true)
 	payload, _ := json.Marshal(map[string]string{"code": code})
 	headers := f.jsonHeaders(f.cfg.AuthBaseURL + "/email-verification")
@@ -481,26 +482,26 @@ func (f flowState) validateOTP(ctx context.Context, code string) error {
 		return newRequest("POST", f.cfg.AuthBaseURL+"/api/accounts/email-otp/validate", headers, payload)
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	if resp.StatusCode == 200 {
-		return nil
+		return strings.TrimSpace(stringValue(resp.JSON()["continue_url"])), nil
 	}
 	token, err := buildSentinelToken(ctx, f.client, f.cfg, f.deviceID, "authorize_continue", f.random, f.now)
 	if err != nil {
-		return err
+		return "", err
 	}
 	headers["openai-sentinel-token"] = token
 	resp, err = doWithRetry(reqCtx, f.client, f.cfg.LocalRetryAttempts, func() (*fhttp.Request, error) {
 		return newRequest("POST", f.cfg.AuthBaseURL+"/api/accounts/email-otp/validate", headers, payload)
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("validate_otp_http_%d", resp.StatusCode)
+		return "", fmt.Errorf("validate_otp_http_%d", resp.StatusCode)
 	}
-	return nil
+	return strings.TrimSpace(stringValue(resp.JSON()["continue_url"])), nil
 }
 
 func (f flowState) createAccount(ctx context.Context, name string, birthdate string) error {
@@ -599,8 +600,12 @@ func (f flowState) loginAndExchangeTokens(ctx context.Context, email string, pas
 		if strings.TrimSpace(code) == "" {
 			return tokenBundle{}, ErrCodeTimeout
 		}
-		if err := f.validateOTP(ctx, code); err != nil {
+		nextURL, err := f.validateOTP(ctx, code)
+		if err != nil {
 			return tokenBundle{}, err
+		}
+		if strings.TrimSpace(nextURL) != "" {
+			continueURL = strings.TrimSpace(nextURL)
 		}
 	}
 	if continueURL == "" {
@@ -700,11 +705,11 @@ func (f flowState) extractOAuthCallback(ctx context.Context, consentURL string) 
 	}
 	rawSession := f.cookieValue(f.cfg.AuthBaseURL, "oai-client-auth-session")
 	if rawSession == "" {
-		return nil, errors.New("missing oai-client-auth-session cookie")
+		return nil, fmt.Errorf("missing oai-client-auth-session cookie consent_url=%s current_url=%s device_id=%s", consentURL, currentURL, f.deviceID)
 	}
 	workspaceID := extractWorkspaceID(rawSession)
 	if workspaceID == "" {
-		return nil, errors.New("missing workspace id")
+		return nil, fmt.Errorf("missing workspace id consent_url=%s current_url=%s auth_session_len=%d device_id=%s", consentURL, currentURL, len(rawSession), f.deviceID)
 	}
 	headers := f.jsonHeaders(consentURL)
 	payload, _ := json.Marshal(map[string]string{"workspace_id": workspaceID})
@@ -721,7 +726,7 @@ func (f flowState) extractOAuthCallback(ctx context.Context, consentURL string) 
 	data := resp.JSON()
 	orgs := sliceValue(mapValue(data["data"])["orgs"])
 	if len(orgs) == 0 {
-		return nil, errors.New("missing orgs in workspace selection")
+		return nil, fmt.Errorf("missing orgs in workspace selection consent_url=%s workspace_id=%s continue_url=%s", consentURL, workspaceID, strings.TrimSpace(stringValue(data["continue_url"])))
 	}
 	firstOrg := mapValue(orgs[0])
 	orgID := stringValue(firstOrg["id"])
@@ -731,14 +736,18 @@ func (f flowState) extractOAuthCallback(ctx context.Context, consentURL string) 
 		projectID = stringValue(mapValue(projects[0])["id"])
 	}
 	if orgID == "" {
-		return nil, errors.New("missing org id")
+		return nil, fmt.Errorf("missing org id consent_url=%s workspace_id=%s continue_url=%s", consentURL, workspaceID, strings.TrimSpace(stringValue(data["continue_url"])))
 	}
 	orgPayload := map[string]string{"org_id": orgID}
 	if projectID != "" {
 		orgPayload["project_id"] = projectID
 	}
 	body, _ := json.Marshal(orgPayload)
-	orgHeaders := f.jsonHeaders(stringValue(data["continue_url"]))
+	orgReferer := strings.TrimSpace(stringValue(data["continue_url"]))
+	if orgReferer == "" {
+		orgReferer = consentURL
+	}
+	orgHeaders := f.jsonHeaders(orgReferer)
 	f.client.SetFollowRedirect(false)
 	resp, err = doWithRetry(ctx, f.client, f.cfg.LocalRetryAttempts, func() (*fhttp.Request, error) {
 		return newRequest("POST", f.cfg.AuthBaseURL+"/api/accounts/organization/select", orgHeaders, body)
@@ -749,7 +758,7 @@ func (f flowState) extractOAuthCallback(ctx context.Context, consentURL string) 
 	if parsed := parseOAuthCallback(headerValue(resp.Header, "Location")); parsed != nil {
 		return parsed, nil
 	}
-	return nil, errors.New("missing oauth callback after consent")
+	return nil, fmt.Errorf("missing oauth callback after consent consent_url=%s workspace_id=%s org_id=%s project_id=%s", consentURL, workspaceID, orgID, projectID)
 }
 
 func (f flowState) oauthParams(email string, codeChallenge string) url.Values {

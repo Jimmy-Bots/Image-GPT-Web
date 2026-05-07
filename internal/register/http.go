@@ -33,7 +33,7 @@ func (defaultHTTPClientFactory) New(cfg Config) (HTTPClient, error) {
 	options := []tlsclient.HttpClientOption{
 		tlsclient.WithClientProfile(profiles.Chrome_133),
 		tlsclient.WithRandomTLSExtensionOrder(),
-		tlsclient.WithTimeoutSeconds(int(cfg.RequestTimeout.Seconds())),
+		tlsclient.WithTimeoutSeconds(int(cfg.TokenExchangeTimeout.Seconds())),
 		tlsclient.WithCookieJar(tlsclient.NewCookieJar()),
 		tlsclient.WithInsecureSkipVerify(),
 	}
