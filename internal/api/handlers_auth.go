@@ -12,6 +12,7 @@ import (
 	"gpt-image-web/internal/auth"
 	"gpt-image-web/internal/domain"
 	"gpt-image-web/internal/storage"
+	"gpt-image-web/internal/timeutil"
 )
 
 func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
@@ -106,7 +107,7 @@ type userBatchRequest struct {
 }
 
 func quotaDayString(now time.Time) string {
-	return now.Format("2006-01-02")
+	return timeutil.ShanghaiDayString(now)
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {

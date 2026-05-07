@@ -23,6 +23,8 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates gosu tzdata \
     && rm -rf /var/lib/apt/lists/* \
+    && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo Asia/Shanghai > /etc/timezone \
     && useradd --system --uid 10001 --home-dir /app --create-home appuser
 
 WORKDIR /app
@@ -43,7 +45,8 @@ ENV CHATGPT2API_ADDR=:3000 \
     CHATGPT2API_BACKUPS_DIR=/app/data/backups \
     CHATGPT2API_WEB_DIR=/app/web \
     CHATGPT2API_BASE_URL= \
-    CHATGPT2API_LOG_LEVEL=info
+    CHATGPT2API_LOG_LEVEL=info \
+    TZ=Asia/Shanghai
 
 EXPOSE 3000
 

@@ -12,6 +12,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"gpt-image-web/internal/domain"
+	"gpt-image-web/internal/timeutil"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -837,7 +838,7 @@ func (s *Store) UpdateUser(ctx context.Context, id string, update UserUpdate) (d
 }
 
 func quotaDayString(now time.Time) string {
-	return now.Format("2006-01-02")
+	return timeutil.ShanghaiDayString(now)
 }
 
 func applyDailyTemporaryQuota(user *domain.User, now time.Time) {

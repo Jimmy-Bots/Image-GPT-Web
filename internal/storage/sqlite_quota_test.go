@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gpt-image-web/internal/domain"
+	"gpt-image-web/internal/timeutil"
 )
 
 func openTestStore(t *testing.T) (*Store, context.Context) {
@@ -46,7 +47,7 @@ func TestApplyDailyTemporaryQuotaResetsToConfiguredTodayQuota(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
-	today := time.Now().Format("2006-01-02")
+	today := timeutil.ShanghaiDayString(time.Now())
 	if got.TemporaryQuota != 9 {
 		t.Fatalf("temporary_quota=%d want=9", got.TemporaryQuota)
 	}
@@ -71,7 +72,7 @@ func TestUpdateUserTemporaryQuotaDoesNotOverwriteDailyConfiguredQuota(t *testing
 		Status:             domain.UserStatusActive,
 		PermanentQuota:     3,
 		TemporaryQuota:     5,
-		TemporaryQuotaDate: time.Now().Format("2006-01-02"),
+		TemporaryQuotaDate: timeutil.ShanghaiDayString(time.Now()),
 		DailyTemporaryQuota: 7,
 		CreatedAt:          time.Now().UTC(),
 		UpdatedAt:          time.Now().UTC(),
@@ -80,7 +81,7 @@ func TestUpdateUserTemporaryQuotaDoesNotOverwriteDailyConfiguredQuota(t *testing
 		t.Fatalf("create user: %v", err)
 	}
 
-	today := time.Now().Format("2006-01-02")
+	today := timeutil.ShanghaiDayString(time.Now())
 	next := 11
 	got, err := store.UpdateUser(ctx, user.ID, UserUpdate{
 		TemporaryQuota:     &next,
