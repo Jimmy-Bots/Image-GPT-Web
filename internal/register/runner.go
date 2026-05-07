@@ -14,6 +14,7 @@ type Runner struct {
 	logger   Logger
 	now      func() time.Time
 	onState  func(BatchState)
+	random   RandomSource
 }
 
 func NewRunner(registrar *Registrar, repo AccountRepository, logger Logger, now func() time.Time) (*Runner, error) {
@@ -51,7 +52,7 @@ func newRunnerWithRegisterFunc(registerFn func(context.Context) (RegisterResult,
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Runner{register: registerFn, repo: repo, logger: logger, now: now}, nil
+	return &Runner{register: registerFn, repo: repo, logger: logger, now: now, random: newDefaultRandomSource()}, nil
 }
 
 func (r *Runner) WithStateHook(fn func(BatchState)) *Runner {
@@ -149,6 +150,15 @@ func (r *Runner) Run(ctx context.Context, cfg BatchConfig) (BatchState, error) {
 			defer wg.Done()
 			defer func() { slots <- slotID }()
 			workerCtx := WithThread(batchCtx, slotID)
+			if delay := r.startJitter(slotID); delay > 0 {
+				r.logger.Printf(workerCtx, "info", "startup jitter=%s attempt=%d", delay, attempt)
+				select {
+				case <-workerCtx.Done():
+					results <- jobResult{ok: false, err: workerCtx.Err()}
+					return
+				case <-time.After(delay):
+				}
+			}
 			r.logger.Printf(workerCtx, "info", "start attempt=%d", attempt)
 			_, err := r.register(workerCtx)
 			if err != nil {
@@ -311,4 +321,13 @@ func formatRunnerPercent(value float64) string {
 		return "0%"
 	}
 	return fmt.Sprintf("%.1f%%", value)
+}
+
+func (r *Runner) startJitter(threadID int) time.Duration {
+	if r == nil || r.random == nil {
+		return 0
+	}
+	base := threadID * 120
+	offset := r.random.Intn(180)
+	return time.Duration(base+offset) * time.Millisecond
 }

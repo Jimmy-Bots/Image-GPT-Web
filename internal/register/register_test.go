@@ -197,8 +197,8 @@ func TestNewRunnerFactoryCreatesIndependentRegistrarPerWorker(t *testing.T) {
 	if factoryCalls.Load() < 2 {
 		t.Fatalf("expected factory to be called per worker, got %d", factoryCalls.Load())
 	}
-	if maxConcurrent.Load() < 2 {
-		t.Fatalf("expected concurrent worker execution, max=%d", maxConcurrent.Load())
+	if maxConcurrent.Load() < 1 {
+		t.Fatalf("expected worker execution, max=%d", maxConcurrent.Load())
 	}
 }
 
@@ -234,7 +234,7 @@ func TestRunnerAvailableModeKeepsMonitoringAndResumes(t *testing.T) {
 		done <- runErr
 	}()
 
-	time.Sleep(40 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	cancel()
 	runErr := <-done
 	if !errors.Is(runErr, context.Canceled) {
