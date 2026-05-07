@@ -319,7 +319,12 @@ func (s *Store) ListUsersWithAPIKeys(ctx context.Context) ([]domain.User, error)
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	for index := range users {
+		users[index], err = s.refreshUserDailyTemporaryQuota(ctx, users[index], now)
+		if err != nil {
+			return nil, err
+		}
 		key, err := s.GetAPIKeyByUserID(ctx, users[index].ID)
 		if err == nil {
 			users[index].APIKey = &key
@@ -339,7 +344,11 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (domain.User, error)
 		 FROM users WHERE id = ? AND status != 'deleted'`,
 		id,
 	)
-	return scanUser(row)
+	user, err := scanUser(row)
+	if err != nil {
+		return domain.User{}, err
+	}
+	return s.refreshUserDailyTemporaryQuota(ctx, user, time.Now())
 }
 
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
@@ -402,7 +411,6 @@ func (s *Store) UpdateUser(ctx context.Context, id string, update UserUpdate) (d
 	}
 	if update.TemporaryQuota != nil {
 		current.TemporaryQuota = maxInt(0, *update.TemporaryQuota)
-		current.DailyTemporaryQuota = current.TemporaryQuota
 		if current.TemporaryQuota > 0 {
 			current.TemporaryQuotaDate = quotaDayString(time.Now())
 		} else {
@@ -453,8 +461,8 @@ func applyDailyTemporaryQuota(user *domain.User, now time.Time) {
 	if strings.TrimSpace(user.TemporaryQuotaDate) == today {
 		return
 	}
-	if user.DailyTemporaryQuota > 0 {
-		user.TemporaryQuota = maxInt(0, user.DailyTemporaryQuota)
+	if configured := maxInt(0, user.DailyTemporaryQuota); configured > 0 {
+		user.TemporaryQuota = configured
 		user.TemporaryQuotaDate = today
 		return
 	}
@@ -494,6 +502,14 @@ func (s *Store) applyDailyTemporaryQuotaIfNeeded(ctx context.Context, user *doma
 		user.ID,
 	)
 	return err
+}
+
+func (s *Store) refreshUserDailyTemporaryQuota(ctx context.Context, user domain.User, now time.Time) (domain.User, error) {
+	if err := s.applyDailyTemporaryQuotaIfNeeded(ctx, &user, now); err != nil {
+		return domain.User{}, err
+	}
+	user.AvailableQuota = availableUserQuota(user, now)
+	return user, nil
 }
 
 func (s *Store) ReserveUserQuota(ctx context.Context, userID string, amount int) (domain.User, domain.UserQuotaReceipt, error) {

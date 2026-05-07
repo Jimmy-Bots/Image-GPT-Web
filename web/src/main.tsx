@@ -156,6 +156,23 @@ function quotaLabelFromUser(user: User | null) {
   return compact(Number(user.available_quota || 0));
 }
 
+function quotaDetailFromUser(user: User | null) {
+  if (!user) return "额度信息暂不可用";
+  if (user.quota_unlimited) return "无限额度";
+  return `永久 ${compact(Number(user.permanent_quota || 0))} · 当天 ${compact(Number(user.temporary_quota || 0))} · 可用 ${compact(Number(user.available_quota || 0))}`;
+}
+
+function QuotaBadge({ user, quota }: { user: User | null; quota: string }) {
+  return (
+    <span className="composer-pill passive quota-pill">
+      额度 {quota}
+      <span className="quota-popover" role="tooltip">
+        {quotaDetailFromUser(user)}
+      </span>
+    </span>
+  );
+}
+
 function describeWorkbenchError(error: unknown) {
   const message = error instanceof Error ? error.message : "操作失败";
   const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code || "") : "";
@@ -234,11 +251,11 @@ function extractWorkbenchTaskError(task: ImageTask, fallback?: string) {
 
 function formatUserQuotaBreakdown(user: User) {
   if (user.quota_unlimited) return "无限额度";
-  const temporaryValue = Number(user.daily_temporary_quota || user.temporary_quota || 0);
+  const temporaryValue = Number(user.temporary_quota || 0);
   const temporaryDate = user.temporary_quota_date?.trim();
   const temporaryPart = temporaryValue > 0
-    ? `临时 ${temporaryValue}${temporaryDate ? ` · ${temporaryDate}` : ""}`
-    : "临时 0";
+    ? `当天 ${temporaryValue}${temporaryDate ? ` · ${temporaryDate}` : ""}`
+    : "当天 0";
   return `永久 ${compact(user.permanent_quota || 0)} · ${temporaryPart}`;
 }
 
@@ -835,7 +852,7 @@ function ImageHome({
         </div>
       </header>
 
-      <ImageWorkbench token={token} identity={identity} modelPolicy={modelPolicy} quotaLabel={quotaLabel} refreshUserState={refreshUserState} canRefreshArchive={isAdmin} setTasks={setTasks} setTaskTotal={setTaskTotal} setImages={setImages} toast={toast} openLightbox={openLightbox} />
+      <ImageWorkbench token={token} identity={identity} user={user} modelPolicy={modelPolicy} quotaLabel={quotaLabel} refreshUserState={refreshUserState} canRefreshArchive={isAdmin} setTasks={setTasks} setTaskTotal={setTaskTotal} setImages={setImages} toast={toast} openLightbox={openLightbox} />
 
       <div className="toast-stack">
         {toasts.map((item) => <div key={item.id} className={classNames("toast", item.type)}>{item.message}</div>)}
@@ -1153,7 +1170,7 @@ function AccountRow({ item, refreshIntervalMinutes, selected, onSelect, onRefres
   );
 }
 
-function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserState, canRefreshArchive, setTasks, setTaskTotal, setImages, toast, openLightbox }: { token: string; identity: Identity; modelPolicy: ModelPolicy; quotaLabel: string; refreshUserState: () => Promise<void>; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
+function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refreshUserState, canRefreshArchive, setTasks, setTaskTotal, setImages, toast, openLightbox }: { token: string; identity: Identity; user: User | null; modelPolicy: ModelPolicy; quotaLabel: string; refreshUserState: () => Promise<void>; canRefreshArchive: boolean; setTasks: React.Dispatch<React.SetStateAction<ImageTask[]>>; setTaskTotal: React.Dispatch<React.SetStateAction<number>>; setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState("");
   const [count, setCount] = useState(1);
@@ -1573,7 +1590,7 @@ function ImageWorkbench({ token, identity, modelPolicy, quotaLabel, refreshUserS
             <div className="composer-footer">
               <div className="composer-controls">
                 <button className="composer-pill" onClick={() => fileRef.current?.click()}><ImagePlus size={16} />{refs.length ? "添加参考图" : "上传"}</button>
-                <span className="composer-pill passive">额度 {quota}</span>
+                <QuotaBadge user={user} quota={quota} />
                 {activeTaskCount > 0 ? <span className="composer-pill running"><LoaderCircle className="spin" size={14} />{activeTaskCount} 处理中</span> : null}
                 <label className="composer-field"><span>模型</span><input value={model} readOnly /></label>
                 <label className="composer-field small-field"><span>比例</span><select value={size} onChange={(event) => setSize(event.target.value)}><option value="">默认</option><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></label>
@@ -2390,6 +2407,9 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
   const [form, setForm] = useState({ email: "", name: "", password: "", role: "user", quotaUnlimited: false, permanentQuota: "0", temporaryQuota: "" });
   const [newKey, setNewKey] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editForm, setEditForm] = useState({ email: "", name: "", password: "", role: "user", status: "active", quotaUnlimited: false, permanentQuota: "0", temporaryQuota: "" });
+  const [editBusy, setEditBusy] = useState(false);
   const [batchTempOpen, setBatchTempOpen] = useState(false);
   const [batchTempValue, setBatchTempValue] = useState("10");
   const [batchPermanentOpen, setBatchPermanentOpen] = useState(false);
@@ -2452,6 +2472,45 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
     await reload();
     toast("success", "用户已创建");
   }
+  function openEditUser(user: User) {
+    setEditingUser(user);
+    setEditForm({
+      email: user.email,
+      name: user.name || "",
+      password: "",
+      role: user.role,
+      status: user.status,
+      quotaUnlimited: user.quota_unlimited,
+      permanentQuota: String(user.permanent_quota || 0),
+      temporaryQuota: String(user.daily_temporary_quota || 0)
+    });
+  }
+  async function saveEditUser() {
+    if (!editingUser) return;
+    const quotaUnlimited = editForm.role === "admin" ? true : editForm.quotaUnlimited;
+    const temporaryQuota = Math.max(0, Number(editForm.temporaryQuota) || 0);
+    setEditBusy(true);
+    try {
+      const body: Partial<Pick<User, "email" | "name" | "role" | "status" | "quota_unlimited" | "permanent_quota" | "temporary_quota" | "temporary_quota_date" | "daily_temporary_quota">> & { password?: string } = {
+        email: editForm.email.trim(),
+        name: editForm.name.trim(),
+        role: editForm.role as User["role"],
+        status: editForm.status as User["status"],
+        quota_unlimited: quotaUnlimited,
+        permanent_quota: quotaUnlimited ? 0 : Math.max(0, Number(editForm.permanentQuota) || 0),
+        temporary_quota: quotaUnlimited ? 0 : temporaryQuota,
+        temporary_quota_date: temporaryQuota > 0 ? localDayString() : "",
+        daily_temporary_quota: quotaUnlimited ? 0 : temporaryQuota
+      };
+      if (editForm.password.trim()) body.password = editForm.password.trim();
+      await api.updateUser(token, editingUser.id, body);
+      await reload();
+      setEditingUser(null);
+      toast("success", "用户已更新");
+    } finally {
+      setEditBusy(false);
+    }
+  }
   async function runBatch(action: "enable" | "disable" | "delete" | "grant_temporary_quota" | "grant_permanent_quota" | "set_temporary_quota", options?: { temporaryQuota?: number; permanentQuota?: number; successMessage?: string; confirmText?: string }) {
     if (!selected.length) return;
     if (options?.confirmText && !confirm(options.confirmText)) return;
@@ -2491,13 +2550,13 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
         <button className="ghost small" disabled={!selected.length || batchBusy === "enable"} onClick={() => runBatch("enable", { successMessage: "已启用选中用户" }).catch((error) => toast("error", error.message))}>启用选中</button>
         <button className="ghost small" disabled={!selected.length || batchBusy === "disable"} onClick={() => runBatch("disable", { successMessage: "已停用选中用户" }).catch((error) => toast("error", error.message))}>停用选中</button>
         <button className="ghost small" disabled={!selected.length || batchBusy === "grant_permanent_quota"} onClick={() => { setBatchPermanentValue("10"); setBatchPermanentOpen(true); }}>发永久额度</button>
-        <button className="ghost small" disabled={!selected.length || batchBusy === "set_temporary_quota"} onClick={() => { setBatchTempValue("10"); setBatchTempOpen(true); }}>设临时额度</button>
+        <button className="ghost small" disabled={!selected.length || batchBusy === "set_temporary_quota"} onClick={() => { setBatchTempValue("10"); setBatchTempOpen(true); }}>设当天额度</button>
         <button className="danger small" disabled={!selected.length || batchBusy === "delete"} onClick={() => runBatch("delete", { successMessage: "已删除选中用户", confirmText: `删除 ${selected.length} 个用户？` }).catch((error) => toast("error", error.message))}>删除选中</button>
       </div>
       {newKey ? <div className="notice"><span>新 API Key 只显示一次：</span><code>{newKey}</code><IconButton title="复制" onClick={() => copyText(newKey).then(() => toast("success", "已复制"))}><Copy size={14} /></IconButton><IconButton title="隐藏" onClick={() => setNewKey("")}><EyeOff size={14} /></IconButton></div> : null}
       <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="large"><table className="users-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => {
         setSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...users.map((item) => item.id)])) : prev.filter((id) => !users.some((item) => item.id === id)));
-      }} aria-label="选择当前用户" /></th><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>可用额度</th><th>额度明细</th><th>API Key</th><th>Last Login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} selected={selectedSet.has(user.id)} onSelect={(checked) => setSelected((prev) => checked ? [...prev, user.id] : prev.filter((id) => id !== user.id))} />)}</tbody></table></ScrollableTable>
+      }} aria-label="选择当前用户" /></th><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>可用额度</th><th>额度明细</th><th>API Key</th><th>Last Login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} selected={selectedSet.has(user.id)} onSelect={(checked) => setSelected((prev) => checked ? [...prev, user.id] : prev.filter((id) => id !== user.id))} onEdit={openEditUser} />)}</tbody></table></ScrollableTable>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
       <DetailModal title="创建用户" open={createOpen} onClose={() => setCreateOpen(false)}>
         <div className="detail-panel">
@@ -2508,9 +2567,24 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
             <ControlField label="角色"><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option>user</option><option>admin</option></select></ControlField>
             <ControlField label="无限额度"><select value={form.role === "admin" || form.quotaUnlimited ? "true" : "false"} onChange={(event) => setForm({ ...form, quotaUnlimited: event.target.value === "true" })} disabled={form.role === "admin"}><option value="false">有限额度</option><option value="true">无限额度</option></select></ControlField>
             <ControlField label="永久额度"><input type="number" min={0} value={form.permanentQuota} onChange={(event) => setForm({ ...form, permanentQuota: event.target.value })} disabled={form.role === "admin" || form.quotaUnlimited} /></ControlField>
-            <ControlField label="临时额度（每天自动发放）"><input type="number" min={0} value={form.temporaryQuota} onChange={(event) => setForm({ ...form, temporaryQuota: event.target.value })} disabled={form.role === "admin" || form.quotaUnlimited} placeholder={`默认 ${defaultTemporaryQuota}`} /></ControlField>
+            <ControlField label="当天额度"><input type="number" min={0} value={form.temporaryQuota} onChange={(event) => setForm({ ...form, temporaryQuota: event.target.value })} disabled={form.role === "admin" || form.quotaUnlimited} placeholder={`默认 ${defaultTemporaryQuota}`} /></ControlField>
           </div>
           <div className="modal-actions"><button className="secondary" onClick={() => setCreateOpen(false)}>取消</button><button onClick={() => create().catch((error) => toast("error", error.message))}>创建用户</button></div>
+        </div>
+      </DetailModal>
+      <DetailModal title={editingUser ? `编辑用户 · ${editingUser.email}` : "编辑用户"} open={Boolean(editingUser)} onClose={() => !editBusy && setEditingUser(null)}>
+        <div className="detail-panel">
+          <div className="detail-grid detail-grid-two">
+            <ControlField label="邮箱"><input value={editForm.email} onChange={(event) => setEditForm({ ...editForm, email: event.target.value })} placeholder="email" /></ControlField>
+            <ControlField label="名称"><input value={editForm.name} onChange={(event) => setEditForm({ ...editForm, name: event.target.value })} placeholder="name" /></ControlField>
+            <ControlField label="新密码"><input value={editForm.password} onChange={(event) => setEditForm({ ...editForm, password: event.target.value })} type="password" placeholder="留空则不修改" /></ControlField>
+            <ControlField label="角色"><select value={editForm.role} onChange={(event) => setEditForm({ ...editForm, role: event.target.value })}><option>user</option><option>admin</option></select></ControlField>
+            <ControlField label="状态"><select value={editForm.status} onChange={(event) => setEditForm({ ...editForm, status: event.target.value })}><option value="active">Active</option><option value="disabled">Disabled</option></select></ControlField>
+            <ControlField label="无限额度"><select value={editForm.role === "admin" || editForm.quotaUnlimited ? "true" : "false"} onChange={(event) => setEditForm({ ...editForm, quotaUnlimited: event.target.value === "true" })} disabled={editForm.role === "admin"}><option value="false">有限额度</option><option value="true">无限额度</option></select></ControlField>
+            <ControlField label="永久额度"><input type="number" min={0} value={editForm.permanentQuota} onChange={(event) => setEditForm({ ...editForm, permanentQuota: event.target.value })} disabled={editForm.role === "admin" || editForm.quotaUnlimited} /></ControlField>
+            <ControlField label="当天额度"><input type="number" min={0} value={editForm.temporaryQuota} onChange={(event) => setEditForm({ ...editForm, temporaryQuota: event.target.value })} disabled={editForm.role === "admin" || editForm.quotaUnlimited} /></ControlField>
+          </div>
+          <div className="modal-actions"><button className="secondary" disabled={editBusy} onClick={() => setEditingUser(null)}>取消</button><button disabled={editBusy} onClick={() => saveEditUser().catch((error) => toast("error", error.message))}>{editBusy ? "保存中" : "保存"}</button></div>
         </div>
       </DetailModal>
       <DetailModal title="批量发放永久额度" open={batchPermanentOpen} onClose={() => setBatchPermanentOpen(false)}>
@@ -2526,14 +2600,14 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
           }}>{batchBusy === "grant_permanent_quota" ? "发放中" : "确认发放"}</button></div>
         </div>
       </DetailModal>
-      <DetailModal title="批量设置临时额度" open={batchTempOpen} onClose={() => setBatchTempOpen(false)}>
+      <DetailModal title="批量设置当天额度" open={batchTempOpen} onClose={() => setBatchTempOpen(false)}>
         <div className="detail-panel">
           <div className="detail-grid detail-grid-two">
             <ControlField label="数量"><input type="number" min={0} value={batchTempValue} onChange={(event) => setBatchTempValue(event.target.value)} /></ControlField>
           </div>
           <div className="modal-actions"><button className="secondary" onClick={() => setBatchTempOpen(false)}>取消</button><button disabled={batchBusy === "set_temporary_quota"} onClick={() => {
             const value = Math.max(0, Number(batchTempValue) || 0);
-            runBatch("set_temporary_quota", { temporaryQuota: value, successMessage: value > 0 ? `已为 ${selected.length} 个用户设置临时额度` : "已清空选中用户临时额度" })
+            runBatch("set_temporary_quota", { temporaryQuota: value, successMessage: value > 0 ? `已为 ${selected.length} 个用户设置当天额度` : "已清空选中用户当天额度" })
               .then(() => setBatchTempOpen(false))
               .catch((error) => toast("error", error.message));
           }}>{batchBusy === "set_temporary_quota" ? "保存中" : "确认保存"}</button></div>
@@ -2543,56 +2617,8 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
   );
 }
 
-function UserRow({ token, user, reload, toast, showKey, selected, onSelect }: { token: string; user: User; reload: () => Promise<void>; toast: (type: Toast["type"], message: string) => void; showKey: (key: string) => void; selected: boolean; onSelect: (checked: boolean) => void }) {
-  const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
+function UserRow({ token, user, reload, toast, showKey, selected, onSelect, onEdit }: { token: string; user: User; reload: () => Promise<void>; toast: (type: Toast["type"], message: string) => void; showKey: (key: string) => void; selected: boolean; onSelect: (checked: boolean) => void; onEdit: (user: User) => void }) {
   const [grantingTemp, setGrantingTemp] = useState(false);
-  const [draft, setDraft] = useState({
-    email: user.email,
-    name: user.name || "",
-    password: "",
-    role: user.role,
-    status: user.status,
-    quotaUnlimited: user.quota_unlimited,
-    permanentQuota: String(user.permanent_quota || 0),
-    temporaryQuota: String(user.daily_temporary_quota || user.temporary_quota || 0)
-  });
-  useEffect(() => {
-    if (!editing) setDraft({
-      email: user.email,
-      name: user.name || "",
-      password: "",
-      role: user.role,
-      status: user.status,
-      quotaUnlimited: user.quota_unlimited,
-      permanentQuota: String(user.permanent_quota || 0),
-      temporaryQuota: String(user.daily_temporary_quota || user.temporary_quota || 0)
-    });
-  }, [editing, user.email, user.name, user.role, user.status, user.quota_unlimited, user.permanent_quota, user.temporary_quota, user.daily_temporary_quota]);
-  async function save() {
-    setSaving(true);
-    try {
-      const quotaUnlimited = draft.role === "admin" ? true : draft.quotaUnlimited;
-      const temporaryQuota = Math.max(0, Number(draft.temporaryQuota) || 0);
-      const body: Partial<Pick<User, "email" | "name" | "role" | "status" | "quota_unlimited" | "permanent_quota" | "temporary_quota" | "temporary_quota_date">> & { password?: string } = {
-        email: draft.email.trim(),
-        name: draft.name.trim(),
-        role: draft.role,
-        status: draft.status,
-        quota_unlimited: quotaUnlimited,
-        permanent_quota: quotaUnlimited ? 0 : Math.max(0, Number(draft.permanentQuota) || 0),
-        temporary_quota: quotaUnlimited ? 0 : temporaryQuota,
-        temporary_quota_date: temporaryQuota > 0 ? localDayString() : ""
-      };
-      if (draft.password.trim()) body.password = draft.password;
-      await api.updateUser(token, user.id, body);
-      await reload();
-      setEditing(false);
-      toast("success", "用户已更新");
-    } finally {
-      setSaving(false);
-    }
-  }
   async function toggleStatus() {
     await api.updateUser(token, user.id, { status: user.status === "active" ? "disabled" : "active" });
     await reload();
@@ -2612,7 +2638,7 @@ function UserRow({ token, user, reload, toast, showKey, selected, onSelect }: { 
     toast("success", "API Key 已重置");
   }
   async function grantTemporaryQuota() {
-    const input = window.prompt(`给 ${user.email} 发放今日临时额度`, "10");
+    const input = window.prompt(`给 ${user.email} 发放今日额度`, "10");
     if (input === null) return;
     const value = Math.max(0, Number(input) || 0);
     setGrantingTemp(true);
@@ -2622,7 +2648,7 @@ function UserRow({ token, user, reload, toast, showKey, selected, onSelect }: { 
         temporary_quota_date: value > 0 ? localDayString() : ""
       });
       await reload();
-      toast("success", value > 0 ? `已发放今日临时额度 ${value}` : "已清空今日临时额度");
+      toast("success", value > 0 ? `已发放今日额度 ${value}` : "已清空今日额度");
     } finally {
       setGrantingTemp(false);
     }
@@ -2630,30 +2656,22 @@ function UserRow({ token, user, reload, toast, showKey, selected, onSelect }: { 
   return (
     <tr>
       <td><input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)} /></td>
-      <td>{editing ? <input className="cell-input" value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} /> : user.email}</td>
-      <td>{editing ? <input className="cell-input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /> : (user.name || "-")}</td>
-      <td>{editing ? <select className="cell-input" value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value as User["role"] })}><option>user</option><option>admin</option></select> : <Badge value={user.role} />}</td>
-      <td>{editing ? <select className="cell-input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as User["status"] })}><option value="active">Active</option><option value="disabled">Disabled</option></select> : <Badge value={user.status} />}</td>
+      <td>{user.email}</td>
+      <td>{user.name || "-"}</td>
+      <td><Badge value={user.role} /></td>
+      <td><Badge value={user.status} /></td>
       <td>{user.quota_unlimited ? "∞" : compact(user.available_quota || 0)}</td>
-      <td>{editing ? <div className="quota-edit-inline"><select className="cell-input" value={draft.role === "admin" || draft.quotaUnlimited ? "true" : "false"} onChange={(event) => setDraft({ ...draft, quotaUnlimited: event.target.value === "true" })} disabled={draft.role === "admin"}><option value="false">有限</option><option value="true">无限</option></select><input className="cell-input" type="number" min={0} value={draft.permanentQuota} onChange={(event) => setDraft({ ...draft, permanentQuota: event.target.value })} disabled={draft.role === "admin" || draft.quotaUnlimited} placeholder="永久" /><input className="cell-input" type="number" min={0} value={draft.temporaryQuota} onChange={(event) => setDraft({ ...draft, temporaryQuota: event.target.value })} disabled={draft.role === "admin" || draft.quotaUnlimited} placeholder="临时额度" /></div> : <><strong>{formatUserQuotaBreakdown(user)}</strong><small>{user.daily_temporary_quota ? `每天自动发放 ${user.daily_temporary_quota}` : (user.temporary_quota > 0 ? "当日额度" : "无临时额度")}</small></>}</td>
+      <td><><strong>{formatUserQuotaBreakdown(user)}</strong><small>{user.daily_temporary_quota ? `每日当天额度 ${user.daily_temporary_quota}` : (user.temporary_quota > 0 ? "今日已发放" : "无当天额度")}</small></></td>
       <td><Badge value={user.api_key?.enabled ?? false} /><small>{user.api_key ? `${user.api_key.name} · ${fmtDate(user.api_key.last_used_at)}` : "Missing"}</small></td>
       <td>{fmtDate(user.last_login_at)}</td>
       <td className="users-actions-cell"><div className="row-actions">
-        {editing ? (
-          <>
-            <input className="cell-input password-cell" type="password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} placeholder="New Password" />
-            <button className="secondary small" disabled={saving} onClick={save}>{saving ? "保存中" : "保存"}</button>
-            <button className="ghost small" disabled={saving} onClick={() => setEditing(false)}>取消</button>
-          </>
-        ) : (
-          <>
-            <button className="ghost small" onClick={() => setEditing(true)}>编辑</button>
-            <button className="ghost small" disabled={grantingTemp} onClick={() => grantTemporaryQuota().catch((error) => toast("error", error.message))}>{grantingTemp ? "发放中" : "发临时额度"}</button>
-            <IconButton title={user.status === "active" ? "停用" : "启用"} onClick={() => toggleStatus().catch((error) => toast("error", error.message))}>{user.status === "active" ? <Ban size={15} /> : <Eye size={15} />}</IconButton>
-            <IconButton title="重置 API Key" onClick={() => resetKey().catch((error) => toast("error", error.message))}><RotateCcw size={15} /></IconButton>
-            <IconButton title="删除" className="danger-icon" onClick={() => remove().catch((error) => toast("error", error.message))}><Trash2 size={15} /></IconButton>
-          </>
-        )}
+        <>
+          <button className="ghost small" onClick={() => onEdit(user)}>编辑</button>
+          <button className="ghost small" disabled={grantingTemp} onClick={() => grantTemporaryQuota().catch((error) => toast("error", error.message))}>{grantingTemp ? "发放中" : "发今日额度"}</button>
+          <IconButton title={user.status === "active" ? "停用" : "启用"} onClick={() => toggleStatus().catch((error) => toast("error", error.message))}>{user.status === "active" ? <Ban size={15} /> : <Eye size={15} />}</IconButton>
+          <IconButton title="重置 API Key" onClick={() => resetKey().catch((error) => toast("error", error.message))}><RotateCcw size={15} /></IconButton>
+          <IconButton title="删除" className="danger-icon" onClick={() => remove().catch((error) => toast("error", error.message))}><Trash2 size={15} /></IconButton>
+        </>
       </div></td>
     </tr>
   );

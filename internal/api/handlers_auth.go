@@ -82,6 +82,7 @@ type userUpdateRequest struct {
 	PermanentQuota     *int         `json:"permanent_quota"`
 	TemporaryQuota     *int         `json:"temporary_quota"`
 	TemporaryQuotaDate *string      `json:"temporary_quota_date"`
+	DailyTemporaryQuota *int        `json:"daily_temporary_quota"`
 	AddPermanentQuota  *int         `json:"add_permanent_quota"`
 }
 
@@ -436,6 +437,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		PermanentQuota:     req.PermanentQuota,
 		TemporaryQuota:     req.TemporaryQuota,
 		TemporaryQuotaDate: req.TemporaryQuotaDate,
+		DailyTemporaryQuota: req.DailyTemporaryQuota,
 		AddPermanentQuota:  req.AddPermanentQuota,
 	}
 	if req.Password != nil {
@@ -505,23 +507,27 @@ func (s *Server) handleBatchUsers(w http.ResponseWriter, r *http.Request) {
 			results = append(results, user)
 			updated++
 		}
-	case "grant_temporary_quota":
-		if req.TemporaryQuota == nil {
-			writeError(w, http.StatusBadRequest, "bad_request", "temporary_quota is required")
-			return
-		}
-		for _, id := range ids {
-			user, err := s.store.UpdateUser(r.Context(), id, storage.UserUpdate{TemporaryQuota: req.TemporaryQuota})
-			if err != nil {
-				writeError(w, storageStatus(err), "batch_user_failed", err.Error())
+		case "grant_temporary_quota":
+			if req.TemporaryQuota == nil {
+				writeError(w, http.StatusBadRequest, "bad_request", "temporary_quota is required")
 				return
 			}
-			if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
-				user.APIKey = &key
+			for _, id := range ids {
+				today := quotaDayString(time.Now())
+				user, err := s.store.UpdateUser(r.Context(), id, storage.UserUpdate{
+					TemporaryQuota:     req.TemporaryQuota,
+					TemporaryQuotaDate: &today,
+				})
+				if err != nil {
+					writeError(w, storageStatus(err), "batch_user_failed", err.Error())
+					return
+				}
+				if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
+					user.APIKey = &key
+				}
+				results = append(results, user)
+				updated++
 			}
-			results = append(results, user)
-			updated++
-		}
 	case "grant_permanent_quota":
 		if req.PermanentQuota == nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "permanent_quota is required")
@@ -539,23 +545,28 @@ func (s *Server) handleBatchUsers(w http.ResponseWriter, r *http.Request) {
 			results = append(results, user)
 			updated++
 		}
-	case "set_temporary_quota":
-		if req.TemporaryQuota == nil {
-			writeError(w, http.StatusBadRequest, "bad_request", "temporary_quota is required")
-			return
-		}
-		for _, id := range ids {
-			user, err := s.store.UpdateUser(r.Context(), id, storage.UserUpdate{TemporaryQuota: req.TemporaryQuota})
-			if err != nil {
-				writeError(w, storageStatus(err), "batch_user_failed", err.Error())
+		case "set_temporary_quota":
+			if req.TemporaryQuota == nil {
+				writeError(w, http.StatusBadRequest, "bad_request", "temporary_quota is required")
 				return
 			}
-			if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
-				user.APIKey = &key
+			for _, id := range ids {
+				today := quotaDayString(time.Now())
+				user, err := s.store.UpdateUser(r.Context(), id, storage.UserUpdate{
+					DailyTemporaryQuota: req.TemporaryQuota,
+					TemporaryQuota:      req.TemporaryQuota,
+					TemporaryQuotaDate:  &today,
+				})
+				if err != nil {
+					writeError(w, storageStatus(err), "batch_user_failed", err.Error())
+					return
+				}
+				if key, err := s.syncUserAPIKey(r.Context(), user); err == nil {
+					user.APIKey = &key
+				}
+				results = append(results, user)
+				updated++
 			}
-			results = append(results, user)
-			updated++
-		}
 	default:
 		writeError(w, http.StatusBadRequest, "bad_request", "unsupported action")
 		return
@@ -667,15 +678,17 @@ func (s *Server) createUser(ctx context.Context, email string, name string, pass
 		if permanentQuota != nil {
 			user.PermanentQuota = maxInt(0, *permanentQuota)
 		}
-		if temporaryQuota != nil {
-			user.TemporaryQuota = maxInt(0, *temporaryQuota)
-		} else if defaultTemporaryQuota > 0 {
-			user.TemporaryQuota = defaultTemporaryQuota
-		}
 		if dailyTemporaryQuota != nil {
 			user.DailyTemporaryQuota = maxInt(0, *dailyTemporaryQuota)
-		} else if user.TemporaryQuota > 0 {
-			user.DailyTemporaryQuota = user.TemporaryQuota
+		} else if temporaryQuota != nil {
+			user.DailyTemporaryQuota = maxInt(0, *temporaryQuota)
+		} else if defaultTemporaryQuota > 0 {
+			user.DailyTemporaryQuota = defaultTemporaryQuota
+		}
+		if temporaryQuota != nil {
+			user.TemporaryQuota = maxInt(0, *temporaryQuota)
+		} else if user.DailyTemporaryQuota > 0 {
+			user.TemporaryQuota = user.DailyTemporaryQuota
 		}
 		if user.TemporaryQuota > 0 {
 			user.TemporaryQuotaDate = quotaDayString(time.Now())

@@ -166,7 +166,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     }),
-  updateUser: (token: string, id: string, body: Partial<Pick<User, "email" | "name" | "role" | "status" | "quota_unlimited" | "permanent_quota" | "temporary_quota" | "temporary_quota_date">> & { password?: string; add_permanent_quota?: number }) =>
+  updateUser: (token: string, id: string, body: Partial<Pick<User, "email" | "name" | "role" | "status" | "quota_unlimited" | "permanent_quota" | "temporary_quota" | "temporary_quota_date" | "daily_temporary_quota">> & { password?: string; add_permanent_quota?: number }) =>
     request<{ item: User }>(token, `/api/users/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },

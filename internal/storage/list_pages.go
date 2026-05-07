@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 
 	"gpt-image-web/internal/domain"
 )
@@ -122,8 +123,13 @@ func (s *Store) ListUsersWithAPIKeysPage(ctx context.Context, query UserListQuer
 	}
 	defer rows.Close()
 	items := make([]domain.User, 0, pageSize)
+	now := time.Now()
 	for rows.Next() {
 		user, err := scanUser(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		user, err = s.refreshUserDailyTemporaryQuota(ctx, user, now)
 		if err != nil {
 			return nil, 0, err
 		}
