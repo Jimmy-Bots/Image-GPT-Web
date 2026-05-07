@@ -120,10 +120,12 @@ small { display: block; margin-top: 3px; color: #8792a2; font-size: 11px; }
 
 .filters { display: grid; grid-template-columns: minmax(280px, 1.35fr) repeat(3, minmax(132px, .58fr)); gap: 10px; align-items: end; margin-bottom: 12px; }
 .filters.images-filters { grid-template-columns: minmax(280px, 1.35fr) repeat(3, minmax(132px, .58fr)) minmax(140px, auto); }
-.filters-card { padding: 12px; border: 1px solid #e5ebf3; border-radius: 12px; background: linear-gradient(180deg, #fbfcfe 0%, #f6f9fc 100%); }
-.activity-filters { grid-template-columns: minmax(280px, 1.3fr) repeat(5, minmax(118px, .58fr)) minmax(220px, auto); }
+.filters.account-filters { grid-template-columns: minmax(320px, 1.45fr) repeat(3, minmax(160px, .62fr)) minmax(120px, .38fr); }
+.filters-card { padding: 12px; border: 1px solid #e5ebf3; border-radius: 12px; background: linear-gradient(180deg, #fbfcfe 0%, #f6f9fc 100%); box-shadow: inset 0 1px 0 rgba(255,255,255,.72); }
+.activity-filters { grid-template-columns: minmax(360px, 1.5fr) repeat(4, minmax(150px, .64fr)); align-items: end; }
+.activity-filters .filter-actions { grid-column: 1 / -1; justify-self: end; }
 .control-field { display: grid; gap: 6px; min-width: 0; }
-.control-field span { margin: 0; color: #6d7888; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.control-field span { margin: 0; color: #667386; font-size: 11px; font-weight: 800; letter-spacing: .03em; }
 .control-field-search { min-width: 0; }
 .filters-card .control-field input,
 .filters-card .control-field select,
@@ -150,6 +152,7 @@ small { display: block; margin-top: 3px; color: #8792a2; font-size: 11px; }
   padding-left: 38px;
 }
 .filter-actions, .toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 32px; flex-wrap: wrap; }
+.filter-actions { padding-top: 4px; }
 .filter-actions.metrics-only { align-self: stretch; }
 .filter-actions.metrics-only .chip { align-self: end; }
 .searchbox { position: relative; }
@@ -505,7 +508,10 @@ button.composer-pill, span.composer-pill { display: inline-flex; align-items: ce
 @media (max-width: 1280px) {
   .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .dashboard-grid, .playground-grid, .register-layout { grid-template-columns: 1fr; }
-  .play-controls, .toolbar.user-toolbar, .filters, .activity-filters, .filters.images-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .play-controls, .toolbar.user-toolbar, .filters, .filters.images-filters, .filters.account-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .activity-filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .activity-filters .control-field-search { grid-column: span 2; }
+  .activity-filters .filter-actions { grid-column: 1 / -1; }
   .creator-page { grid-template-columns: 220px minmax(0, 1fr); }
 }
 
@@ -589,7 +595,11 @@ button.composer-pill, span.composer-pill { display: inline-flex; align-items: ce
   .login-panel { width: min(410px, 100%); }
   .topbar, .panel-head { flex-direction: column; align-items: flex-start; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .filters, .activity-filters, .play-controls, .toolbar.user-toolbar, .settings-form, .detail-grid, .detail-grid-two { grid-template-columns: 1fr; }
+  .filters, .activity-filters, .filters.account-filters, .play-controls, .toolbar.user-toolbar, .settings-form, .detail-grid, .detail-grid-two { grid-template-columns: 1fr; }
+  .activity-filters .control-field-search { grid-column: auto; }
+  .activity-filters .filter-actions { justify-self: stretch; }
+  .filter-actions { justify-content: stretch; }
+  .filter-actions button { flex: 1; }
   .task-event { grid-template-columns: 1fr; }
   .creation-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .creation-image { gap: 8px; padding: 8px; border-radius: 12px; box-shadow: 0 10px 26px rgba(37, 47, 62, .06); }

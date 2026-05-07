@@ -120,14 +120,15 @@ export const api = {
   me: (token: string) => request<MeResponse>(token, "/api/me"),
   version: (token: string) => request<{ version: string }>(token, "/version"),
   models: (token: string) => request<{ data: ModelItem[] }>(token, "/v1/models"),
-  accounts: (token: string, params: { page?: number; pageSize?: number; query?: string; status?: string; accountType?: string; activeOnly?: boolean } = {}) =>
+  accounts: (token: string, params: { page?: number; pageSize?: number; query?: string; status?: string; accountType?: string; activeOnly?: boolean; dueOnly?: boolean } = {}) =>
     request<PagedResult<Account> & { summary: AccountListSummary }>(token, withQuery("/api/accounts", {
       page: params.page,
       page_size: params.pageSize,
       query: params.query,
       status: params.status,
       account_type: params.accountType,
-      active_only: params.activeOnly
+      active_only: params.activeOnly,
+      due_only: params.dueOnly
     })),
   accountRefreshStatus: (token: string) => request<{ status: AccountRefreshStatus }>(token, "/api/accounts/refresh-status"),
   deleteAccounts: (token: string, tokenRefs: string[]) =>

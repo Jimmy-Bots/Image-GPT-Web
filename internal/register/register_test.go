@@ -312,6 +312,8 @@ func (c *tokenExchangeRetryClient) Do(req *fhttp.Request) (*fhttp.Response, erro
 	status := 200
 	body := ""
 	switch {
+	case strings.Contains(req.URL.String(), "sentinel.openai.com/backend-api/sentinel/req"):
+		body = `{"token":"sentinel_token","proofofwork":{"required":false}}`
 	case strings.Contains(req.URL.String(), "/api/accounts/authorize"):
 		body = `{}`
 	case strings.Contains(req.URL.String(), "/api/accounts/password/verify"):
@@ -582,6 +584,107 @@ func TestSpamOKMailProviderCreatesMailboxAndWaitsForCode(t *testing.T) {
 	}
 	if strings.Join(requestedPaths, ",") != "/v2/EmailBox/aaaaa0a" {
 		t.Fatalf("unexpected requested paths: %v", requestedPaths)
+	}
+}
+
+func TestInbucketMailProviderWaitForCodeFallsBackToAddressWhenMetaMissing(t *testing.T) {
+	var requestedPaths []string
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requestedPaths = append(requestedPaths, r.URL.Path)
+			var body string
+			status := http.StatusOK
+			switch r.URL.Path {
+			case "/api/v1/mailbox/user123":
+				body = `[{"id":"msg-1","date":"2026-05-05T10:00:00Z","subject":"Verify","from":"no-reply@openai.com"}]`
+			case "/api/v1/mailbox/user123/msg-1":
+				if r.Method == http.MethodDelete {
+					status = http.StatusNoContent
+					body = ``
+				} else {
+					body = `{
+						"id":"msg-1",
+						"date":"2026-05-05T10:00:00Z",
+						"subject":"OpenAI Verification code",
+						"from":"no-reply@openai.com",
+						"header":{"To":"user123@example.com"},
+						"body":{"text":"Your Verification code: 123456","html":"<p>123456</p>"}
+					}`
+				}
+			default:
+				status = http.StatusNotFound
+				body = `{"error":"not found"}`
+			}
+			return &http.Response{
+				StatusCode: status,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    r,
+			}, nil
+		}),
+	}
+
+	provider, err := NewInbucketMailProvider(InbucketConfig{
+		APIBase:        "http://inbucket.test",
+		Domains:        []string{"example.com"},
+		RequestTimeout: time.Second,
+		WaitTimeout:    time.Second,
+		WaitInterval:   10 * time.Millisecond,
+		HTTPClient:     client,
+	}, &deterministicRandom{})
+	if err != nil {
+		t.Fatalf("NewInbucketMailProvider() error = %v", err)
+	}
+
+	code, err := provider.WaitForCode(context.Background(), Mailbox{Address: "user123@example.com"})
+	if err != nil {
+		t.Fatalf("WaitForCode() error = %v", err)
+	}
+	if code != "123456" {
+		t.Fatalf("unexpected code: %s", code)
+	}
+	if !strings.Contains(strings.Join(requestedPaths, ","), "/api/v1/mailbox/user123") {
+		t.Fatalf("expected fallback mailbox path, got %v", requestedPaths)
+	}
+}
+
+func TestSpamOKMailProviderWaitForCodeFallsBackToAddressWhenMetaMissing(t *testing.T) {
+	var requestedPaths []string
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requestedPaths = append(requestedPaths, r.URL.Path)
+			body := `{"address":"user123","subscribed":false,"mails":[{"id":123,"subject":"OpenAI Verification code","messagePreview":"Your Verification code: 654321","toDomain":"spamok.com","toLocal":"user123","dateSystem":"2026-05-07T09:44:06.501656Z"}]}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    r,
+			}, nil
+		}),
+	}
+
+	provider, err := NewSpamOKMailProvider(SpamOKConfig{
+		BaseURL:        "https://spamok.test",
+		APIBaseURL:     "https://api.spamok.test/v2",
+		Domain:         "spamok.com",
+		RequestTimeout: time.Second,
+		WaitTimeout:    time.Second,
+		WaitInterval:   10 * time.Millisecond,
+		HTTPClient:     client,
+	}, &deterministicRandom{})
+	if err != nil {
+		t.Fatalf("NewSpamOKMailProvider() error = %v", err)
+	}
+
+	code, err := provider.WaitForCode(context.Background(), Mailbox{Address: "user123@spamok.com"})
+	if err != nil {
+		t.Fatalf("WaitForCode() error = %v", err)
+	}
+	if code != "654321" {
+		t.Fatalf("unexpected code: %s", code)
+	}
+	if !strings.Contains(strings.Join(requestedPaths, ","), "/v2/EmailBox/user123") {
+		t.Fatalf("expected fallback spamok path, got %v", requestedPaths)
 	}
 }
 

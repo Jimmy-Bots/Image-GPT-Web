@@ -39,6 +39,8 @@ func stringValue(value any) string {
 		return strings.TrimSpace(v)
 	case fmt.Stringer:
 		return strings.TrimSpace(v.String())
+	case nil:
+		return ""
 	default:
 		return strings.TrimSpace(fmt.Sprint(value))
 	}

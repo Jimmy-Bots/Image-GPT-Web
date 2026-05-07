@@ -17,6 +17,7 @@ type AccountListQuery struct {
 	Status     string
 	Type       string
 	ActiveOnly bool
+	DueOnly    bool
 }
 
 type AccountListSummary struct {

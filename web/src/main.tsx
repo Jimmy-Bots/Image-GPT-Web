@@ -970,6 +970,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
   const [status, setStatus] = useState("");
   const [type, setType] = useState("");
   const [activeOnly, setActiveOnly] = useState(false);
+  const [dueOnly, setDueOnly] = useState(false);
   const [pageSize, setPageSize] = useState(25);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -980,11 +981,11 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
   const selectedSet = new Set(selected);
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   useHorizontalWheelScroll(tableWrapRef);
-  useEffect(() => setPage(1), [query, status, type, activeOnly, pageSize]);
+  useEffect(() => setPage(1), [query, status, type, activeOnly, dueOnly, pageSize]);
   const reloadPageRef = useRef<(nextPage?: number) => Promise<void>>(async () => {});
   useEffect(() => {
     let cancelled = false;
-    api.accounts(token, { page, pageSize, query, status, accountType: type, activeOnly }).then((data) => {
+    api.accounts(token, { page, pageSize, query, status, accountType: type, activeOnly, dueOnly }).then((data) => {
       if (cancelled) return;
       setAccounts(data.items || []);
       setTotal(Number(data.total || 0));
@@ -995,7 +996,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
     return () => {
       cancelled = true;
     };
-  }, [token, page, pageSize, query, status, type, activeOnly, setAccountSummary]);
+  }, [token, page, pageSize, query, status, type, activeOnly, dueOnly, setAccountSummary]);
   useEffect(() => {
     reloadPageRef.current = reloadPage;
   });
@@ -1014,7 +1015,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
   }, [page]);
 
   async function reloadPage(nextPage = page) {
-    const data = await api.accounts(token, { page: nextPage, pageSize, query, status, accountType: type, activeOnly });
+    const data = await api.accounts(token, { page: nextPage, pageSize, query, status, accountType: type, activeOnly, dueOnly });
     const nextItems = data.items || [];
     const nextTotal = Number(data.total || 0);
     const nextPageCount = Math.max(1, Math.ceil(nextTotal / pageSize));
@@ -1068,11 +1069,12 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
         <span className="chip">耗时 {formatDuration(refreshStatus?.last_duration_ms)}</span>
       </div>
       {refreshStatus?.last_error ? <p className="detail-error">{refreshStatus.last_error}</p> : null}
-      <div className="filters filters-card">
+      <div className="filters filters-card account-filters">
         <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱、token ref、密码、类型" />
         <ControlField label="状态"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option>正常</option><option>限流</option><option>异常</option><option>禁用</option></select></ControlField>
         <ControlField label="类型"><select value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option>{types.map((item) => <option key={item}>{item}</option>)}</select></ControlField>
         <ControlField label="占用"><select value={activeOnly ? "busy" : ""} onChange={(event) => setActiveOnly(event.target.value === "busy")}><option value="">全部</option><option value="busy">仅看占用中</option></select></ControlField>
+        <ControlField label="刷新"><select value={dueOnly ? "due" : ""} onChange={(event) => setDueOnly(event.target.value === "due")}><option value="">全部</option><option value="due">仅看待刷新</option></select></ControlField>
         <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
       </div>
       <div className="bulkbar">

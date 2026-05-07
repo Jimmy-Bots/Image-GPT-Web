@@ -63,6 +63,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		Status:     strings.TrimSpace(r.URL.Query().Get("status")),
 		Type:       strings.TrimSpace(r.URL.Query().Get("account_type")),
 		ActiveOnly: boolFromAny(r.URL.Query().Get("active_only")),
+		DueOnly:    boolFromAny(r.URL.Query().Get("due_only")),
 	}
 	items, total, summary, err := s.store.ListAccountsPage(r.Context(), query)
 	if err != nil {
@@ -70,10 +71,30 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	poolStats := s.pool.Stats(r.Context())
-	if query.ActiveOnly {
+	if query.ActiveOnly || query.DueOnly {
 		filtered := make([]domain.Account, 0, len(items))
+		intervalMinutes := defaultAutoRefreshIntervalMinutes
+		if settings, err := s.store.GetSettings(r.Context()); err == nil {
+			if minutes := intMapValue(settings, "refresh_account_interval_minute"); minutes > 0 {
+				intervalMinutes = minutes
+			}
+		}
+		now := time.Now()
+		dueSet := map[string]struct{}{}
+		if query.DueOnly {
+			allItems, err := s.store.ListAccounts(r.Context())
+			if err == nil {
+				for _, token := range dueRefreshTokens(allItems, intervalMinutes, now) {
+					dueSet[token] = struct{}{}
+				}
+			}
+		}
 		for _, item := range items {
-			if stat := poolStats.Accounts[item.AccessToken]; stat.ActiveRequests > 0 {
+			stat := poolStats.Accounts[item.AccessToken]
+			matchesActive := !query.ActiveOnly || stat.ActiveRequests > 0
+			_, isDue := dueSet[item.AccessToken]
+			matchesDue := !query.DueOnly || isDue
+			if matchesActive && matchesDue {
 				filtered = append(filtered, item)
 			}
 		}
@@ -95,7 +116,11 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 				if !accountMatchesQuery(item, query) {
 					continue
 				}
-				if stat := poolStats.Accounts[item.AccessToken]; stat.ActiveRequests > 0 {
+				stat := poolStats.Accounts[item.AccessToken]
+				matchesActive := !query.ActiveOnly || stat.ActiveRequests > 0
+				_, isDue := dueSet[item.AccessToken]
+				matchesDue := !query.DueOnly || isDue
+				if matchesActive && matchesDue {
 					item.ActiveRequests = stat.ActiveRequests
 					item.AllowedConcurrency = stat.AllowedConcurrency
 					filteredAll = append(filteredAll, item)
