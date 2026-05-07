@@ -146,6 +146,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /", s.handleWebIndex)
 	mux.HandleFunc("GET /assets/", s.handleWebAsset)
 	mux.HandleFunc("GET /images/", s.handleImageAsset)
+	mux.HandleFunc("GET /images-preview/", s.handleImagePreviewAsset)
+	mux.HandleFunc("GET /reference-images/", s.handleReferenceImageAsset)
+	mux.HandleFunc("GET /reference-images-preview/", s.handleReferenceImagePreviewAsset)
 	return s.withAccessLog(s.withRecover(s.withRequestLimits(s.withSecurityHeaders(s.withCORS(mux)))))
 }
 
@@ -173,6 +176,71 @@ func (s *Server) handleWebAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleImageAsset(w http.ResponseWriter, r *http.Request) {
+	s.serveOwnedAsset(w, r, "/images/", s.cfg.ImagesDir, readImageMetaOwner, false, "image access denied")
+}
+
+func (s *Server) handleImagePreviewAsset(w http.ResponseWriter, r *http.Request) {
+	s.serveOwnedAsset(w, r, "/images-preview/", s.cfg.ImagesDir, readImageMetaOwner, true, "image access denied")
+}
+
+func (s *Server) handleReferenceImageAsset(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.sessionIdentityFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing session")
+		return
+	}
+	if identity.Role != domain.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden", "admin role required")
+		return
+	}
+	s.serveAdminAsset(w, r, "/reference-images/", s.cfg.ReferenceImagesDir, false)
+}
+
+func (s *Server) handleReferenceImagePreviewAsset(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.sessionIdentityFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing session")
+		return
+	}
+	if identity.Role != domain.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden", "admin role required")
+		return
+	}
+	s.serveAdminAsset(w, r, "/reference-images-preview/", s.cfg.ReferenceImagesDir, true)
+}
+
+func readImageMetaOwner(path string) string {
+	return strings.TrimSpace(readImageMeta(path).OwnerID)
+}
+
+func readReferenceMetaOwner(path string) string {
+	return strings.TrimSpace(readReferenceMeta(path).OwnerID)
+}
+
+func (s *Server) serveAdminAsset(w http.ResponseWriter, r *http.Request, prefix string, root string, preview bool) {
+	rel := strings.TrimPrefix(r.URL.Path, prefix)
+	path, ok := safeJoin(root, rel)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if preview {
+		cachePath, err := ensurePreviewImage(path, s.cfg.PreviewImagesDir, strings.Trim(prefix, "/"), rel, 320)
+		if err != nil {
+			http.ServeFile(w, r, path)
+			return
+		}
+		http.ServeFile(w, r, cachePath)
+		return
+	}
+	http.ServeFile(w, r, path)
+}
+
+func (s *Server) serveOwnedAsset(w http.ResponseWriter, r *http.Request, prefix string, root string, ownerLookup func(string) string, preview bool, forbiddenMessage string) {
 	identity, ok := s.sessionIdentityFromRequest(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing session")
@@ -182,8 +250,8 @@ func (s *Server) handleImageAsset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing session")
 		return
 	}
-	rel := strings.TrimPrefix(r.URL.Path, "/images/")
-	path, ok := safeJoin(s.cfg.ImagesDir, rel)
+	rel := strings.TrimPrefix(r.URL.Path, prefix)
+	path, ok := safeJoin(root, rel)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -192,14 +260,22 @@ func (s *Server) handleImageAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	meta := readImageMeta(path)
-	ownerID := strings.TrimSpace(meta.OwnerID)
+	ownerID := strings.TrimSpace(ownerLookup(path))
 	if ownerID == "" {
 		http.NotFound(w, r)
 		return
 	}
 	if identity.Role != domain.RoleAdmin && identity.ID != ownerID {
-		writeError(w, http.StatusForbidden, "forbidden", "image access denied")
+		writeError(w, http.StatusForbidden, "forbidden", forbiddenMessage)
+		return
+	}
+	if preview {
+		cachePath, err := ensurePreviewImage(path, s.cfg.PreviewImagesDir, strings.Trim(prefix, "/"), rel, 320)
+		if err != nil {
+			http.ServeFile(w, r, path)
+			return
+		}
+		http.ServeFile(w, r, cachePath)
 		return
 	}
 	http.ServeFile(w, r, path)

@@ -127,6 +127,7 @@ export type TaskEvent = {
 
 export type ImageResult = {
   url?: string;
+  preview_url?: string;
   path?: string;
   b64_json?: string;
   revised_prompt?: string;
@@ -136,6 +137,7 @@ export type StoredImage = {
   path: string;
   name: string;
   url: string;
+  preview_url?: string;
   size: number;
   created_at: string;
   prompt?: string;
@@ -146,6 +148,8 @@ export type StoredImage = {
 export type StoredReferenceImage = {
   path: string;
   name: string;
+  url?: string;
+  preview_url?: string;
   size: number;
   created_at: string;
   owner_id?: string;

@@ -30,7 +30,7 @@ import {
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
 import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, Toast, User } from "./types";
-import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass, storedImageURL } from "./utils";
+import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imagePreviewSrc, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass, storedImagePreviewURL, storedImageURL, storedReferencePreviewURL } from "./utils";
 import "./styles.css";
 
 type Tab = "dashboard" | "accounts" | "register" | "activity" | "images" | "playground" | "users" | "settings";
@@ -639,7 +639,7 @@ function App() {
         {activeTab === "images" && isAdmin && <ImagesPanel token={token} images={images} setImages={setImages} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
         {activeTab === "playground" && <Playground token={token} models={models} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
         {activeTab === "users" && isAdmin && <UsersPanel token={token} users={users} setUsers={setUsers} toast={toast} />}
-        {activeTab === "settings" && isAdmin && <SettingsPanel token={token} settings={settings} setSettings={setSettings} toast={toast} />}
+        {activeTab === "settings" && isAdmin && <SettingsPanel token={token} settings={settings} setSettings={setSettings} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
       </main>
 
       <div className="toast-stack">
@@ -2100,7 +2100,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
       </div>
       <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>Owner</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
         const first = parseTaskData(task.data)[0];
-        const src = first ? imageSrc(first, token) : "";
+        const src = first ? imagePreviewSrc(first, token) : "";
         const canPreview = Boolean(src) || task.status === "success";
         const deleted = Boolean(task.deleted_at);
         return (
@@ -2169,7 +2169,7 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
       </div>
       {task.prompt ? <div className="detail-prompt"><span>提示词</span><p>{task.prompt}</p></div> : null}
       {task.error ? <p className="detail-error">{task.error}</p> : null}
-      {results.length ? <div className="detail-images">{results.map((item, index) => { const src = imageSrc(item, token); return src ? <button key={index} onClick={() => openLightbox(src, task.id)}><img src={src} alt={`task ${index + 1}`} /></button> : null; })}</div> : null}
+      {results.length ? <div className="detail-images">{results.map((item, index) => { const src = imageSrc(item, token); const preview = imagePreviewSrc(item, token); return src ? <button key={index} onClick={() => openLightbox(src, task.id)}><img src={preview} alt={`task ${index + 1}`} loading="lazy" /></button> : null; })}</div> : null}
       <TaskEventTimeline events={events} loading={eventsLoading} error={eventsError} />
       <pre className="detail-json">{safeJSON({ ...task, data: results })}</pre>
     </div>
@@ -2532,8 +2532,9 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
       </div>
       <div className="image-groups">{groupedItems.map((group) => <section key={group.date} className="image-group"><div className="image-group-head"><span>{group.date}</span><small>{group.items.length} 张</small></div><div className="image-grid">{group.items.map((item) => {
         const assetURL = storedImageURL(item, token);
+        const previewURL = storedImagePreviewURL(item, token);
         const prompt = item.display_prompt || item.prompt || item.revised_prompt || item.name;
-        return <article key={item.path} className="image-item"><div className="image-item-head"><label><input type="checkbox" checked={selected.includes(item.path)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /><span title={prompt}>{prompt}</span></label><div className="image-item-actions"><IconButton title="复制路径" onClick={() => copyText(item.path).then(() => toast("success", "已复制图片路径"))}><Copy size={14} /></IconButton><button className="ghost small" onClick={() => setDetailPath(item.path)}>详情</button></div></div><button className="image-item-preview" onClick={() => openLightbox(assetURL, prompt)}><img src={assetURL} alt={prompt} loading="lazy" /></button></article>;
+        return <article key={item.path} className="image-item"><div className="image-item-head"><label><input type="checkbox" checked={selected.includes(item.path)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /><span title={prompt}>{prompt}</span></label><div className="image-item-actions"><IconButton title="复制路径" onClick={() => copyText(item.path).then(() => toast("success", "已复制图片路径"))}><Copy size={14} /></IconButton><button className="ghost small" onClick={() => setDetailPath(item.path)}>详情</button></div></div><button className="image-item-preview" onClick={() => openLightbox(assetURL, prompt)}><img src={previewURL} alt={prompt} loading="lazy" /></button></article>;
       })}</div></section>)}</div>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
       <DetailModal title={detailImage ? `图片详情 · ${detailImage.display_prompt || detailImage.prompt || detailImage.revised_prompt || detailImage.name}` : "图片详情"} open={Boolean(detailPath)} onClose={() => setDetailPath(null)}>
@@ -2625,7 +2626,7 @@ function Playground({ token, models, toast, openLightbox }: { token: string; mod
       </section>
       <section className="panel">
         <PanelHead title="响应" subtitle={meta} action={<button className="secondary small" onClick={() => copyText(output).then(() => toast("success", "已复制响应"))}>复制</button>} />
-        {images.length ? <div className="play-image-preview">{images.map((image, index) => { const src = imageSrc(image, token); return src ? <button key={index} onClick={() => openLightbox(src)}><img src={src} alt={`result ${index + 1}`} /></button> : null; })}</div> : null}
+        {images.length ? <div className="play-image-preview">{images.map((image, index) => { const src = imageSrc(image, token); const preview = imagePreviewSrc(image, token); return src ? <button key={index} onClick={() => openLightbox(src)}><img src={preview} alt={`result ${index + 1}`} loading="lazy" /></button> : null; })}</div> : null}
         <pre className="output">{output || "等待运行"}</pre>
       </section>
     </div>
@@ -2907,7 +2908,7 @@ function UserRow({ token, user, reload, toast, showKey, selected, onSelect, onEd
   );
 }
 
-function SettingsPanel({ token, settings, setSettings, toast }: { token: string; settings: SettingsType; setSettings: (settings: SettingsType) => void; toast: (type: Toast["type"], message: string) => void }) {
+function SettingsPanel({ token, settings, setSettings, toast, openLightbox }: { token: string; settings: SettingsType; setSettings: (settings: SettingsType) => void; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
   const [json, setJson] = useState(safeJSON(settings));
   const [backupState, setBackupState] = useState<BackupState | null>(null);
   const [backupItems, setBackupItems] = useState<BackupRemoteItem[]>([]);
@@ -3295,10 +3296,11 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
           <button className="ghost small" disabled={!referenceSelected.length || referenceBusy === "delete"} onClick={() => removeReferenceImages(referenceSelected).catch((error) => toast("error", error.message))}>删除选中</button>
         </div>
         <ScrollableTable tableRef={referenceTableRef} className="data-table-wrap" height="medium">
-          <table className="activity-table backup-table">
+          <table className="activity-table reference-table">
             <thead>
               <tr>
                 <th></th>
+                <th>预览</th>
                 <th>文件</th>
                 <th>原文件名</th>
                 <th>类型</th>
@@ -3311,7 +3313,19 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
               {referenceItems.length ? referenceItems.map((item) => (
                 <tr key={item.path}>
                   <td><input type="checkbox" checked={referenceSelected.includes(item.path)} onChange={(event) => setReferenceSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /></td>
-                  <td><div className="backup-key-cell" title={item.path}><strong>{item.name}</strong><small>{item.path}</small></div></td>
+                  <td>
+                    <button
+                      className="reference-preview-cell"
+                      type="button"
+                      onClick={() => {
+                        if (!item.url) return;
+                        openLightbox(item.url, item.original_name || item.name);
+                      }}
+                    >
+                      {item.preview_url ? <img src={storedReferencePreviewURL(item, token)} alt={item.original_name || item.name} loading="lazy" /> : <span>无图</span>}
+                    </button>
+                  </td>
+                  <td><div className="reference-file-cell" title={item.path}><strong>{item.original_name || item.name}</strong><small>{item.path}</small></div></td>
                   <td title={item.original_name || "-"}>{item.original_name || "-"}</td>
                   <td>{item.content_type || "-"}</td>
                   <td>{fmtBytes(item.size)}</td>
@@ -3320,7 +3334,7 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
                 </tr>
               )) : (
                 <tr>
-                  <td colSpan={7} className="table-empty">{referenceBusy === "list" ? "参考图暂存加载中..." : "暂无参考图暂存"}</td>
+                  <td colSpan={8} className="table-empty">{referenceBusy === "list" ? "参考图暂存加载中..." : "暂无参考图暂存"}</td>
                 </tr>
               )}
             </tbody>

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,22 +123,150 @@ func TestHandleImageAssetEnforcesOwnerAccess(t *testing.T) {
 		t.Fatalf("admin token: %v", err)
 	}
 
-		cases := []struct {
-			name   string
-			token  string
-			status int
-		}{
-			{name: "owner allowed", token: ownerToken, status: http.StatusOK},
-			{name: "other forbidden", token: otherToken, status: http.StatusForbidden},
-			{name: "admin allowed", token: adminToken, status: http.StatusOK},
+	cases := []struct {
+		name   string
+		token  string
+		status int
+	}{
+		{name: "owner allowed", token: ownerToken, status: http.StatusOK},
+		{name: "other forbidden", token: otherToken, status: http.StatusForbidden},
+		{name: "admin allowed", token: adminToken, status: http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/images/"+rel, nil)
+			req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: tc.token})
+			rec := httptest.NewRecorder()
+			server.handleImageAsset(rec, req)
+			if rec.Code != tc.status {
+				t.Fatalf("status=%d want=%d body=%s", rec.Code, tc.status, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleReferenceImageAssetRequiresAdmin(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	webDir := filepath.Join(tempDir, "web")
+	referencesDir := filepath.Join(tempDir, "references")
+	previewDir := filepath.Join(tempDir, "previews")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data: %v", err)
+	}
+	if err := os.MkdirAll(webDir, 0o755); err != nil {
+		t.Fatalf("mkdir web: %v", err)
+	}
+	if err := os.MkdirAll(referencesDir, 0o755); err != nil {
+		t.Fatalf("mkdir references: %v", err)
+	}
+	if err := os.MkdirAll(previewDir, 0o755); err != nil {
+		t.Fatalf("mkdir previews: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	dbPath := filepath.Join(dataDir, "app.db")
+	store, err := storage.Open(ctx, dbPath, 1)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	user := domain.User{
+		ID:             "ref-user",
+		Email:          "user@example.com",
+		Name:           "User",
+		PasswordHash:   "hash",
+		Role:           domain.RoleUser,
+		Status:         domain.UserStatusActive,
+		QuotaUnlimited: true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	admin := domain.User{
+		ID:             "ref-admin",
+		Email:          "admin@example.com",
+		Name:           "Admin",
+		PasswordHash:   "hash",
+		Role:           domain.RoleAdmin,
+		Status:         domain.UserStatusActive,
+		QuotaUnlimited: true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	for _, item := range []domain.User{user, admin} {
+		if err := store.CreateUser(ctx, item); err != nil {
+			t.Fatalf("create user %s: %v", item.ID, err)
 		}
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				req := httptest.NewRequest(http.MethodGet, "/images/"+rel, nil)
-				req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: tc.token})
-				rec := httptest.NewRecorder()
-				server.handleImageAsset(rec, req)
-				if rec.Code != tc.status {
+	}
+
+	cfg := config.Config{
+		DataDir:            dataDir,
+		DatabasePath:       dbPath,
+		WebDir:             webDir,
+		ImagesDir:          filepath.Join(tempDir, "images"),
+		ReferenceImagesDir: referencesDir,
+		PreviewImagesDir:   previewDir,
+		SessionSecret:      "test-secret",
+		SessionTTLHours:    24,
+	}
+	server, err := NewServer(cfg, store)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer server.Close()
+
+	rel := filepath.ToSlash(filepath.Join("2026", "05", "07", "ref.jpg"))
+	path := filepath.Join(referencesDir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir ref dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("reference"), 0o644); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+	writeReferenceMeta(path, storedReferenceMeta{
+		OriginalName: "ref.jpg",
+		ContentType:  "image/jpeg",
+		StoredAt:     now,
+		OwnerID:      user.ID,
+	})
+
+	userToken, _, err := server.sessions.Sign(user.ID, user.Role)
+	if err != nil {
+		t.Fatalf("user token: %v", err)
+	}
+	adminToken, _, err := server.sessions.Sign(admin.ID, admin.Role)
+	if err != nil {
+		t.Fatalf("admin token: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		path   string
+		token  string
+		status int
+	}{
+		{name: "user denied original", path: "/reference-images/" + rel, token: userToken, status: http.StatusForbidden},
+		{name: "user denied preview", path: "/reference-images-preview/" + rel, token: userToken, status: http.StatusForbidden},
+		{name: "admin allowed original", path: "/reference-images/" + rel, token: adminToken, status: http.StatusOK},
+		{name: "admin allowed preview", path: "/reference-images-preview/" + rel, token: adminToken, status: http.StatusOK},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: tc.token})
+			rec := httptest.NewRecorder()
+			if strings.HasPrefix(tc.path, "/reference-images-preview/") {
+				server.handleReferenceImagePreviewAsset(rec, req)
+			} else {
+				server.handleReferenceImageAsset(rec, req)
+			}
+			if rec.Code != tc.status {
 				t.Fatalf("status=%d want=%d body=%s", rec.Code, tc.status, rec.Body.String())
 			}
 		})

@@ -459,6 +459,21 @@ button.composer-pill, span.composer-pill { display: inline-flex; align-items: ce
 .backup-key-cell { min-width: 0; display: grid; gap: 3px; }
 .backup-key-cell strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #17202a; }
 .backup-key-cell small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7a8797; font-size: 11px; }
+.reference-table { min-width: 1040px; }
+.reference-table th:nth-child(1), .reference-table td:nth-child(1) { width: 42px; min-width: 42px; }
+.reference-table th:nth-child(2), .reference-table td:nth-child(2) { width: 84px; min-width: 84px; }
+.reference-table th:nth-child(3), .reference-table td:nth-child(3) { width: 280px; min-width: 280px; }
+.reference-table th:nth-child(4), .reference-table td:nth-child(4) { width: 240px; min-width: 240px; }
+.reference-table th:nth-child(5), .reference-table td:nth-child(5) { width: 120px; min-width: 120px; }
+.reference-table th:nth-child(6), .reference-table td:nth-child(6) { width: 96px; min-width: 96px; }
+.reference-table th:nth-child(7), .reference-table td:nth-child(7) { width: 150px; min-width: 150px; }
+.reference-table th:nth-child(8), .reference-table td:nth-child(8) { width: 156px; min-width: 156px; }
+.reference-preview-cell { width: 58px; height: 58px; padding: 0; overflow: hidden; border-radius: 12px; background: #eef2f7; border: 1px solid #e2e8f0; }
+.reference-preview-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.reference-preview-cell span { color: #8b97a8; font-size: 11px; font-weight: 700; }
+.reference-file-cell { min-width: 0; display: grid; gap: 4px; }
+.reference-file-cell strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #17202a; }
+.reference-file-cell small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7a8797; font-size: 11px; }
 .backup-note { margin: 0; color: #708093; font-size: 12px; line-height: 1.5; }
 .table-empty { color: #7b8898; text-align: center; }
 .danger-text { color: #b73232; }

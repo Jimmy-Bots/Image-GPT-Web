@@ -19,6 +19,7 @@ type Config struct {
 	WebDir                          string
 	ImagesDir                       string
 	ReferenceImagesDir              string
+	PreviewImagesDir                string
 	DatabasePath                    string
 	DBMaxOpenConns                  int
 	ProxyURL                        string
@@ -68,6 +69,7 @@ func Load() (Config, error) {
 		WebDir:                          envString("CHATGPT2API_WEB_DIR", "./web/dist"),
 		ImagesDir:                       envString("CHATGPT2API_IMAGES_DIR", filepath.Join(dataDir, "images")),
 		ReferenceImagesDir:              envString("CHATGPT2API_REFERENCES_DIR", filepath.Join(dataDir, "references")),
+		PreviewImagesDir:                envString("CHATGPT2API_PREVIEW_IMAGES_DIR", filepath.Join(dataDir, "previews")),
 		DatabasePath:                    dbPath,
 		DBMaxOpenConns:                  envInt("CHATGPT2API_DB_MAX_OPEN_CONNS", 16, 1),
 		ProxyURL:                        envString("CHATGPT2API_PROXY_URL", ""),
@@ -77,7 +79,7 @@ func Load() (Config, error) {
 		MaxRequestBodyBytes:             int64(envInt("CHATGPT2API_MAX_REQUEST_BODY_MB", 80, 1)) << 20,
 		LoginRateLimitMax:               envInt("CHATGPT2API_LOGIN_RATE_LIMIT_MAX", 8, 1),
 		LoginRateLimitWindowSec:         envInt("CHATGPT2API_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300, 1),
-			SessionSecret:                   strings.TrimSpace(os.Getenv("CHATGPT2API_SESSION_SECRET")),
+		SessionSecret:                   strings.TrimSpace(os.Getenv("CHATGPT2API_SESSION_SECRET")),
 		SessionTTLHours:                 envInt("CHATGPT2API_SESSION_TTL_HOURS", 24*14, 1),
 		AdminEmail:                      envString("CHATGPT2API_ADMIN_EMAIL", "admin@example.com"),
 		AdminPassword:                   strings.TrimSpace(os.Getenv("CHATGPT2API_ADMIN_PASSWORD")),
@@ -107,6 +109,9 @@ func Load() (Config, error) {
 	}
 	if err := os.MkdirAll(cfg.ReferenceImagesDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create references dir: %w", err)
+	}
+	if err := os.MkdirAll(cfg.PreviewImagesDir, 0o755); err != nil {
+		return Config{}, fmt.Errorf("create previews dir: %w", err)
 	}
 	if err := os.MkdirAll(cfg.BackupsDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create backups dir: %w", err)

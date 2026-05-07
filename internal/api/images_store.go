@@ -1,12 +1,19 @@
 package api
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/jpeg"
+	_ "image/png"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -217,6 +224,7 @@ func (s *Server) listStoredImages(r *http.Request, query string, sortMode string
 			"path":           rel,
 			"name":           entry.Name(),
 			"url":            publicBaseURL(r) + "/images/" + rel,
+			"preview_url":    publicBaseURL(r) + "/images-preview/" + rel,
 			"size":           info.Size(),
 			"created_at":     info.ModTime().UTC(),
 			"prompt":         meta.Prompt,
@@ -290,6 +298,8 @@ func (s *Server) listStoredReferenceImages(query string) ([]map[string]any, erro
 		items = append(items, map[string]any{
 			"path":          rel,
 			"name":          entry.Name(),
+			"url":           "/reference-images/" + rel,
+			"preview_url":   "/reference-images-preview/" + rel,
 			"size":          info.Size(),
 			"created_at":    info.ModTime().UTC(),
 			"owner_id":      meta.OwnerID,
@@ -352,8 +362,10 @@ func persistImageItem(root string, baseURL string, item map[string]any, prompt s
 	item["path"] = rel
 	if baseURL != "" {
 		item["url"] = strings.TrimRight(baseURL, "/") + "/images/" + rel
+		item["preview_url"] = strings.TrimRight(baseURL, "/") + "/images-preview/" + rel
 	} else {
 		item["url"] = "/images/" + rel
+		item["preview_url"] = "/images-preview/" + rel
 	}
 	writeImageMeta(path, storedImageMeta{
 		Prompt:        strings.TrimSpace(prompt),
@@ -524,4 +536,87 @@ func publicBaseURL(r *http.Request) string {
 		scheme = strings.Split(forwarded, ",")[0]
 	}
 	return scheme + "://" + r.Host
+}
+
+func fitImageBounds(width int, height int, maxEdge int) (int, int) {
+	if width <= 0 || height <= 0 {
+		return width, height
+	}
+	longest := width
+	if height > longest {
+		longest = height
+	}
+	if longest <= maxEdge {
+		return width, height
+	}
+	scale := float64(maxEdge) / float64(longest)
+	nextWidth := int(math.Round(float64(width) * scale))
+	nextHeight := int(math.Round(float64(height) * scale))
+	if nextWidth < 1 {
+		nextWidth = 1
+	}
+	if nextHeight < 1 {
+		nextHeight = 1
+	}
+	return nextWidth, nextHeight
+}
+
+func resizeNearest(src image.Image, width int, height int) image.Image {
+	bounds := src.Bounds()
+	srcWidth := bounds.Dx()
+	srcHeight := bounds.Dy()
+	if width <= 0 || height <= 0 || srcWidth <= 0 || srcHeight <= 0 {
+		return src
+	}
+	if width == srcWidth && height == srcHeight {
+		return src
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		srcY := bounds.Min.Y + y*srcHeight/height
+		for x := 0; x < width; x++ {
+			srcX := bounds.Min.X + x*srcWidth/width
+			dst.Set(x, y, src.At(srcX, srcY))
+		}
+	}
+	return dst
+}
+
+func previewCachePath(previewRoot string, kind string, rel string) string {
+	base := strings.TrimSuffix(filepath.ToSlash(rel), filepath.Ext(rel))
+	return filepath.Join(previewRoot, filepath.FromSlash(kind), filepath.FromSlash(base+".jpg"))
+}
+
+func ensurePreviewImage(sourcePath string, previewRoot string, kind string, rel string, maxEdge int) (string, error) {
+	cachePath := previewCachePath(previewRoot, kind, rel)
+	sourceInfo, err := os.Stat(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if cacheInfo, err := os.Stat(cachePath); err == nil && !cacheInfo.ModTime().Before(sourceInfo.ModTime()) {
+		return cachePath, nil
+	}
+	raw, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return "", err
+	}
+	width, height := fitImageBounds(img.Bounds().Dx(), img.Bounds().Dy(), maxEdge)
+	preview := resizeNearest(img, width, height)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		return "", err
+	}
+	file, err := os.Create(cachePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	if err := jpeg.Encode(file, preview, &jpeg.Options{Quality: 78}); err != nil {
+		return "", err
+	}
+	_ = os.Chtimes(cachePath, time.Now(), sourceInfo.ModTime())
+	return cachePath, nil
 }

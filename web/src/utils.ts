@@ -1,4 +1,4 @@
-import type { Account, ImageResult, StoredImage } from "./types";
+import type { Account, ImageResult, StoredImage, StoredReferenceImage } from "./types";
 
 export function fmtDate(value?: string | null) {
   if (!value) return "-";
@@ -91,8 +91,21 @@ export function imageSrc(item: ImageResult, token?: string) {
   return "";
 }
 
+export function imagePreviewSrc(item: ImageResult, token?: string) {
+  if (item.preview_url) return withImageToken(item.preview_url, token);
+  return imageSrc(item, token);
+}
+
 export function storedImageURL(item: StoredImage, token?: string) {
   return withImageToken(item.url, token);
+}
+
+export function storedImagePreviewURL(item: StoredImage, token?: string) {
+  return withImageToken(item.preview_url || item.url, token);
+}
+
+export function storedReferencePreviewURL(item: StoredReferenceImage, token?: string) {
+  return withImageToken(item.preview_url || item.url || "", token);
 }
 
 export function parseTaskData(data?: unknown): ImageResult[] {
