@@ -499,7 +499,7 @@ func (f flowState) validateOTP(ctx context.Context, code string) (string, error)
 		return "", err
 	}
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("validate_otp_http_%d", resp.StatusCode)
+		return "", fmt.Errorf("validate_otp_http_%d%s", resp.StatusCode, responseErrorDetail(resp))
 	}
 	return strings.TrimSpace(stringValue(resp.JSON()["continue_url"])), nil
 }
@@ -567,26 +567,7 @@ func (f flowState) loginAndExchangeTokens(ctx context.Context, email string, pas
 		return tokenBundle{}, err
 	}
 	if resp.StatusCode != 200 {
-		detail := ""
-		if data := resp.JSON(); len(data) > 0 {
-			if errData := mapValue(data["error"]); len(errData) > 0 {
-				message := strings.TrimSpace(stringValue(errData["message"]))
-				code := strings.TrimSpace(stringValue(errData["code"]))
-				switch {
-				case code != "" && message != "":
-					detail = fmt.Sprintf(": %s - %s", code, message)
-				case message != "":
-					detail = ": " + message
-				case code != "":
-					detail = ": " + code
-				}
-			} else {
-				message := strings.TrimSpace(stringValue(data["message"]))
-				if message != "" {
-					detail = ": " + message
-				}
-			}
-		}
+		detail := responseErrorDetail(resp)
 		return tokenBundle{}, fmt.Errorf("password_verify_http_%d%s", resp.StatusCode, detail)
 	}
 	data := resp.JSON()

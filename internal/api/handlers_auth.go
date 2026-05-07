@@ -371,6 +371,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"identity":     identity,
 		"user":         user,
+		"version":      s.cfg.AppVersion,
 		"model_policy": modelPolicyForIdentity(r.Context(), identity, settings),
 	})
 }

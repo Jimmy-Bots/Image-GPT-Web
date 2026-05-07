@@ -29,6 +29,7 @@ WORKDIR /app
 
 COPY --from=build /out/gpt-image-web /app/gpt-image-web
 COPY --from=web-build /src/web/dist /app/web
+COPY VERSION /app/VERSION
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN mkdir -p /app/data /app/data/images /app/data/backups \

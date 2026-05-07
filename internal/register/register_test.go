@@ -427,6 +427,66 @@ func TestShouldRetryFreshLoginSkipsAccountDeactivated(t *testing.T) {
 	}
 }
 
+type validateOTPErrorClient struct{}
+
+func (c *validateOTPErrorClient) Do(req *fhttp.Request) (*fhttp.Response, error) {
+	status := http.StatusOK
+	body := `{}`
+	switch {
+	case strings.Contains(req.URL.String(), "sentinel.openai.com/backend-api/sentinel/req"):
+		body = `{"token":"sentinel_token","proofofwork":{"required":false}}`
+	case strings.Contains(req.URL.String(), "/api/accounts/email-otp/validate"):
+		if req.Header.Get("openai-sentinel-token") == "" {
+			status = http.StatusUnauthorized
+			body = `{"error":{"code":"otp_required","message":"need sentinel token"}}`
+		} else {
+			status = http.StatusForbidden
+			body = `{"error":{"code":"otp_expired","message":"verification code expired"}}`
+		}
+	}
+	return &fhttp.Response{
+		StatusCode: status,
+		Header:     make(fhttp.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}, nil
+}
+
+func (c *validateOTPErrorClient) SetFollowRedirect(bool) {}
+func (c *validateOTPErrorClient) SetCookies(*url.URL, []*fhttp.Cookie) {}
+func (c *validateOTPErrorClient) GetCookies(*url.URL) []*fhttp.Cookie { return nil }
+func (c *validateOTPErrorClient) CloseIdleConnections()               {}
+
+func TestValidateOTPIncludesDetailedError(t *testing.T) {
+	state := flowState{
+		client:   &validateOTPErrorClient{},
+		deviceID: "device-id",
+		cfg: Config{
+			AuthBaseURL:         "https://auth.openai.com",
+			RequestTimeout:      time.Second,
+			SentinelTimeout:     time.Second,
+			LocalRetryAttempts:  1,
+			TokenExchangeTimeout: time.Second,
+		},
+		httpFactory: defaultHTTPClientFactory{},
+		random:      &deterministicRandom{},
+		now:         func() time.Time { return time.Now().UTC() },
+		logger:      LoggerFunc(func(context.Context, string, string, ...any) {}),
+	}
+
+	_, err := state.validateOTP(context.Background(), "123456")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	text := err.Error()
+	if !strings.Contains(text, "validate_otp_http_403") {
+		t.Fatalf("expected status code in error, got %q", text)
+	}
+	if !strings.Contains(text, "otp_expired") || !strings.Contains(text, "verification code expired") {
+		t.Fatalf("expected detailed otp error, got %q", text)
+	}
+}
+
 type deterministicRandom struct {
 	ints  []int
 	index int

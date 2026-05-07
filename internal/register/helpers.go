@@ -136,3 +136,36 @@ func extractOTPCode(values ...string) string {
 	}
 	return ""
 }
+
+func responseErrorDetail(resp responseSnapshot) string {
+	data := resp.JSON()
+	if len(data) > 0 {
+		if errData := mapValue(data["error"]); len(errData) > 0 {
+			message := strings.TrimSpace(stringValue(errData["message"]))
+			code := strings.TrimSpace(stringValue(errData["code"]))
+			switch {
+			case code != "" && message != "":
+				return fmt.Sprintf(": %s - %s", code, message)
+			case message != "":
+				return ": " + message
+			case code != "":
+				return ": " + code
+			}
+		}
+		message := strings.TrimSpace(stringValue(data["message"]))
+		code := strings.TrimSpace(stringValue(data["code"]))
+		switch {
+		case code != "" && message != "":
+			return fmt.Sprintf(": %s - %s", code, message)
+		case message != "":
+			return ": " + message
+		case code != "":
+			return ": " + code
+		}
+	}
+	text := strings.TrimSpace(resp.Text())
+	if text != "" {
+		return ": " + text
+	}
+	return ""
+}

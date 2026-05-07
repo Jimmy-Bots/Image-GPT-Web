@@ -72,6 +72,17 @@ type StoredWorkbenchState = {
 const workbenchStoragePrefix = "gpt_image_web_workbench:";
 const workbenchSubmitShortcutKey = "gpt_image_web_workbench_submit_shortcut";
 
+function normalizeAppVersion(value?: string) {
+  const raw = String(value || "").trim();
+  return raw || "-";
+}
+
+function displayAppVersion(value?: string) {
+  const raw = normalizeAppVersion(value);
+  if (!raw || raw === "-") return "";
+  return raw.toLowerCase().startsWith("v") ? raw : `v${raw}`;
+}
+
 const navItems: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: "dashboard", label: "总览", icon: Activity },
   { id: "accounts", label: "账号池", icon: Users },
@@ -344,6 +355,7 @@ function App() {
     setIdentity(me.identity);
     setCurrentUser(me.user || null);
     setModelPolicy(me.model_policy || {});
+    if (me.version) setVersion(normalizeAppVersion(me.version));
     setHealthBadge("healthy");
     if (me.identity.role !== "admin") setAdminMode(false);
     await refreshAll(currentToken, me.identity.role === "admin");
@@ -405,8 +417,8 @@ function App() {
       api.health().then((data) => {
         if (cancelled) return;
         setHealthBadge(data.ok ? "healthy" : "offline");
-        if (!token && data.version) {
-          setVersion(data.version || "-");
+        if (data.version) {
+          setVersion(normalizeAppVersion(data.version));
         }
       }).catch(() => {
         if (!cancelled) setHealthBadge("offline");
@@ -441,10 +453,17 @@ function App() {
   }, [token]);
 
   useEffect(() => {
-    if (!token) {
-      api.version("").then((data) => setVersion(data.version || "-")).catch(() => {});
-      return;
-    }
+    let cancelled = false;
+    api.version("").then((data) => {
+      if (!cancelled) setVersion(normalizeAppVersion(data.version));
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!token) return;
     bootstrap(token).catch(() => {
       setStoredToken("");
       setToken("");
@@ -487,6 +506,7 @@ function App() {
       throw new Error("请输入邮箱和密码");
     }
     const data = await api.loginWithPassword(email.trim(), password);
+    if (data.version) setVersion(normalizeAppVersion(data.version));
     setStoredToken(data.token);
     setToken(data.token);
     await bootstrap(data.token);
@@ -575,7 +595,7 @@ function App() {
           <div className="brand-mark">GI</div>
           <div>
             <strong>GPT Image Web</strong>
-            <span>{version}</span>
+            <span>{displayAppVersion(version) || "版本未知"}</span>
           </div>
         </div>
         <nav className="nav-list">
@@ -746,6 +766,7 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
   const domainText = registerStatus?.allowed_email_domains?.length
     ? registerStatus.allowed_email_domains.map((item) => `@${item}`).join("、")
     : "不限";
+  const versionLabel = displayAppVersion(version);
 
   return (
     <main className="login-view">
@@ -755,7 +776,7 @@ function LoginView({ busy, error, version, healthBadge, registerStatus, onLogin,
           <div className="brand-mark">GI</div>
           <div>
             <strong>GPT Image Web</strong>
-            <span>{version && version !== "-" ? `v${version}` : mode === "login" ? "继续登录" : "创建账号"}</span>
+            <span>{versionLabel || (mode === "login" ? "继续登录" : "创建账号")}</span>
           </div>
         </div>
         <div className="auth-switch">
@@ -844,7 +865,7 @@ function ImageHome({
   lightbox: { src: string; title?: string } | null;
   closeLightbox: () => void;
 }) {
-  const identityMeta = [identity.name || "User", identity.role, version && version !== "-" ? version : ""].filter(Boolean).join(" · ");
+  const identityMeta = [identity.name || "User", identity.role, displayAppVersion(version)].filter(Boolean).join(" · ");
   return (
     <div className="home-shell">
       <header className="home-header">

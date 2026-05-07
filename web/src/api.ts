@@ -77,6 +77,7 @@ export type MeResponse = {
     role: "admin" | "user";
     auth_type: "session" | "api_key";
   };
+  version?: string;
   model_policy?: {
     workbench_model?: string;
     image_max_count?: number;
