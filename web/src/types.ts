@@ -143,6 +143,16 @@ export type StoredImage = {
   display_prompt?: string;
 };
 
+export type StoredReferenceImage = {
+  path: string;
+  name: string;
+  size: number;
+  created_at: string;
+  owner_id?: string;
+  original_name?: string;
+  content_type?: string;
+};
+
 export type SystemLog = {
   id: string;
   time: string;

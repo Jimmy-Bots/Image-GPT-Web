@@ -129,6 +129,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/logs/delete", s.handleDeleteLogs)
 	mux.HandleFunc("GET /api/images", s.handleListImages)
 	mux.HandleFunc("POST /api/images/delete", s.handleDeleteImages)
+	mux.HandleFunc("GET /api/reference-images", s.handleListReferenceImages)
+	mux.HandleFunc("POST /api/reference-images/delete", s.handleDeleteReferenceImages)
 	mux.HandleFunc("GET /api/image-tasks", s.handleListImageTasks)
 	mux.HandleFunc("GET /api/image-tasks/{task_id}/events", s.handleListImageTaskEvents)
 	mux.HandleFunc("POST /api/image-tasks/delete", s.handleDeleteImageTasks)

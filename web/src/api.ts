@@ -1,4 +1,4 @@
-import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, BackupArtifact, BackupRemoteItem, BackupState, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, RegisterStatus, Settings, StoredImage, SystemLog, TaskEvent, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, BackupArtifact, BackupRemoteItem, BackupState, ImageTask, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, RegisterStatus, Settings, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, User } from "./types";
 
 const storageKey = "gpt_image_web_token";
 
@@ -234,6 +234,18 @@ export const api = {
     })),
   deleteImages: (token: string, paths: string[]) =>
     request<{ removed: number }>(token, "/api/images/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths })
+    }),
+  referenceImages: (token: string, params: { page?: number; pageSize?: number; query?: string } = {}) =>
+    request<PagedResult<StoredReferenceImage>>(token, withQuery("/api/reference-images", {
+      page: params.page,
+      page_size: params.pageSize,
+      query: params.query
+    })),
+  deleteReferenceImages: (token: string, paths: string[]) =>
+    request<{ removed: number }>(token, "/api/reference-images/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths })

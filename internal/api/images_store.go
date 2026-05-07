@@ -19,6 +19,10 @@ type imagesDeleteRequest struct {
 	Paths []string `json:"paths"`
 }
 
+type referenceImagesDeleteRequest struct {
+	Paths []string `json:"paths"`
+}
+
 const imageMetaSuffix = ".meta.json"
 
 type storedImageMeta struct {
@@ -93,6 +97,69 @@ func (s *Server) handleDeleteImages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.addAuditLog(r, identity, "image", "删除归档图片", map[string]any{
+		"requested": len(compactStrings(req.Paths)),
+		"removed":   removed,
+		"paths":     compactStrings(req.Paths),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+}
+
+func (s *Server) handleListReferenceImages(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("query")))
+	items, err := s.listStoredReferenceImages(query)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reference_image_list_failed", err.Error())
+		return
+	}
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "page_size", 24)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 24
+	}
+	start := (page - 1) * pageSize
+	if start > len(items) {
+		start = len(items)
+	}
+	end := start + pageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":     items[start:end],
+		"total":     len(items),
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
+func (s *Server) handleDeleteReferenceImages(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	var req referenceImagesDeleteRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	removed := 0
+	for _, rel := range compactStrings(req.Paths) {
+		path, ok := safeJoin(s.cfg.ReferenceImagesDir, rel)
+		if !ok {
+			continue
+		}
+		if err := os.Remove(path); err == nil {
+			_ = os.Remove(imageMetaPath(path))
+			removed++
+		}
+	}
+	s.addAuditLog(r, identity, "image", "删除参考图暂存", map[string]any{
 		"requested": len(compactStrings(req.Paths)),
 		"removed":   removed,
 		"paths":     compactStrings(req.Paths),
@@ -183,6 +250,65 @@ func (s *Server) listStoredImages(r *http.Request, query string, sortMode string
 	return items, nil
 }
 
+func (s *Server) listStoredReferenceImages(query string) ([]map[string]any, error) {
+	items := make([]map[string]any, 0)
+	err := filepath.WalkDir(s.cfg.ReferenceImagesDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(strings.ToLower(entry.Name()), imageMetaSuffix) {
+			return nil
+		}
+		rel, err := filepath.Rel(s.cfg.ReferenceImagesDir, path)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		meta := readReferenceMeta(path)
+		if strings.TrimSpace(meta.OwnerID) == "" {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if query != "" {
+			haystack := strings.ToLower(strings.Join([]string{
+				entry.Name(),
+				rel,
+				meta.OriginalName,
+				meta.ContentType,
+				meta.OwnerID,
+			}, " "))
+			if !strings.Contains(haystack, query) {
+				return nil
+			}
+		}
+		items = append(items, map[string]any{
+			"path":          rel,
+			"name":          entry.Name(),
+			"size":          info.Size(),
+			"created_at":    info.ModTime().UTC(),
+			"owner_id":      meta.OwnerID,
+			"original_name": meta.OriginalName,
+			"content_type":  meta.ContentType,
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(items, func(i, j int) bool {
+		left, _ := items[i]["created_at"].(time.Time)
+		right, _ := items[j]["created_at"].(time.Time)
+		return left.After(right)
+	})
+	return items, nil
+}
+
 func (s *Server) persistImageResults(r *http.Request, result map[string]any, prompt string, ownerID string) int {
 	saved := persistImageResultItems(s.cfg.ImagesDir, publicBaseURL(r), result, prompt, ownerID)
 	if saved == 0 && s.cfg.DebugLogging() {
@@ -259,6 +385,18 @@ func readImageMeta(path string) storedImageMeta {
 	var meta storedImageMeta
 	if err := json.Unmarshal(body, &meta); err != nil {
 		return storedImageMeta{}
+	}
+	return meta
+}
+
+func readReferenceMeta(path string) storedReferenceMeta {
+	body, err := os.ReadFile(imageMetaPath(path))
+	if err != nil || len(body) == 0 {
+		return storedReferenceMeta{}
+	}
+	var meta storedReferenceMeta
+	if err := json.Unmarshal(body, &meta); err != nil {
+		return storedReferenceMeta{}
 	}
 	return meta
 }

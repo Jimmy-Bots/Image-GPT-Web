@@ -29,7 +29,7 @@ import {
   X
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
-import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, SystemLog, TaskEvent, Toast, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, Toast, User } from "./types";
 import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass, storedImageURL } from "./utils";
 import "./styles.css";
 
@@ -2911,12 +2911,21 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
   const [json, setJson] = useState(safeJSON(settings));
   const [backupState, setBackupState] = useState<BackupState | null>(null);
   const [backupItems, setBackupItems] = useState<BackupRemoteItem[]>([]);
+  const [referenceItems, setReferenceItems] = useState<StoredReferenceImage[]>([]);
+  const [referenceQuery, setReferenceQuery] = useState("");
+  const [referencePage, setReferencePage] = useState(1);
+  const [referencePageSize, setReferencePageSize] = useState(25);
+  const [referenceTotal, setReferenceTotal] = useState(0);
+  const [referenceBusy, setReferenceBusy] = useState<"" | "list" | "delete">("");
+  const [referenceSelected, setReferenceSelected] = useState<string[]>([]);
   const [backupBusy, setBackupBusy] = useState<"" | "run" | "reload" | "list">("");
   const [deletingBackupKey, setDeletingBackupKey] = useState("");
   const [smtpTestTo, setSMTPTestTo] = useState("");
   const [smtpTestBusy, setSMTPTestBusy] = useState(false);
   const backupTableRef = useRef<HTMLDivElement | null>(null);
+  const referenceTableRef = useRef<HTMLDivElement | null>(null);
   useHorizontalWheelScroll(backupTableRef);
+  useHorizontalWheelScroll(referenceTableRef);
   useEffect(() => setJson(safeJSON(settings)), [settings]);
   const aiReview = settings.ai_review && typeof settings.ai_review === "object" ? settings.ai_review as Record<string, unknown> : {};
   const allowedPublicModels = Array.isArray(settings.allowed_public_models) ? settings.allowed_public_models.map((item) => String(item)) : [];
@@ -2938,6 +2947,19 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
       cancelled = true;
     };
   }, [token]);
+  useEffect(() => setReferencePage(1), [referenceQuery, referencePageSize]);
+  useEffect(() => {
+    let cancelled = false;
+    api.referenceImages(token, { page: referencePage, pageSize: referencePageSize, query: referenceQuery }).then((data) => {
+      if (cancelled) return;
+      setReferenceItems(data.items || []);
+      setReferenceTotal(Number(data.total || 0));
+      setReferenceSelected((prev) => prev.filter((path) => (data.items || []).some((item) => item.path === path)));
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [token, referencePage, referencePageSize, referenceQuery]);
   async function reloadBackupState() {
     setBackupBusy("reload");
     try {
@@ -2954,6 +2976,36 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
       setBackupItems(data.items || []);
     } finally {
       setBackupBusy("");
+    }
+  }
+  async function reloadReferenceImages(nextPage = referencePage) {
+    setReferenceBusy("list");
+    try {
+      const data = await api.referenceImages(token, { page: nextPage, pageSize: referencePageSize, query: referenceQuery });
+      const nextItems = data.items || [];
+      const nextTotal = Number(data.total || 0);
+      const nextPageCount = Math.max(1, Math.ceil(nextTotal / referencePageSize));
+      if (nextPage > nextPageCount) {
+        setReferencePage(nextPageCount);
+        return;
+      }
+      setReferenceItems(nextItems);
+      setReferenceTotal(nextTotal);
+      setReferenceSelected((prev) => prev.filter((path) => nextItems.some((item) => item.path === path)));
+    } finally {
+      setReferenceBusy("");
+    }
+  }
+  async function removeReferenceImages(paths: string[]) {
+    if (!paths.length || !confirm(`删除 ${paths.length} 张参考图暂存？`)) return;
+    setReferenceBusy("delete");
+    try {
+      const data = await api.deleteReferenceImages(token, paths);
+      setReferenceSelected([]);
+      await reloadReferenceImages(referencePage);
+      toast("success", `已删除 ${data.removed} 张参考图暂存`);
+    } finally {
+      setReferenceBusy("");
     }
   }
   async function runBackupNow() {
@@ -3023,6 +3075,8 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
     const index = value.lastIndexOf("/");
     return index > 0 ? value.slice(0, index) : "root";
   }
+  const referencePageCount = Math.max(1, Math.ceil(referenceTotal / referencePageSize));
+  const allVisibleReferencesSelected = referenceItems.length > 0 && referenceItems.every((item) => referenceSelected.includes(item.path));
   async function sendSMTPTest() {
     const to = smtpTestTo.trim();
     if (!to) {
@@ -3211,6 +3265,68 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
             </table>
           </ScrollableTable>
         </div>
+      </section>
+
+      <section className="panel">
+        <PanelHead
+          title="参考图暂存"
+          subtitle="查看和手动清理上传后暂存到服务端的参考图"
+          action={
+            <div className="actions">
+              <button className="secondary" disabled={referenceBusy === "list"} onClick={() => reloadReferenceImages().catch((error) => toast("error", error.message))}>
+                {referenceBusy === "list" ? "刷新中" : "刷新列表"}
+              </button>
+              <button className="danger" disabled={!referenceSelected.length || referenceBusy === "delete"} onClick={() => removeReferenceImages(referenceSelected).catch((error) => toast("error", error.message))}>
+                {referenceBusy === "delete" ? "删除中" : "删除选中"}
+              </button>
+            </div>
+          }
+        />
+        <div className="filters filters-card activity-filters">
+          <SearchControl value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="搜索路径、原文件名、用户 ID" />
+          <ControlField label="每页"><select value={referencePageSize} onChange={(event) => setReferencePageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
+          <div className="filter-actions"><span className="chip">{referenceTotal} 项</span></div>
+        </div>
+        <div className="bulkbar">
+          <label className="inline"><input type="checkbox" checked={allVisibleReferencesSelected} onChange={(event) => {
+            setReferenceSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...referenceItems.map((item) => item.path)])) : prev.filter((path) => !referenceItems.some((item) => item.path === path)));
+          }} /><span>选择当前页</span></label>
+          <span>已选择 {referenceSelected.length} 项</span>
+          <button className="ghost small" disabled={!referenceSelected.length || referenceBusy === "delete"} onClick={() => removeReferenceImages(referenceSelected).catch((error) => toast("error", error.message))}>删除选中</button>
+        </div>
+        <ScrollableTable tableRef={referenceTableRef} className="data-table-wrap" height="medium">
+          <table className="activity-table backup-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>文件</th>
+                <th>原文件名</th>
+                <th>类型</th>
+                <th>大小</th>
+                <th>用户</th>
+                <th>时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              {referenceItems.length ? referenceItems.map((item) => (
+                <tr key={item.path}>
+                  <td><input type="checkbox" checked={referenceSelected.includes(item.path)} onChange={(event) => setReferenceSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /></td>
+                  <td><div className="backup-key-cell" title={item.path}><strong>{item.name}</strong><small>{item.path}</small></div></td>
+                  <td title={item.original_name || "-"}>{item.original_name || "-"}</td>
+                  <td>{item.content_type || "-"}</td>
+                  <td>{fmtBytes(item.size)}</td>
+                  <td>{item.owner_id || "-"}</td>
+                  <td>{fmtDate(item.created_at)}</td>
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan={7} className="table-empty">{referenceBusy === "list" ? "参考图暂存加载中..." : "暂无参考图暂存"}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </ScrollableTable>
+        <div className="pager"><button className="ghost small" disabled={referencePage <= 1} onClick={() => setReferencePage((value) => Math.max(1, value - 1))}>上一页</button><span>{referencePage} / {referencePageCount} · {referenceTotal} 项</span><button className="ghost small" disabled={referencePage >= referencePageCount} onClick={() => setReferencePage((value) => Math.min(referencePageCount, value + 1))}>下一页</button></div>
       </section>
 
       <section className="panel">
