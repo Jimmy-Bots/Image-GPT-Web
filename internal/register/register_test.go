@@ -5,11 +5,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	fhttp "github.com/bogdanfinn/fhttp"
 )
 
 type fakeMailProvider struct {
@@ -239,6 +242,56 @@ func TestRunnerAvailableModeKeepsMonitoringAndResumes(t *testing.T) {
 	}
 	if registerCalls.Load() < 2 {
 		t.Fatalf("expected monitoring mode to resume registration, calls=%d", registerCalls.Load())
+	}
+}
+
+type countingHTTPFactory struct {
+	count atomic.Int32
+}
+
+func (f *countingHTTPFactory) New(Config) (HTTPClient, error) {
+	f.count.Add(1)
+	return &failingHTTPClient{}, nil
+}
+
+type failingHTTPClient struct{}
+
+func (f *failingHTTPClient) Do(*fhttp.Request) (*fhttp.Response, error) {
+	return nil, errors.New("missing workspace id")
+}
+
+func (f *failingHTTPClient) SetFollowRedirect(bool) {}
+func (f *failingHTTPClient) SetCookies(*url.URL, []*fhttp.Cookie) {}
+func (f *failingHTTPClient) GetCookies(*url.URL) []*fhttp.Cookie { return nil }
+func (f *failingHTTPClient) CloseIdleConnections() {}
+
+func TestLoginAndExchangeTokensRetriesFreshSessionMultipleTimes(t *testing.T) {
+	factory := &countingHTTPFactory{}
+	registrar, err := New(Options{
+		MailProvider: fakeMailProvider{
+			create: func(context.Context) (Mailbox, error) { return Mailbox{Address: "test@example.com"}, nil },
+			wait:   func(context.Context, Mailbox) (string, error) { return "123456", nil },
+		},
+		AccountRepo: fakeAccountRepo{},
+		HTTPFactory: factory,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state := flowState{
+		client:   &failingHTTPClient{},
+		deviceID: "device",
+		cfg:      registrar.cfg,
+		random:   registrar.random,
+		now:      registrar.now,
+		logger:   registrar.logger,
+	}
+	_, err = registrar.loginAndExchangeTokens(context.Background(), state, "test@example.com", "pass", Mailbox{Address: "test@example.com"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if factory.count.Load() != 3 {
+		t.Fatalf("expected 3 fresh-session retries, got %d", factory.count.Load())
 	}
 }
 

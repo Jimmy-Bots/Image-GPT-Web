@@ -209,45 +209,53 @@ func (r *Registrar) loginAndExchangeTokens(ctx context.Context, state flowState,
 		return tokenBundle{}, err
 	}
 	reason := classifyFreshLoginRetryReason(err)
-	r.logRegistration(ctx, "warn", "login session invalid, retry with fresh session", map[string]any{
-		"email": email,
-		"reason": reason,
-		"error": err.Error(),
-	})
-	client, newErr := r.httpFactory.New(r.cfg)
-	if newErr != nil {
-		return tokenBundle{}, newErr
-	}
-	defer client.CloseIdleConnections()
-	freshState := flowState{
-		client:   client,
-		deviceID: randomID(r.random, 12),
-		cfg:      r.cfg,
-		random:   r.random,
-		now:      r.now,
-		logger:   r.logger,
-	}
-	r.logRegistration(ctx, "info", "retry exchange platform tokens", map[string]any{
-		"email": email,
-		"reason": reason,
-		"retry": 1,
-	})
-	tokens, err = freshState.loginAndExchangeTokens(ctx, email, password, mailbox, r.mail)
-	if err != nil {
-		r.logRegistration(ctx, "error", "retry exchange platform tokens failed", map[string]any{
-			"email": email,
+	lastErr := err
+	for retry := 1; retry <= 3; retry++ {
+		r.logRegistration(ctx, "warn", "reset login session and retry exchange", map[string]any{
+			"email":  email,
 			"reason": reason,
-			"retry": 1,
-			"error": err.Error(),
+			"retry":  retry,
+			"error":  lastErr.Error(),
 		})
-		return tokenBundle{}, err
+		client, newErr := r.httpFactory.New(r.cfg)
+		if newErr != nil {
+			return tokenBundle{}, newErr
+		}
+		freshState := flowState{
+			client:   client,
+			deviceID: randomID(r.random, 12),
+			cfg:      r.cfg,
+			random:   r.random,
+			now:      r.now,
+			logger:   r.logger,
+		}
+		r.logRegistration(ctx, "info", "retry exchange platform tokens", map[string]any{
+			"email":  email,
+			"reason": reason,
+			"retry":  retry,
+		})
+		tokens, err = freshState.loginAndExchangeTokens(ctx, email, password, mailbox, r.mail)
+		client.CloseIdleConnections()
+		if err == nil {
+			r.logRegistration(ctx, "info", "retry exchange platform tokens succeeded", map[string]any{
+				"email":  email,
+				"reason": reason,
+				"retry":  retry,
+			})
+			return tokens, nil
+		}
+		lastErr = err
+		r.logRegistration(ctx, "warn", "retry exchange platform tokens failed", map[string]any{
+			"email":  email,
+			"reason": classifyFreshLoginRetryReason(err),
+			"retry":  retry,
+			"error":  err.Error(),
+		})
+		if !shouldRetryFreshLogin(err) {
+			return tokenBundle{}, err
+		}
 	}
-	r.logRegistration(ctx, "info", "retry exchange platform tokens succeeded", map[string]any{
-		"email": email,
-		"reason": reason,
-		"retry": 1,
-	})
-	return tokens, nil
+	return tokenBundle{}, lastErr
 }
 
 func (r *Registrar) refreshAccountRemoteInfo(ctx context.Context, accessToken string) error {
