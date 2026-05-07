@@ -187,6 +187,23 @@ func TestImageTaskEventsFollowLifecycle(t *testing.T) {
 		"endpoint": "/api/image-tasks/generations",
 		"status":   "success",
 	}, "event prompt")
+
+	statusBeforeSuccess := ""
+	for _, item := range payload.Items {
+		if item.Type != "success" || item.Detail == nil {
+			continue
+		}
+		var detail map[string]any
+		if err := json.Unmarshal(*item.Detail, &detail); err != nil {
+			t.Fatalf("decode success event detail: %v", err)
+		}
+		if value, ok := detail["task_status_before_event"].(string); ok {
+			statusBeforeSuccess = value
+		}
+	}
+	if statusBeforeSuccess != "success" {
+		t.Fatalf("success event should be written after task row reaches success, got %q", statusBeforeSuccess)
+	}
 }
 
 func TestImageTasksCanBeDeleted(t *testing.T) {

@@ -69,6 +69,7 @@ type StoredWorkbenchState = {
 };
 
 const workbenchStoragePrefix = "gpt_image_web_workbench:";
+const workbenchSubmitShortcutKey = "gpt_image_web_workbench_submit_shortcut";
 
 const navItems: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: "dashboard", label: "总览", icon: Activity },
@@ -247,6 +248,10 @@ function extractWorkbenchTaskError(task: ImageTask, fallback?: string) {
   const raw = task.error || fallback || "";
   if (!raw) return "";
   return describeWorkbenchError(new Error(raw));
+}
+
+function loadSubmitShortcut(): "enter" | "ctrl_enter" {
+  return localStorage.getItem(workbenchSubmitShortcutKey) === "enter" ? "enter" : "ctrl_enter";
 }
 
 function formatUserQuotaBreakdown(user: User) {
@@ -1179,6 +1184,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
   const [size, setSize] = useState("");
   const [count, setCount] = useState(1);
   const [asyncMode, setAsyncMode] = useState(true);
+  const [submitShortcut, setSubmitShortcut] = useState<"enter" | "ctrl_enter">(() => loadSubmitShortcut());
   const [refs, setRefs] = useState<ReferenceImage[]>([]);
   const [turns, setTurns] = useState<WorkbenchTurn[]>([]);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
@@ -1193,6 +1199,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
   const activeTaskIds = useMemo(() => Array.from(new Set(turns.flatMap((turn) => turn.images.flatMap((item) => item.taskId && (item.status === "queued" || item.status === "running") ? [item.taskId] : [])))), [turns]);
   const activeTaskKey = activeTaskIds.join(",");
   const hasHistory = turns.length > 0;
+  const canSubmit = historyReady && !busy && activeTaskCount === 0 && prompt.trim().length > 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -1221,6 +1228,10 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
     setCount((current) => Math.max(1, Math.min(maxCount, current || 1)));
   }, [maxCount]);
 
+  useEffect(() => {
+    localStorage.setItem(workbenchSubmitShortcutKey, submitShortcut);
+  }, [submitShortcut]);
+
   async function addFiles(files: File[]) {
     const next = await Promise.all(files.filter((file) => file.type.startsWith("image/")).map(async (file) => ({ id: createID("ref"), name: file.name, file, dataUrl: await fileToDataURL(file) })));
     setRefs((current) => [...current, ...next].slice(0, 8));
@@ -1235,6 +1246,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
         setTasks((current) => mergeImageTasks(current, data.items));
         setTaskTotal((value) => Math.max(value, Number(data.total || value)));
         applyTaskUpdates(data.items);
+        reconcileTaskEvents(data.items).catch(() => {});
         refreshUserState().catch(() => {});
         if (canRefreshArchive && data.items.some((task) => task.status === "success")) {
           api.images(token).then((data) => setImages(data.items || [])).catch(() => {});
@@ -1267,6 +1279,37 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
       });
       return { ...turn, images, status: deriveTurnStatus(images), error: images.find((item) => item.error)?.error };
     }));
+  }
+
+  async function reconcileTaskEvents(items: ImageTask[]) {
+    const active = items.filter((task) => task.status === "queued" || task.status === "running");
+    if (!active.length) return;
+    const updates: ImageTask[] = [];
+    for (const task of active) {
+      try {
+        const events = await api.taskEvents(token, task.id, { ownerID: task.owner_id });
+        const terminal = [...(events.items || [])].reverse().find((event) => event.type === "success" || event.type === "error");
+        if (!terminal) continue;
+        const detail = taskEventDetail(terminal);
+        const refreshed = await api.tasks(token, [task.id], { ownerID: task.owner_id });
+        const item = (refreshed.items || [])[0];
+        if (item && item.status !== task.status) {
+          updates.push(item);
+          continue;
+        }
+        updates.push({
+          ...task,
+          status: terminal.type === "success" ? "success" : "error",
+          phase: "finished",
+          error: terminal.type === "error" ? String(detail.error || task.error || "任务失败") : task.error
+        });
+      } catch {
+        // Event reconciliation is a best-effort guard against transient task row lag.
+      }
+    }
+    if (!updates.length) return;
+    setTasks((current) => mergeImageTasks(current, updates));
+    applyTaskUpdates(updates);
   }
 
   async function createTaskForImage(turn: WorkbenchTurn, item: WorkbenchItem) {
@@ -1380,6 +1423,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
   }
 
   async function submit() {
+    if (!canSubmit) return;
     const text = prompt.trim();
     if (!text) return;
     setBusy(true);
@@ -1586,9 +1630,12 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
                 addFiles(files);
               }
             }} onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
+              const wantsSubmit = submitShortcut === "enter"
+                ? event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey
+                : event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey;
+              if (wantsSubmit) {
                 event.preventDefault();
-                submit();
+                if (canSubmit) submit();
               }
             }} placeholder={refs.length ? "描述你希望如何修改参考图" : "输入你想要生成的画面，也可直接粘贴图片"} />
             <div className="composer-footer">
@@ -1600,12 +1647,15 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
                 <label className="composer-field small-field"><span>比例</span><select value={size} onChange={(event) => setSize(event.target.value)}><option value="">默认</option><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></label>
                 <label className="composer-field count-field"><span>张数</span><input type="number" min={1} max={maxCount} value={count} onChange={(event) => setCount(Math.max(1, Math.min(maxCount, Number(event.target.value) || 1)))} /></label>
                 <span className="composer-pill subtle">上限 {maxCount}</span>
+                <label className="composer-field shortcut-field"><span>提交</span><select value={submitShortcut} onChange={(event) => setSubmitShortcut(event.target.value === "enter" ? "enter" : "ctrl_enter")}><option value="ctrl_enter">Ctrl+Enter</option><option value="enter">Enter</option></select></label>
+              </div>
+              <div className="composer-actions">
                 <div className="mode-toggle">
                   <button className={classNames(asyncMode && "active")} onClick={() => setAsyncMode(true)}>异步</button>
                   <button className={classNames(!asyncMode && "active")} onClick={() => setAsyncMode(false)}>同步</button>
                 </div>
+                <button className="send-button" disabled={!canSubmit} onClick={submit} aria-label={refs.length ? "编辑图片" : "生成图片"}>{busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={17} />}</button>
               </div>
-              <button className="send-button" disabled={busy || !prompt.trim()} onClick={submit} aria-label={refs.length ? "编辑图片" : "生成图片"}>{busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={17} />}</button>
             </div>
           </div>
         </section>

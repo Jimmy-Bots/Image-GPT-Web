@@ -283,19 +283,21 @@ th input[type="checkbox"], td input[type="checkbox"] { display: block; margin: 0
 .composer-surface textarea { min-height: 116px; max-height: 240px; resize: vertical; border: 0; border-radius: 0; background: transparent; padding: 15px 16px 8px; line-height: 1.65; box-shadow: none; }
 .composer-surface textarea:focus { border: 0; box-shadow: none; }
 .composer-footer { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; padding: 10px; border-top: 1px solid #eef2f6; }
-.composer-controls { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.composer-controls { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.composer-actions { flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; }
 .composer-pill { min-height: 34px; padding: 7px 10px; border-radius: 999px; border: 1px solid #dfe6ee; background: white; color: #3d4958; font-size: 12px; font-weight: 700; }
-span.composer-pill { display: inline-flex; align-items: center; }
+button.composer-pill, span.composer-pill { display: inline-flex; align-items: center; gap: 6px; }
 .composer-pill.passive { background: #f2f5f8; border-color: #f2f5f8; color: #667386; }
 .composer-pill.subtle { background: #f7f9fc; border-color: #e7edf4; color: #7b8898; }
 .composer-pill.running { background: #fff6df; border-color: #ffe8a8; color: #8a6200; }
 .composer-field { min-height: 34px; height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 3px 9px; border: 1px solid #dfe6ee; border-radius: 999px; background: white; box-sizing: border-box; }
 .composer-field span { margin: 0; color: #697586; font-size: 12px; font-weight: 750; }
-.composer-field input, .composer-field select { width: 118px; height: 24px; border: 0; border-radius: 0; background: transparent; padding: 0; box-shadow: none; font-size: 12px; line-height: 24px; }
+.composer-field input, .composer-field select { width: 80px; height: 24px; border: 0; border-radius: 0; background: transparent; padding: 0; box-shadow: none; font-size: 12px; line-height: 24px; }
 .composer-field input:focus, .composer-field select:focus { border: 0; box-shadow: none; }
-.composer-field.small-field select { width: 72px; }
+.composer-field.small-field select { width: 40px; }
 .composer-field.count-field input { width: 34px; text-align: center; }
-.mode-toggle { display: inline-flex; align-items: center; gap: 2px; min-height: 34px; padding: 3px; border-radius: 999px; background: #edf1f5; }
+.composer-field.shortcut-field select { width: 76px; }
+.mode-toggle { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; min-height: 34px; padding: 3px; border-radius: 999px; background: #edf1f5; }
 .mode-toggle button { min-height: 28px; padding: 5px 10px; border-radius: 999px; background: transparent; color: #667386; font-size: 12px; font-weight: 750; }
 .mode-toggle button.active { background: white; color: #17202a; box-shadow: 0 4px 12px rgba(28, 39, 53, .08); }
 .send-button { width: 42px; height: 42px; flex: 0 0 auto; padding: 0; border-radius: 999px; background: #111923; color: white; }
@@ -515,8 +517,9 @@ span.composer-pill { display: inline-flex; align-items: center; }
   .creation-feed { max-height: none; overflow: visible; padding: 4px 0 12px; }
   .creator-composer { position: sticky; bottom: 8px; z-index: 20; padding: 0; }
   .creation-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
-  .composer-footer { align-items: stretch; }
+  .composer-footer { align-items: stretch; flex-direction: column; }
   .composer-controls { flex: 1; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; }
+  .composer-actions { width: 100%; justify-content: space-between; margin-left: 0; }
   .composer-field input, .composer-field select { width: 92px; }
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; }

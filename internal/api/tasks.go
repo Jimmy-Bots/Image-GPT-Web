@@ -147,7 +147,7 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		if job.Receipt.Total > 0 {
 			_, _ = q.store.RefundUserQuota(context.Background(), job.OwnerID, job.Receipt)
 		}
-		q.addTaskEventContext(context.Background(), job, "error", "图片任务失败", map[string]any{
+		errorDetail := map[string]any{
 			"status":         taskError,
 			"phase":          taskPhaseFinished,
 			"quota_used":     0,
@@ -155,9 +155,15 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 			"quota_refund":   job.Receipt.Total,
 			"error":          err.Error(),
 			"attempts":       attempts,
-		})
+		}
 		log.Printf("image_task failed id=%s owner=%s mode=%s err=%v", job.TaskID, job.OwnerID, job.Mode, err)
-		_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskError, taskPhaseFinished, jsonData([]any{}), err.Error())
+		if updateErr := q.updateImageTaskFinal(context.Background(), job, taskError, jsonData([]any{}), err.Error()); updateErr != nil {
+			errorDetail["task_update_error"] = updateErr.Error()
+		}
+		if status := q.imageTaskStatus(context.Background(), job); status != "" {
+			errorDetail["task_status_before_event"] = status
+		}
+		q.addTaskEventContext(context.Background(), job, "error", "图片任务失败", errorDetail)
 		return
 	}
 	prompt := job.Gen.Prompt
@@ -173,7 +179,8 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	if refund := job.Receipt.Total - count; refund > 0 {
 		_, _ = q.store.RefundUserQuota(context.Background(), job.OwnerID, quotaRefundPortion(job.Receipt, refund))
 	}
-	q.addTaskEventContext(context.Background(), job, "success", "图片任务成功", map[string]any{
+	data := result["data"]
+	successDetail := map[string]any{
 		"status":         taskSuccess,
 		"phase":          taskPhaseFinished,
 		"items":          count,
@@ -182,10 +189,36 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		"quota_used":     count,
 		"quota_refund":   maxInt(0, job.Receipt.Total-count),
 		"attempts":       attempts,
-	})
+	}
 	log.Printf("image_task success id=%s owner=%s mode=%s items=%d archived=%d base_url_configured=%t", job.TaskID, job.OwnerID, job.Mode, count, saved, q.baseURL != "")
-	data := result["data"]
-	_ = q.store.UpdateImageTask(context.Background(), job.OwnerID, job.TaskID, taskSuccess, taskPhaseFinished, jsonData(data), "")
+	if updateErr := q.updateImageTaskFinal(context.Background(), job, taskSuccess, jsonData(data), ""); updateErr != nil {
+		successDetail["task_update_error"] = updateErr.Error()
+	}
+	if status := q.imageTaskStatus(context.Background(), job); status != "" {
+		successDetail["task_status_before_event"] = status
+	}
+	q.addTaskEventContext(context.Background(), job, "success", "图片任务成功", successDetail)
+}
+
+func (q *TaskQueue) updateImageTaskFinal(ctx context.Context, job taskJob, status string, data json.RawMessage, taskErr string) error {
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		lastErr = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, status, taskPhaseFinished, data, taskErr)
+		if lastErr == nil {
+			return nil
+		}
+		log.Printf("image_task final_update_failed id=%s owner=%s status=%s attempt=%d err=%v", job.TaskID, job.OwnerID, status, attempt, lastErr)
+		time.Sleep(time.Duration(attempt*100) * time.Millisecond)
+	}
+	return lastErr
+}
+
+func (q *TaskQueue) imageTaskStatus(ctx context.Context, job taskJob) string {
+	items, err := q.store.ListImageTasks(ctx, job.OwnerID, []string{job.TaskID}, false, true)
+	if err != nil || len(items) == 0 {
+		return ""
+	}
+	return items[0].Status
 }
 
 func (q *TaskQueue) addTaskEventContext(ctx context.Context, job taskJob, eventType string, summary string, detail map[string]any) {
