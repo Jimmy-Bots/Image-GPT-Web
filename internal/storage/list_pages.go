@@ -114,7 +114,7 @@ func (s *Store) ListUsersWithAPIKeysPage(ctx context.Context, query UserListQuer
 		return nil, 0, err
 	}
 
-	itemsQuery := `SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, daily_temporary_quota, created_at, updated_at, last_login_at
+	itemsQuery := `SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, daily_temporary_quota, quota_used_total, quota_used_today, quota_used_date, created_at, updated_at, last_login_at
 		FROM users` + where + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, itemsQuery, itemsArgs...)

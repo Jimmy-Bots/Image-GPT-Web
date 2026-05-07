@@ -259,6 +259,10 @@ function formatUserQuotaBreakdown(user: User) {
   return `永久 ${compact(user.permanent_quota || 0)} · ${temporaryPart}`;
 }
 
+function formatUserQuotaUsage(user: User) {
+  return `今日 ${compact(Number(user.quota_used_today || 0))} · 累计 ${compact(Number(user.quota_used_total || 0))}`;
+}
+
 function localDayString(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -2556,7 +2560,7 @@ function UsersPanel({ token, users, setUsers, toast }: { token: string; users: U
       {newKey ? <div className="notice"><span>新 API Key 只显示一次：</span><code>{newKey}</code><IconButton title="复制" onClick={() => copyText(newKey).then(() => toast("success", "已复制"))}><Copy size={14} /></IconButton><IconButton title="隐藏" onClick={() => setNewKey("")}><EyeOff size={14} /></IconButton></div> : null}
       <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="large"><table className="users-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => {
         setSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...users.map((item) => item.id)])) : prev.filter((id) => !users.some((item) => item.id === id)));
-      }} aria-label="选择当前用户" /></th><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>可用额度</th><th>额度明细</th><th>API Key</th><th>Last Login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} selected={selectedSet.has(user.id)} onSelect={(checked) => setSelected((prev) => checked ? [...prev, user.id] : prev.filter((id) => id !== user.id))} onEdit={openEditUser} />)}</tbody></table></ScrollableTable>
+      }} aria-label="选择当前用户" /></th><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>可用额度</th><th>额度明细</th><th>消耗统计</th><th>API Key</th><th>Last Login</th><th></th></tr></thead><tbody>{users.map((user) => <UserRow key={user.id} token={token} user={user} reload={reload} toast={toast} showKey={(key) => setNewKey(key)} selected={selectedSet.has(user.id)} onSelect={(checked) => setSelected((prev) => checked ? [...prev, user.id] : prev.filter((id) => id !== user.id))} onEdit={openEditUser} />)}</tbody></table></ScrollableTable>
       <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
       <DetailModal title="创建用户" open={createOpen} onClose={() => setCreateOpen(false)}>
         <div className="detail-panel">
@@ -2662,6 +2666,7 @@ function UserRow({ token, user, reload, toast, showKey, selected, onSelect, onEd
       <td><Badge value={user.status} /></td>
       <td>{user.quota_unlimited ? "∞" : compact(user.available_quota || 0)}</td>
       <td><><strong>{formatUserQuotaBreakdown(user)}</strong><small>{user.daily_temporary_quota ? `每日当天额度 ${user.daily_temporary_quota}` : (user.temporary_quota > 0 ? "今日已发放" : "无当天额度")}</small></></td>
+      <td><><strong>{formatUserQuotaUsage(user)}</strong><small>{user.quota_used_date?.trim() || "今日"}</small></></td>
       <td><Badge value={user.api_key?.enabled ?? false} /><small>{user.api_key ? `${user.api_key.name} · ${fmtDate(user.api_key.last_used_at)}` : "Missing"}</small></td>
       <td>{fmtDate(user.last_login_at)}</td>
       <td className="users-actions-cell"><div className="row-actions">

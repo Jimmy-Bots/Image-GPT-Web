@@ -78,6 +78,9 @@ export type User = {
   temporary_quota: number;
   temporary_quota_date?: string;
   daily_temporary_quota?: number;
+  quota_used_total: number;
+  quota_used_today: number;
+  quota_used_date?: string;
   available_quota: number;
   api_key?: ApiKey;
   created_at: string;

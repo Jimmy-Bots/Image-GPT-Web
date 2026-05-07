@@ -3,7 +3,7 @@ data/
 .env
 .env.local
 config.json
-test
+README.local.md
 
 # Build outputs
 bin/

@@ -132,6 +132,9 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	shapeImageResponseForClient(result, requestedFormat)
 	count := imageResultCount(result)
 	finalUser := user
+	if updatedUser, ok := s.addImageQuotaUsage(r.Context(), identity, count); ok {
+		finalUser = updatedUser
+	}
 	if refund := receipt.Total - count; refund > 0 {
 		if updatedUser, ok := s.refundImageQuotaWithResult(r.Context(), identity, quotaRefundPortion(receipt, refund)); ok {
 			finalUser = updatedUser
@@ -254,6 +257,9 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	shapeImageResponseForClient(result, requestedFormat)
 	count := imageResultCount(result)
 	finalUser := user
+	if updatedUser, ok := s.addImageQuotaUsage(r.Context(), identity, count); ok {
+		finalUser = updatedUser
+	}
 	if refund := receipt.Total - count; refund > 0 {
 		if updatedUser, ok := s.refundImageQuotaWithResult(r.Context(), identity, quotaRefundPortion(receipt, refund)); ok {
 			finalUser = updatedUser

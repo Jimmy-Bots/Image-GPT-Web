@@ -171,6 +171,9 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	saved := persistImageResultItems(q.imagesDir, q.baseURL, result, prompt, job.OwnerID)
 	shapeImageResponseForClient(result, "url")
 	count := imageResultCount(result)
+	if count > 0 {
+		_, _ = q.store.AddUserQuotaUsage(context.Background(), job.OwnerID, count, time.Now())
+	}
 	if refund := job.Receipt.Total - count; refund > 0 {
 		_, _ = q.store.RefundUserQuota(context.Background(), job.OwnerID, quotaRefundPortion(job.Receipt, refund))
 	}
@@ -321,6 +324,11 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 	requestedCount := clampImageTaskCountWithLimit(req.N, s.imageMaxCount(r.Context()))
 	_, receipt, err := s.reserveImageQuota(r.Context(), identity, requestedCount)
 	if err != nil {
+		errorCode := "quota_exceeded"
+		errorMessage := err.Error()
+		if !strings.Contains(strings.ToLower(errorMessage), "quota exceeded") {
+			errorCode = "reserve_quota_failed"
+		}
 		s.addLogContext(r.Context(), "task", "图片任务提交失败", map[string]any{
 			"owner_id":        identity.ID,
 			"name":            identity.Name,
@@ -333,10 +341,14 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 			"status":          "failed",
 			"quota_used":      0,
 			"quota_reserved":  0,
-			"error":           "insufficient quota",
-			"error_code":      "quota_exceeded",
+			"error":           errorMessage,
+			"error_code":      errorCode,
 		})
-		writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
+		if errorCode == "quota_exceeded" {
+			writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "reserve_quota_failed", errorMessage)
 		return
 	}
 	now := time.Now().UTC()
@@ -447,6 +459,11 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 	}
 	_, receipt, err := s.reserveImageQuota(r.Context(), identity, req.N)
 	if err != nil {
+		errorCode := "quota_exceeded"
+		errorMessage := err.Error()
+		if !strings.Contains(strings.ToLower(errorMessage), "quota exceeded") {
+			errorCode = "reserve_quota_failed"
+		}
 		s.addLogContext(r.Context(), "task", "图片任务提交失败", map[string]any{
 			"owner_id":        identity.ID,
 			"name":            identity.Name,
@@ -459,10 +476,14 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 			"status":          "failed",
 			"quota_used":      0,
 			"quota_reserved":  0,
-			"error":           "insufficient quota",
-			"error_code":      "quota_exceeded",
+			"error":           errorMessage,
+			"error_code":      errorCode,
 		})
-		writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
+		if errorCode == "quota_exceeded" {
+			writeError(w, http.StatusForbidden, "quota_exceeded", "insufficient quota")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "reserve_quota_failed", errorMessage)
 		return
 	}
 	now := time.Now().UTC()

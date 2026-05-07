@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"time"
 
 	"gpt-image-web/internal/domain"
 	"gpt-image-web/internal/storage"
@@ -23,6 +24,17 @@ func (s *Server) refundImageQuotaWithResult(ctx context.Context, identity Identi
 		return domain.User{}, false
 	}
 	user, err := s.store.RefundUserQuota(ctx, identity.ID, receipt)
+	if err != nil {
+		return domain.User{}, false
+	}
+	return user, true
+}
+
+func (s *Server) addImageQuotaUsage(ctx context.Context, identity Identity, amount int) (domain.User, bool) {
+	if amount <= 0 {
+		return domain.User{}, false
+	}
+	user, err := s.store.AddUserQuotaUsage(ctx, identity.ID, amount, time.Now())
 	if err != nil {
 		return domain.User{}, false
 	}
