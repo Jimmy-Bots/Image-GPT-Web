@@ -291,6 +291,7 @@ export type ReferenceImage = {
 
 export type AccountRefreshStatus = {
   running: boolean;
+  mode?: string;
   interval_minutes: number;
   concurrency: number;
   normal_batch_size: number;
@@ -305,6 +306,8 @@ export type AccountRefreshStatus = {
   last_refreshed: number;
   last_failed: number;
   last_error?: string;
+  current_token_ref?: string;
+  current_stage?: string;
 };
 
 export type BackupArtifact = {

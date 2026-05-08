@@ -728,7 +728,7 @@ function App() {
         </header>
 
         {activeTab === "dashboard" && isAdmin && <Dashboard accountSummary={accountSummary} models={models} tasks={tasks} taskTotal={taskTotal} storageStatus={storageStatus} onReloadModels={() => runBusy("models", async () => setModels((await api.models(token)).data || []))} />}
-        {activeTab === "accounts" && isAdmin && <AccountsPanel token={token} refreshIntervalMinutes={Number(settings.refresh_account_interval_minute || 5)} refreshStatus={accountRefreshStatus} setAccountSummary={setAccountSummary} toast={toast} busy={busy} runBusy={runBusy} />}
+        {activeTab === "accounts" && isAdmin && <AccountsPanel token={token} refreshIntervalMinutes={Number(settings.refresh_account_interval_minute || 5)} refreshStatus={accountRefreshStatus} setRefreshStatus={setAccountRefreshStatus} setAccountSummary={setAccountSummary} toast={toast} busy={busy} runBusy={runBusy} />}
         {activeTab === "register" && isAdmin && <RegisterPanel token={token} registerRuntime={registerRuntime} setRegisterRuntime={setRegisterRuntime} toast={toast} />}
         {activeTab === "activity" && isAdmin && <ActivityPanel token={token} tasks={tasks} setTasks={setTasks} setTaskTotal={setTaskTotal} logs={logs} setLogs={setLogs} openLightbox={(src, title) => setLightbox({ src, title })} toast={toast} />}
         {activeTab === "images" && isAdmin && <ImagesPanel token={token} images={images} setImages={setImages} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
@@ -1119,7 +1119,7 @@ function PanelHead({ title, subtitle, action }: { title: string; subtitle?: stri
   );
 }
 
-function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccountSummary, toast, busy, runBusy }: { token: string; refreshIntervalMinutes: number; refreshStatus: AccountRefreshStatus | null; setAccountSummary: React.Dispatch<React.SetStateAction<AccountListSummary | null>>; toast: (type: Toast["type"], message: string) => void; busy: string | null; runBusy: (id: string, fn: () => Promise<void>) => Promise<void> }) {
+function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setRefreshStatus, setAccountSummary, toast, busy, runBusy }: { token: string; refreshIntervalMinutes: number; refreshStatus: AccountRefreshStatus | null; setRefreshStatus: React.Dispatch<React.SetStateAction<AccountRefreshStatus | null>>; setAccountSummary: React.Dispatch<React.SetStateAction<AccountListSummary | null>>; toast: (type: Toast["type"], message: string) => void; busy: string | null; runBusy: (id: string, fn: () => Promise<void>) => Promise<void> }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [summary, setSummary] = useState<AccountListSummary | null>(null);
   const [query, setQuery] = useState("");
@@ -1192,8 +1192,8 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
   }
   async function refreshDue() {
     const result = await api.refreshDueAccounts(token);
-    await reloadPage();
-    toast(result.errors.length ? "error" : "success", `待刷新选中 ${result.selected} 个，成功 ${result.refreshed} 个${result.errors.length ? `，失败 ${result.errors.length} 个` : ""}`);
+    await Promise.allSettled([reloadPage(), api.accountRefreshStatus(token).then((data) => setRefreshStatus(data.status || null))]);
+    toast(result.running ? "info" : "success", result.running ? "已在后台启动待刷新账号刷新，请查看上方运行状态。" : "待刷新账号刷新已完成");
   }
   async function remove(refs: string[]) {
     if (!refs.length || !confirm(`删除 ${refs.length} 个账号？`)) return;
@@ -1211,7 +1211,7 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
     <section className="panel">
       <PanelHead title="账号池" subtitle={`筛选、刷新和维护 ChatGPT access_token · 自动刷新间隔 ${refreshIntervalMinutes} 分钟`} action={<><button className="secondary" disabled={busy === "refresh-due-accounts"} onClick={() => runBusy("refresh-due-accounts", refreshDue)}>刷新待刷新</button><button className="secondary" disabled={busy === "refresh-all-accounts"} onClick={() => runBusy("refresh-all-accounts", () => refresh([]))}>刷新全部</button><button className="secondary-danger" disabled={busy === "remove-bad"} onClick={() => runBusy("remove-bad", () => remove(accounts.filter((item) => item.status === "异常").map((item) => item.token_ref)))}>移除异常</button></>} />
       <div className="auto-refresh-bar">
-        <span className={classNames("badge", refreshStatus?.running ? "warn" : "ok")}>{refreshStatus?.running ? "自动刷新中" : "自动刷新空闲"}</span>
+        <span className={classNames("badge", refreshStatus?.running ? "warn" : "ok")}>{refreshStatus?.running ? (refreshStatus?.mode === "manual_due" ? "手动刷新中" : "自动刷新中") : "自动刷新空闲"}</span>
         <span className="chip">并发 {Number(refreshStatus?.concurrency || 0)}</span>
         <span className="chip">正常轮转批量 {Number(refreshStatus?.normal_batch_size || 0)}</span>
         <span className="chip">间隔 {Number(refreshStatus?.interval_minutes || refreshIntervalMinutes || 0)} 分钟</span>
@@ -1223,6 +1223,8 @@ function AccountsPanel({ token, refreshIntervalMinutes, refreshStatus, setAccoun
         <span className="chip">本轮选择 {Number(refreshStatus?.last_selected || 0)}</span>
         <span className="chip">限流 {Number(refreshStatus?.last_limited || 0)} / 正常 {Number(refreshStatus?.last_normal || 0)}</span>
         <span className="chip">耗时 {formatDuration(refreshStatus?.last_duration_ms)}</span>
+        {refreshStatus?.current_token_ref ? <span className="chip">当前 {refreshStatus.current_token_ref.slice(0, 10)}...</span> : null}
+        {refreshStatus?.current_stage ? <span className="chip">{refreshStatus.current_stage}</span> : null}
       </div>
       {refreshStatus?.last_error ? <p className="detail-error">{refreshStatus.last_error}</p> : null}
       <div className="filters filters-card account-filters">

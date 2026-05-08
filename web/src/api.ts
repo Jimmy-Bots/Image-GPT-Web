@@ -161,7 +161,7 @@ export const api = {
       body: JSON.stringify({ token_refs: tokenRefs })
     }),
   refreshDueAccounts: (token: string) =>
-    request<{ selected: number; refreshed: number; errors: Array<{ token_ref?: string; error?: string }> }>(token, "/api/accounts/refresh-due", {
+    request<{ ok: boolean; running: boolean; mode?: string }>(token, "/api/accounts/refresh-due", {
       method: "POST"
     }),
   updateAccount: (token: string, tokenRef: string, body: { status?: string; type?: string; quota?: number; password?: string; max_concurrency?: number }) =>

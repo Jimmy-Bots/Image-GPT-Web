@@ -550,6 +550,12 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 		go func() {
 			defer wg.Done()
 			for token := range jobs {
+				if progress := manualRefreshProgressFromContext(ctx); progress != nil {
+					progress.refresher.updateProgress(func(state *accountAutoRefreshState) {
+						state.CurrentTokenRef = accountTokenRef(token)
+						state.CurrentStage = "refreshing"
+					})
+				}
 				jobCtx := withStructuredLog(ctx, u.logWriter, "account", map[string]any{
 					"token_ref": accountTokenRef(token),
 					"account":   maskToken(token),
@@ -654,10 +660,10 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 						err = reloginErr
 					}
 				}
-				results <- jobResult{token: replacedToken, err: err}
-			}
-		}()
-	}
+					results <- jobResult{token: replacedToken, err: err}
+				}
+			}()
+		}
 	go func() {
 		for _, token := range tokens {
 			select {
@@ -679,9 +685,23 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 				"access_token": result.token,
 				"error":        result.err.Error(),
 			})
+			if progress := manualRefreshProgressFromContext(ctx); progress != nil {
+				progress.refresher.updateProgress(func(state *accountAutoRefreshState) {
+					state.LastFailed = len(errorsList)
+					state.LastRefreshed = refreshed
+					state.LastError = summarizeAutoRefreshErrors(errorsList)
+				})
+			}
 			continue
 		}
 		refreshed++
+		if progress := manualRefreshProgressFromContext(ctx); progress != nil {
+			progress.refresher.updateProgress(func(state *accountAutoRefreshState) {
+				state.LastFailed = len(errorsList)
+				state.LastRefreshed = refreshed
+				state.LastError = summarizeAutoRefreshErrors(errorsList)
+			})
+		}
 	}
 	return refreshed, errorsList
 }

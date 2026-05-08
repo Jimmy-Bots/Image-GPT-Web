@@ -306,34 +306,25 @@ func (s *Server) handleRefreshDueAccounts(w http.ResponseWriter, r *http.Request
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	settings, err := s.store.GetSettings(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+	if s.autoRef == nil {
+		writeError(w, http.StatusServiceUnavailable, "refresh_unavailable", "account refresher is not ready")
 		return
 	}
-	intervalMinutes := intMapValue(settings, "refresh_account_interval_minute")
-	if intervalMinutes < 1 {
-		intervalMinutes = defaultAutoRefreshIntervalMinutes
-	}
-	accounts, err := s.store.ListAccounts(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
-		return
-	}
-	tokens := dueRefreshTokens(accounts, intervalMinutes, time.Now())
-	refreshed, errorsList := s.upstream.RefreshAccounts(r.Context(), tokens)
-	s.addLog(r, "account", "手动刷新待刷新账号", map[string]any{
-		"mode":             "manual_due",
-		"interval_minutes": intervalMinutes,
-		"selected":         len(tokens),
-		"refreshed":        refreshed,
-		"failed":           len(errorsList),
-		"failed_items":     refreshErrorSummaries(errorsList),
-	})
-	writeJSON(w, http.StatusOK, map[string]any{
-		"selected":  len(tokens),
-		"refreshed": refreshed,
-		"errors":    publicRefreshErrors(errorsList),
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		if err := s.autoRef.RunManualDueOnce(ctx); err != nil {
+			s.addLogContext(ctx, "account", "手动刷新待刷新账号失败", map[string]any{
+				"mode":   "manual_due",
+				"status": "failed_to_start",
+				"error":  err.Error(),
+			})
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"ok":      true,
+		"running": true,
+		"mode":    "manual_due",
 	})
 }
 

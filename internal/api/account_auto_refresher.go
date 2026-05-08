@@ -36,6 +36,7 @@ const (
 
 type accountAutoRefreshState struct {
 	Running         bool   `json:"running"`
+	Mode            string `json:"mode,omitempty"`
 	IntervalMinutes int    `json:"interval_minutes"`
 	Concurrency     int    `json:"concurrency"`
 	NormalBatchSize int    `json:"normal_batch_size"`
@@ -50,6 +51,8 @@ type accountAutoRefreshState struct {
 	LastRefreshed   int    `json:"last_refreshed"`
 	LastFailed      int    `json:"last_failed"`
 	LastError       string `json:"last_error,omitempty"`
+	CurrentTokenRef string `json:"current_token_ref,omitempty"`
+	CurrentStage    string `json:"current_stage,omitempty"`
 }
 
 func newAccountAutoRefresher(store *storage.Store, upstream Upstream) *accountAutoRefresher {
@@ -159,8 +162,20 @@ func (r *accountAutoRefresher) runOnce() {
 		return
 	}
 	log.Printf("account_auto_refresh start total=%d limited=%d normal=%d", len(tokens), limitedCount, normalCount)
+	r.updateProgress(func(state *accountAutoRefreshState) {
+		state.Mode = "auto"
+		state.LastSelected = len(tokens)
+		state.LastLimited = limitedCount
+		state.LastNormal = normalCount
+		state.LastRefreshed = 0
+		state.LastFailed = 0
+		state.LastError = ""
+		state.CurrentTokenRef = ""
+		state.CurrentStage = "running"
+	})
 	refreshed, errorsList := r.upstream.RefreshAccounts(ctx, tokens)
 	state := accountAutoRefreshState{
+		Mode:           "auto",
 		LastStartedAt:  startedAt.Format(time.RFC3339),
 		LastFinishedAt: time.Now().UTC().Format(time.RFC3339),
 		LastDurationMS: time.Since(startedAt).Milliseconds(),
@@ -169,6 +184,7 @@ func (r *accountAutoRefresher) runOnce() {
 		LastNormal:     normalCount,
 		LastRefreshed:  refreshed,
 		LastFailed:     len(errorsList),
+		CurrentStage:   "finished",
 	}
 	if len(errorsList) > 0 {
 		state.LastError = summarizeAutoRefreshErrors(errorsList)
@@ -204,6 +220,89 @@ func (r *accountAutoRefresher) runOnce() {
 		"finished_at": state.LastFinishedAt,
 	})
 	log.Printf("account_auto_refresh done refreshed=%d failed=0", refreshed)
+}
+
+func (r *accountAutoRefresher) RunManualDueOnce(ctx context.Context) error {
+	if r == nil || r.store == nil || r.upstream == nil {
+		return fmt.Errorf("account refresher is not ready")
+	}
+	r.runMu.Lock()
+	if r.running {
+		r.runMu.Unlock()
+		return fmt.Errorf("account refresh is already running")
+	}
+	r.running = true
+	r.runMu.Unlock()
+	defer func() {
+		r.runMu.Lock()
+		r.running = false
+		r.runMu.Unlock()
+	}()
+
+	settings, err := r.store.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	intervalMinutes := intMapValue(settings, "refresh_account_interval_minute")
+	if intervalMinutes < 1 {
+		intervalMinutes = defaultAutoRefreshIntervalMinutes
+	}
+	accounts, err := r.store.ListAccounts(ctx)
+	if err != nil {
+		return err
+	}
+	tokens := dueRefreshTokens(accounts, intervalMinutes, time.Now())
+	startedAt := time.Now().UTC()
+	r.recordRun(accountAutoRefreshState{
+		Mode:            "manual_due",
+		LastStartedAt:   startedAt.Format(time.RFC3339),
+		LastSelected:    len(tokens),
+		LastRefreshed:   0,
+		LastFailed:      0,
+		LastError:       "",
+		CurrentTokenRef: "",
+		CurrentStage:    "running",
+	})
+	if len(tokens) == 0 {
+		r.recordRun(accountAutoRefreshState{
+			Mode:           "manual_due",
+			LastStartedAt:  startedAt.Format(time.RFC3339),
+			LastFinishedAt: time.Now().UTC().Format(time.RFC3339),
+			LastDurationMS: time.Since(startedAt).Milliseconds(),
+			LastSelected:   0,
+			LastRefreshed:  0,
+			LastFailed:     0,
+			CurrentStage:   "finished",
+		})
+		return nil
+	}
+	refreshed, errorsList := r.upstream.RefreshAccounts(withManualRefreshProgress(ctx, r), tokens)
+	state := accountAutoRefreshState{
+		Mode:           "manual_due",
+		LastStartedAt:  startedAt.Format(time.RFC3339),
+		LastFinishedAt: time.Now().UTC().Format(time.RFC3339),
+		LastDurationMS: time.Since(startedAt).Milliseconds(),
+		LastSelected:   len(tokens),
+		LastRefreshed:  refreshed,
+		LastFailed:     len(errorsList),
+		CurrentStage:   "finished",
+	}
+	if len(errorsList) > 0 {
+		state.LastError = summarizeAutoRefreshErrors(errorsList)
+	}
+	r.recordRun(state)
+	r.emitLog(ctx, "手动刷新待刷新账号", map[string]any{
+		"mode":         "manual_due",
+		"selected":     len(tokens),
+		"refreshed":    refreshed,
+		"failed":       len(errorsList),
+		"duration_ms":  state.LastDurationMS,
+		"error":        state.LastError,
+		"failed_items": refreshErrorSummaries(errorsList),
+		"started_at":   state.LastStartedAt,
+		"finished_at":  state.LastFinishedAt,
+	})
+	return nil
 }
 
 func (r *accountAutoRefresher) emitLog(ctx context.Context, summary string, detail map[string]any) {
@@ -318,6 +417,9 @@ func (r *accountAutoRefresher) Status(ctx context.Context) accountAutoRefreshSta
 	state.LastRefreshed = r.lastRun.LastRefreshed
 	state.LastFailed = r.lastRun.LastFailed
 	state.LastError = r.lastRun.LastError
+	state.Mode = r.lastRun.Mode
+	state.CurrentTokenRef = r.lastRun.CurrentTokenRef
+	state.CurrentStage = r.lastRun.CurrentStage
 	return state
 }
 
@@ -343,6 +445,36 @@ func (r *accountAutoRefresher) recordRun(state accountAutoRefreshState) {
 	r.stateMu.Lock()
 	defer r.stateMu.Unlock()
 	r.lastRun = state
+}
+
+func (r *accountAutoRefresher) updateProgress(update func(*accountAutoRefreshState)) {
+	if r == nil || update == nil {
+		return
+	}
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	update(&r.lastRun)
+}
+
+type manualRefreshProgressKey struct{}
+
+type manualRefreshProgress struct {
+	refresher *accountAutoRefresher
+}
+
+func withManualRefreshProgress(ctx context.Context, refresher *accountAutoRefresher) context.Context {
+	if refresher == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, manualRefreshProgressKey{}, &manualRefreshProgress{refresher: refresher})
+}
+
+func manualRefreshProgressFromContext(ctx context.Context) *manualRefreshProgress {
+	if ctx == nil {
+		return nil
+	}
+	value, _ := ctx.Value(manualRefreshProgressKey{}).(*manualRefreshProgress)
+	return value
 }
 
 func formatAutoRefreshTime(value time.Time) string {
