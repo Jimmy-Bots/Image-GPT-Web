@@ -636,7 +636,12 @@ function App() {
     }
   }
 
-  function logout() {
+  async function logout() {
+    try {
+      await api.logout();
+    } catch {
+      // Clearing local auth state is still important even if cookie cleanup fails.
+    }
     setStoredToken("");
     setToken("");
     setIdentity(null);
@@ -988,7 +993,7 @@ function ImageHome({
   setTaskTotal: React.Dispatch<React.SetStateAction<number>>;
   setImages: React.Dispatch<React.SetStateAction<StoredImage[]>>;
   toast: (type: Toast["type"], message: string) => void;
-  logout: () => void;
+  logout: () => void | Promise<void>;
   openAdmin: () => void;
   openLightbox: (src: string, title?: string) => void;
   toasts: Toast[];

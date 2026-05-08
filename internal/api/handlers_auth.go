@@ -112,7 +112,8 @@ func quotaDayString(now time.Time) string {
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	clientIP, clientIPs := requestIPInfo(r)
-	if identity, ok := s.sessionIdentityFromRequest(r); ok {
+	if r.Method == http.MethodGet {
+		if identity, ok := s.sessionIdentityFromRequest(r); ok {
 		s.addLog(r, "auth", "会话验证成功", map[string]any{
 			"status":    "session_ok",
 			"user_id":   identity.ID,
@@ -130,6 +131,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"name":       identity.Name,
 		})
 		return
+	}
 	}
 	var req loginRequest
 	if err := decodeJSON(r, &req); err != nil {

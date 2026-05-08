@@ -124,6 +124,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email })
     }),
+  logout: () =>
+    request<{ ok: boolean }>("", "/auth/logout", {
+      method: "POST"
+    }),
   resetPassword: (body: { email: string; password: string; verification_code: string }) =>
     request<{ ok: boolean }>("", "/auth/password-reset/confirm", {
       method: "POST",
