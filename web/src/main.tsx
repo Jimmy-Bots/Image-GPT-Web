@@ -30,7 +30,7 @@ import {
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
 import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, InviteCode, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, Toast, User } from "./types";
-import { classNames, compact, copyText, createID, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imagePreviewSrc, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass, storedImagePreviewURL, storedImageURL, storedReferencePreviewURL } from "./utils";
+import { classNames, compact, copyText, createID, ensureSupportedReferenceImage, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imagePreviewSrc, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass, storedImagePreviewURL, storedImageURL, storedReferencePreviewURL } from "./utils";
 import "./styles.css";
 
 type Tab = "dashboard" | "accounts" | "register" | "activity" | "images" | "playground" | "users" | "settings";
@@ -221,6 +221,8 @@ function describeWorkbenchError(error: unknown) {
   if (normalized.includes("prompt is required")) return "请输入提示词后再试。";
   if (normalized.includes("insufficient quota")) return "额度不足，请减少张数或联系管理员调整额度。";
   if (normalized.includes("request contains sensitive word")) return "请求内容命中了敏感词规则，请调整提示词后再试。";
+  if (normalized.includes("unsupported image format")) return "当前参考图格式暂不支持，请转换为 PNG、JPG 或 GIF 后再试。";
+  if (normalized.includes("unknown format")) return "当前参考图格式暂不支持，请转换为 PNG、JPG 或 GIF 后再试。";
 
   return message;
 }
@@ -1391,8 +1393,24 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
   }, [submitShortcut]);
 
   async function addFiles(files: File[]) {
-    const next = await Promise.all(files.filter((file) => file.type.startsWith("image/")).map(async (file) => ({ id: createID("ref"), name: file.name, file, dataUrl: await fileToDataURL(file) })));
-    setRefs((current) => [...current, ...next].slice(0, 8));
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    const next: ReferenceImage[] = [];
+    for (const file of imageFiles) {
+      try {
+        const normalized = await ensureSupportedReferenceImage(file);
+        next.push({
+          id: createID("ref"),
+          name: normalized.name,
+          file: normalized,
+          dataUrl: await fileToDataURL(normalized)
+        });
+      } catch (error) {
+        toast("error", describeWorkbenchError(error));
+      }
+    }
+    if (next.length) {
+      setRefs((current) => [...current, ...next].slice(0, 8));
+    }
   }
 
   useEffect(() => {

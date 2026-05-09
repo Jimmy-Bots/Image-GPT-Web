@@ -201,7 +201,11 @@ func (c *Client) uploadImage(ctx context.Context, input ImageInput, index int) (
 func detectImageMetadata(data []byte, providedType string) (string, int, int, string, error) {
 	config, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return "", 0, 0, "", fmt.Errorf("unsupported image format: %w", err)
+		detected := strings.TrimSpace(stdhttp.DetectContentType(data))
+		if strings.HasPrefix(strings.ToLower(detected), "image/") {
+			return "", 0, 0, "", fmt.Errorf("unsupported image format: please use PNG, JPG, or GIF (detected %s)", detected)
+		}
+		return "", 0, 0, "", fmt.Errorf("unsupported image format: please use PNG, JPG, or GIF")
 	}
 	mimeType := strings.TrimSpace(providedType)
 	if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {

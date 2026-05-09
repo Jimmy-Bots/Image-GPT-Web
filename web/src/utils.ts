@@ -131,6 +131,56 @@ export async function fileToDataURL(file: File) {
   });
 }
 
+const directReferenceTypes = new Set(["image/png", "image/jpeg", "image/gif"]);
+
+function normalizedReferenceFileName(name: string, ext: string) {
+  const trimmed = String(name || "").trim();
+  const base = trimmed.replace(/\.[^.]+$/, "") || "reference";
+  return `${base}.${ext}`;
+}
+
+export function isDirectReferenceImageType(type?: string) {
+  return directReferenceTypes.has(String(type || "").toLowerCase());
+}
+
+export async function ensureSupportedReferenceImage(file: File) {
+  if (isDirectReferenceImageType(file.type)) return file;
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    throw new Error("当前环境无法转换参考图格式，请改用 PNG、JPG 或 GIF。");
+  }
+
+  let objectURL = "";
+  try {
+    objectURL = URL.createObjectURL(file);
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const next = new Image();
+      next.onload = () => resolve(next);
+      next.onerror = () => reject(new Error("当前参考图格式暂不支持，请转换为 PNG、JPG 或 GIF 后再试。"));
+      next.src = objectURL;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, img.naturalWidth || img.width || 1);
+    canvas.height = Math.max(1, img.naturalHeight || img.height || 1);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("浏览器暂不支持当前参考图格式转换，请改用 PNG、JPG 或 GIF。");
+    }
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((value) => {
+        if (value) resolve(value);
+        else reject(new Error("参考图格式转换失败，请改用 PNG、JPG 或 GIF。"));
+      }, "image/png");
+    });
+    return new File([blob], normalizedReferenceFileName(file.name, "png"), {
+      type: "image/png",
+      lastModified: file.lastModified || Date.now()
+    });
+  } finally {
+    if (objectURL) URL.revokeObjectURL(objectURL);
+  }
+}
+
 export function copyText(value: string) {
   return navigator.clipboard.writeText(value);
 }
