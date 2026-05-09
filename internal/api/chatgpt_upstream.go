@@ -110,13 +110,15 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 		}
 		start := time.Now()
 		log.Printf("upstream_image generate_attempt index=%d account=%s model=%s size=%s format=%s", index+1, maskToken(account.AccessToken), req.Model, req.Size, req.ResponseFormat)
-		imageResults, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).GenerateImage(ctx, chatgpt.ImageRequest{
+		attemptCtx := chatgpt.WithImageTrace(ctx)
+		imageResults, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).GenerateImage(attemptCtx, chatgpt.ImageRequest{
 			Prompt:         req.Prompt,
 			Model:          req.Model,
 			Size:           req.Size,
 			ResponseFormat: req.ResponseFormat,
 			PollTimeout:    120 * time.Second,
 		})
+		upstreamRaw := chatgpt.ImageTraceSnapshot(attemptCtx)
 		release()
 		if err != nil {
 			duration := time.Since(start).Milliseconds()
@@ -133,6 +135,7 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 				"duration_ms": duration,
 				"error":       err.Error(),
 				"will_switch": true,
+				"upstream_raw": upstreamRaw,
 			})
 			if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
 				status := "异常"
@@ -155,6 +158,7 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 			"duration_ms": duration,
 			"items":       len(imageResults),
 			"success":     true,
+			"upstream_raw": upstreamRaw,
 		})
 		u.markImageResult(ctx, account.AccessToken, true)
 		for _, item := range imageResults {
@@ -220,7 +224,8 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 		}
 		start := time.Now()
 		log.Printf("upstream_image edit_attempt index=%d account=%s model=%s size=%s format=%s images=%d", index+1, maskToken(account.AccessToken), req.Model, req.Size, req.ResponseFormat, len(req.Images))
-		imageResults, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).EditImage(ctx, chatgpt.ImageRequest{
+		attemptCtx := chatgpt.WithImageTrace(ctx)
+		imageResults, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).EditImage(attemptCtx, chatgpt.ImageRequest{
 			Prompt:         req.Prompt,
 			Model:          req.Model,
 			Size:           req.Size,
@@ -228,6 +233,7 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 			PollTimeout:    120 * time.Second,
 			Images:         inputs,
 		})
+		upstreamRaw := chatgpt.ImageTraceSnapshot(attemptCtx)
 		release()
 		if err != nil {
 			duration := time.Since(start).Milliseconds()
@@ -244,6 +250,7 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 				"duration_ms": duration,
 				"error":       err.Error(),
 				"will_switch": true,
+				"upstream_raw": upstreamRaw,
 			})
 			if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
 				status := "异常"
@@ -266,6 +273,7 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 			"duration_ms": duration,
 			"items":       len(imageResults),
 			"success":     true,
+			"upstream_raw": upstreamRaw,
 		})
 		u.markImageResult(ctx, account.AccessToken, true)
 		for _, item := range imageResults {

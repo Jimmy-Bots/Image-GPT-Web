@@ -2527,8 +2527,12 @@ function TaskEventTimeline({ events, loading, error }: { events: TaskEvent[]; lo
                 {detail.attempt ? <span>attempt={String(detail.attempt)}</span> : null}
                 {detail.quota_used !== undefined ? <span>quota={String(detail.quota_used)}</span> : null}
                 {detail.items !== undefined ? <span>items={String(detail.items)}</span> : null}
+                {detail.upstream_items !== undefined ? <span>upstream={String(detail.upstream_items)}</span> : null}
+                {detail.accepted_items !== undefined ? <span>accepted={String(detail.accepted_items)}</span> : null}
+                {detail.truncated_items !== undefined ? <span>truncated={String(detail.truncated_items)}</span> : null}
               </div>
               {detail.error ? <p className="task-event-error">{String(detail.error)}</p> : null}
+              <StructuredAttempts detail={detail} />
             </div>
           </article>
         );
@@ -2689,6 +2693,7 @@ function LogDetail({ log }: { log: SystemLog }) {
         <DetailItem label="剩余额度" value={String(detail.available_quota ?? "-")} />
       </div>
       {detail.error ? <p className="detail-error">{String(detail.error)}</p> : null}
+      <StructuredAttempts detail={detail} />
       <pre className="detail-json">{safeJSON({ id: log.id, time: log.time, type: log.type, summary: log.summary, actor_id: log.actor_id, subject_id: log.subject_id, task_id: log.task_id, endpoint: log.endpoint, status: log.status, detail })}</pre>
     </div>
   );
@@ -2706,6 +2711,71 @@ function logDetail(log: SystemLog): Record<string, unknown> {
 function taskEventDetail(event: TaskEvent): Record<string, unknown> {
   if (!event.detail || typeof event.detail !== "object" || Array.isArray(event.detail)) return {};
   return event.detail as Record<string, unknown>;
+}
+
+function detailAttempts(detail: Record<string, unknown>) {
+  const attempts = detail.attempts;
+  if (!Array.isArray(attempts)) return [] as Array<Record<string, unknown>>;
+  return attempts.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+}
+
+function upstreamRawSections(raw: unknown) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [] as Array<[string, unknown]>;
+  return Object.entries(raw as Record<string, unknown>).filter(([, value]) => {
+    if (value === null || value === undefined) return false;
+    if (typeof value === "string") return value.trim().length > 0;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "object") return Object.keys(value as Record<string, unknown>).length > 0;
+    return true;
+  });
+}
+
+function StructuredAttempts({ detail }: { detail: Record<string, unknown> }) {
+  const attempts = detailAttempts(detail);
+  if (!attempts.length) return null;
+  return (
+    <section className="attempt-list">
+      <div className="task-timeline-head">
+        <strong>上游尝试</strong>
+        <span>{attempts.length} 次</span>
+      </div>
+      {attempts.map((attempt, index) => {
+        const upstreamRaw = attempt.upstream_raw;
+        const rawSections = upstreamRawSections(upstreamRaw);
+        return (
+          <article key={`${String(attempt.attempt || index)}-${String(attempt.token_ref || "")}-${index}`} className="attempt-card">
+            <div className="attempt-head">
+              <strong>尝试 #{String(attempt.attempt || index + 1)}</strong>
+              {attempt.status !== undefined ? <Badge value={String(attempt.status)} /> : null}
+            </div>
+            <div className="attempt-meta">
+              {attempt.mode ? <span>mode={String(attempt.mode)}</span> : null}
+              {attempt.token_ref ? <span>token={String(attempt.token_ref)}</span> : null}
+              {attempt.items !== undefined ? <span>items={String(attempt.items)}</span> : null}
+              {attempt.upstream_items !== undefined ? <span>upstream={String(attempt.upstream_items)}</span> : null}
+              {attempt.accepted_items !== undefined ? <span>accepted={String(attempt.accepted_items)}</span> : null}
+              {attempt.truncated_items !== undefined ? <span>truncated={String(attempt.truncated_items)}</span> : null}
+              {attempt.duration_ms !== undefined ? <span>duration={formatDuration(attempt.duration_ms)}</span> : null}
+            </div>
+            {attempt.error ? <p className="task-event-error">{String(attempt.error)}</p> : null}
+            {rawSections.length ? (
+              <details className="attempt-raw" open>
+                <summary>查看上游 raw</summary>
+                <div className="attempt-raw-grid">
+                  {rawSections.map(([key, value]) => (
+                    <div key={key} className="attempt-raw-section">
+                      <strong>{key}</strong>
+                      <pre className="detail-json detail-json-compact">{safeJSON(value)}</pre>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+          </article>
+        );
+      })}
+    </section>
+  );
 }
 
 function formatRegisterLogLine(log: SystemLog) {

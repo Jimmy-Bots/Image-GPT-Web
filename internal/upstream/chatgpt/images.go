@@ -103,6 +103,9 @@ func (c *Client) runImage(ctx context.Context, request ImageRequest, references 
 	if err != nil {
 		return nil, err
 	}
+	if len(references) > 0 {
+		traceImageSet(ctx, "reference_file_ids", referenceFileIDs(references))
+	}
 	state, err := c.startImageConversation(ctx, prompt, requirements, conduitToken, request.Model, references)
 	if err != nil {
 		return nil, err
@@ -114,13 +117,18 @@ func (c *Client) runImage(ctx context.Context, request ImageRequest, references 
 		}
 	}
 	fileIDs, sedimentIDs := state.FileIDs, state.SedimentIDs
+	traceImageSet(ctx, "raw_result_file_ids_sse", fileIDs)
+	traceImageSet(ctx, "raw_result_sediment_ids_sse", sedimentIDs)
 	if state.Conversation != "" && len(fileIDs) == 0 && len(sedimentIDs) == 0 {
 		fileIDs, sedimentIDs = c.pollImageResults(ctx, state.Conversation, request.PollTimeout)
 	}
+	traceImageSet(ctx, "result_file_ids", fileIDs)
+	traceImageSet(ctx, "result_sediment_ids", sedimentIDs)
 	urls, err := c.resolveImageURLs(ctx, state.Conversation, fileIDs, sedimentIDs)
 	if err != nil {
 		return nil, err
 	}
+	traceImageSet(ctx, "resolved_urls", urls)
 	if len(urls) == 0 {
 		if state.Text != "" {
 			return nil, errors.New(state.Text)
@@ -173,6 +181,10 @@ func (c *Client) uploadImage(ctx context.Context, input ImageInput, index int) (
 	if err != nil {
 		return uploadedImage{}, err
 	}
+	traceImageAppend(ctx, "reference_uploads_raw", map[string]any{
+		"file_name": fileName,
+		"response":  data,
+	}, 8)
 	fileID := stringValue(data["file_id"], "")
 	uploadURL := stringValue(data["upload_url"], "")
 	if fileID == "" || uploadURL == "" {
@@ -297,6 +309,7 @@ func (c *Client) prepareImageConversation(ctx context.Context, prompt string, re
 	if err != nil {
 		return "", err
 	}
+	traceImageSet(ctx, "prepare_raw", data)
 	token := stringValue(data["conduit_token"], "")
 	if token == "" {
 		return "", errors.New("missing conduit token")
@@ -356,13 +369,22 @@ func (c *Client) startImageConversation(ctx context.Context, prompt string, requ
 	defer resp.Body.Close()
 	if resp.StatusCode == fhttp.StatusUnauthorized {
 		io.Copy(io.Discard, resp.Body)
+		traceImageSet(ctx, "conversation_start_error", map[string]any{
+			"status_code": resp.StatusCode,
+			"body":        "unauthorized",
+		})
 		return conversationState{}, ErrInvalidAccessToken
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		traceImageSet(ctx, "conversation_start_error", map[string]any{
+			"status_code": resp.StatusCode,
+			"body":        string(payload),
+		})
 		return conversationState{}, fmt.Errorf("%s failed: HTTP %d %s", path, resp.StatusCode, strings.TrimSpace(string(payload)))
 	}
-	return parseImageSSE(resp.Body)
+	traceImageSet(ctx, "conversation_start_status", resp.StatusCode)
+	return parseImageSSE(ctx, resp.Body)
 }
 
 func imageConversationContent(prompt string, references []uploadedImage) (map[string]any, map[string]any) {
@@ -434,7 +456,7 @@ func (c *Client) applyImageHeaders(req *fhttp.Request, path string, requirements
 	c.applyHeaders(req, path, headers)
 }
 
-func parseImageSSE(reader io.Reader) (conversationState, error) {
+func parseImageSSE(ctx context.Context, reader io.Reader) (conversationState, error) {
 	state := conversationState{}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
@@ -449,9 +471,18 @@ func parseImageSSE(reader io.Reader) (conversationState, error) {
 			continue
 		}
 		if payload == "[DONE]" {
+			traceImageSet(ctx, "sse_state", map[string]any{
+				"conversation_id": state.Conversation,
+				"file_ids":        state.FileIDs,
+				"sediment_ids":    state.SedimentIDs,
+				"blocked":         state.Blocked,
+				"turn_use_case":   state.TurnUseCase,
+				"text":            state.Text,
+			})
 			return state, nil
 		}
-		updateImageState(&state, payload)
+		traceImageAppend(ctx, "sse_raw_events", payload, 16)
+		updateImageState(ctx, &state, payload)
 		nextText, ok := assistantTextFromPayload(payload, currentText)
 		if !ok || nextText == currentText {
 			continue
@@ -459,15 +490,24 @@ func parseImageSSE(reader io.Reader) (conversationState, error) {
 		currentText = nextText
 		state.Text = nextText
 	}
+	traceImageSet(ctx, "sse_state", map[string]any{
+		"conversation_id": state.Conversation,
+		"file_ids":        state.FileIDs,
+		"sediment_ids":    state.SedimentIDs,
+		"blocked":         state.Blocked,
+		"turn_use_case":   state.TurnUseCase,
+		"text":            state.Text,
+	})
 	return state, scanner.Err()
 }
 
-func updateImageState(state *conversationState, payload string) {
+func updateImageState(ctx context.Context, state *conversationState, payload string) {
 	addImageIDs(payload, &state.FileIDs, &state.SedimentIDs)
 	var event map[string]any
 	if err := json.Unmarshal([]byte(payload), &event); err != nil {
 		return
 	}
+	traceImageAppend(ctx, "sse_raw_json", event, 12)
 	if state.Conversation == "" {
 		state.Conversation = stringValue(event["conversation_id"], "")
 	}
@@ -497,7 +537,10 @@ func (c *Client) pollImageResults(ctx context.Context, conversationID string, ti
 			time.Sleep(4 * time.Second)
 			continue
 		}
+		traceImageSet(ctx, "poll_conversation_raw", traceJSONString(conversation, 4000))
 		fileIDs, sedimentIDs := extractImageToolRecords(conversation)
+		traceImageSet(ctx, "poll_extracted_file_ids", fileIDs)
+		traceImageSet(ctx, "poll_extracted_sediment_ids", sedimentIDs)
 		if len(fileIDs) > 0 || len(sedimentIDs) > 0 {
 			return fileIDs, sedimentIDs
 		}
@@ -543,6 +586,11 @@ func (c *Client) resolveImageURLs(ctx context.Context, conversationID string, fi
 		}
 		data, err := c.getJSON(ctx, "/backend-api/files/"+fileID+"/download", map[string]string{"Accept": "application/json"})
 		if err == nil {
+			traceImageAppend(ctx, "download_raw", map[string]any{
+				"source":   "file",
+				"id":       fileID,
+				"response": data,
+			}, 16)
 			if url := stringValue(data["download_url"], ""); url != "" {
 				urls = append(urls, url)
 			} else if url := stringValue(data["url"], ""); url != "" {
@@ -558,6 +606,11 @@ func (c *Client) resolveImageURLs(ctx context.Context, conversationID string, fi
 		if err != nil {
 			continue
 		}
+		traceImageAppend(ctx, "download_raw", map[string]any{
+			"source":   "attachment",
+			"id":       sedimentID,
+			"response": data,
+		}, 16)
 		if url := stringValue(data["download_url"], ""); url != "" {
 			urls = append(urls, url)
 		} else if url := stringValue(data["url"], ""); url != "" {
@@ -700,4 +753,15 @@ func uniqueStrings(items []string) []string {
 		addUnique(&out, item)
 	}
 	return out
+}
+
+func referenceFileIDs(references []uploadedImage) []string {
+	ids := make([]string, 0, len(references))
+	for _, reference := range references {
+		if strings.TrimSpace(reference.FileID) == "" {
+			continue
+		}
+		ids = append(ids, strings.TrimSpace(reference.FileID))
+	}
+	return ids
 }

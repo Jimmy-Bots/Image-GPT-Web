@@ -103,9 +103,9 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		"phase":  taskPhaseWaitingSlot,
 	})
 	var (
-		result   map[string]any
-		err      error
-		attempts []map[string]any
+		result         map[string]any
+		err            error
+		lastAttemptCtx context.Context
 	)
 	for attempt := 1; attempt <= maxImageTaskAttempts; attempt++ {
 		_ = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, taskRunning, taskPhaseProcessing, nil, "")
@@ -118,6 +118,7 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 			"log_kind": "image_request",
 			"attempt":  attempt,
 		}))
+		lastAttemptCtx = attemptCtx
 		if job.Mode == "edit" {
 			result, err = q.upstream.EditImage(attemptCtx, job.Edit)
 		} else {
@@ -135,7 +136,6 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 			"queue_try": attempt,
 		}
 		appendStructuredLogAttempt(attemptCtx, attemptDetail)
-		attempts = append(attempts, cloneLogDetail(attemptDetail))
 		q.addTaskEventContext(ctx, job, "attempt_failed", "上游尝试失败", attemptDetail)
 		if attempt < maxImageTaskAttempts {
 			_ = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, taskQueued, taskPhaseWaitingSlot, nil, "")
@@ -144,6 +144,7 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		}
 	}
 	if err != nil {
+		attempts := logAttempts(lastAttemptCtx)
 		if job.Receipt.Total > 0 {
 			_, _ = q.store.RefundUserQuota(context.Background(), job.OwnerID, job.Receipt)
 		}
@@ -180,6 +181,7 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		_, _ = q.store.RefundUserQuota(context.Background(), job.OwnerID, quotaRefundPortion(job.Receipt, refund))
 	}
 	data := result["data"]
+	attempts := logAttempts(lastAttemptCtx)
 	successDetail := map[string]any{
 		"status":         taskSuccess,
 		"phase":          taskPhaseFinished,

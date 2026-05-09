@@ -85,18 +85,29 @@ func logAttempts(ctx context.Context) []map[string]any {
 		return nil
 	}
 	if typed, ok := raw.([]map[string]any); ok {
-		return typed
+		return cloneLogAttempts(typed)
 	}
 	if typed, ok := raw.([]any); ok {
 		out := make([]map[string]any, 0, len(typed))
 		for _, item := range typed {
 			if mapped, ok := item.(map[string]any); ok {
-				out = append(out, mapped)
+				out = append(out, cloneLogDetail(mapped))
 			}
 		}
 		return out
 	}
 	return nil
+}
+
+func cloneLogAttempts(attempts []map[string]any) []map[string]any {
+	if len(attempts) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(attempts))
+	for _, attempt := range attempts {
+		out = append(out, cloneLogDetail(attempt))
+	}
+	return out
 }
 
 func cloneLogDetail(detail map[string]any) map[string]any {
@@ -105,7 +116,24 @@ func cloneLogDetail(detail map[string]any) map[string]any {
 	}
 	next := make(map[string]any, len(detail))
 	for key, value := range detail {
-		next[key] = value
+		next[key] = cloneLogValue(value)
 	}
 	return next
+}
+
+func cloneLogValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneLogDetail(typed)
+	case []map[string]any:
+		return cloneLogAttempts(typed)
+	case []any:
+		next := make([]any, 0, len(typed))
+		for _, item := range typed {
+			next = append(next, cloneLogValue(item))
+		}
+		return next
+	default:
+		return value
+	}
 }
