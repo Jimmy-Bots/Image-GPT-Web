@@ -466,6 +466,22 @@ button.composer-pill, span.composer-pill { display: inline-flex; align-items: ce
 .backup-key-cell { min-width: 0; display: grid; gap: 3px; }
 .backup-key-cell strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #17202a; }
 .backup-key-cell small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7a8797; font-size: 11px; }
+.invite-table { min-width: 980px; }
+.invite-table th:nth-child(1), .invite-table td:nth-child(1) { width: 180px; min-width: 180px; }
+.invite-table th:nth-child(2), .invite-table td:nth-child(2) { width: 96px; min-width: 96px; }
+.invite-table th:nth-child(3), .invite-table td:nth-child(3) { width: 130px; min-width: 130px; }
+.invite-table th:nth-child(4), .invite-table td:nth-child(4) { width: 220px; min-width: 220px; }
+.invite-table th:nth-child(5), .invite-table td:nth-child(5) { width: 300px; min-width: 300px; }
+.invite-table th:nth-child(6), .invite-table td:nth-child(6) { position: sticky; right: 0; z-index: 5; width: 96px; min-width: 96px; text-align: left; background: inherit; box-shadow: -1px 0 0 #edf2f7; overflow: visible; }
+.invite-table tbody td:nth-child(6) { background: #fff; }
+.invite-table tbody tr:hover td:nth-child(6) { background: #fbfcfe; }
+.invite-table thead th:nth-child(6) { background: #fbfcfe; z-index: 8; }
+.invite-code-cell { min-width: 0; display: grid; gap: 4px; }
+.invite-code-cell code { justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.invite-code-cell small { color: #7a8797; font-size: 11px; }
+.invite-note-cell { min-width: 0; color: #344055; font-size: 12px; line-height: 1.5; word-break: break-word; }
+.invite-usage-cell { color: #344055; font-size: 12px; font-weight: 650; }
+.invite-last-used { min-width: 0; color: #5f6e80; font-size: 12px; line-height: 1.45; }
 .reference-table { min-width: 1040px; }
 .reference-table th:nth-child(1), .reference-table td:nth-child(1) { width: 42px; min-width: 42px; }
 .reference-table th:nth-child(2), .reference-table td:nth-child(2) { width: 84px; min-width: 84px; }

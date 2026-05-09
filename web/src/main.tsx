@@ -3218,6 +3218,7 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
   const [inviteCodes, setInviteCodes] = useState<InviteCode[]>([]);
   const [inviteCodeForm, setInviteCodeForm] = useState({ code: "", maxUses: "0", description: "", enabled: true });
   const [inviteBusy, setInviteBusy] = useState<"" | "list" | "save" | "delete">("");
+  const [editingInviteCode, setEditingInviteCode] = useState("");
   const [backupState, setBackupState] = useState<BackupState | null>(null);
   const [backupItems, setBackupItems] = useState<BackupRemoteItem[]>([]);
   const [backupBusy, setBackupBusy] = useState<"" | "run" | "reload" | "list">("");
@@ -3273,8 +3274,9 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
         description: inviteCodeForm.description.trim()
       });
       setInviteCodeForm({ code: "", maxUses: "0", description: "", enabled: true });
+      setEditingInviteCode("");
       await reloadInviteCodes();
-      toast("success", "邀请码已保存");
+      toast("success", editingInviteCode ? "邀请码已更新" : "邀请码已保存");
     } finally {
       setInviteBusy("");
     }
@@ -3286,6 +3288,37 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
       await api.deleteInviteCode(token, code);
       await reloadInviteCodes();
       toast("success", "邀请码已删除");
+    } finally {
+      setInviteBusy("");
+    }
+  }
+  function beginEditInviteCode(item: InviteCode) {
+    setEditingInviteCode(item.code);
+    setInviteCodeForm({
+      code: item.code,
+      maxUses: String(item.max_uses || 0),
+      description: item.description || "",
+      enabled: item.enabled
+    });
+  }
+  function resetInviteEditor() {
+    setEditingInviteCode("");
+    setInviteCodeForm({ code: "", maxUses: "0", description: "", enabled: true });
+  }
+  async function toggleInviteCode(item: InviteCode) {
+    setInviteBusy("save");
+    try {
+      await api.saveInviteCode(token, {
+        code: item.code,
+        enabled: !item.enabled,
+        max_uses: item.max_uses,
+        description: item.description || ""
+      });
+      if (editingInviteCode === item.code) {
+        setInviteCodeForm((current) => ({ ...current, enabled: !item.enabled }));
+      }
+      await reloadInviteCodes();
+      toast("success", item.enabled ? "邀请码已停用" : "邀请码已启用");
     } finally {
       setInviteBusy("");
     }
@@ -3435,10 +3468,11 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
           <label className="inline"><input type="checkbox" checked={inviteCodeForm.enabled} onChange={(event) => setInviteCodeForm((current) => ({ ...current, enabled: event.target.checked }))} /><span>启用该邀请码</span></label>
         </div>
         <div className="register-actions">
-          <button disabled={inviteBusy === "save"} onClick={() => saveInviteCode().catch((error) => toast("error", error.message))}>{inviteBusy === "save" ? "保存中" : "保存邀请码"}</button>
+          <button disabled={inviteBusy === "save"} onClick={() => saveInviteCode().catch((error) => toast("error", error.message))}>{inviteBusy === "save" ? "保存中" : editingInviteCode ? "保存修改" : "保存邀请码"}</button>
+          {editingInviteCode ? <button className="ghost" disabled={inviteBusy === "save"} onClick={resetInviteEditor}>取消编辑</button> : null}
         </div>
         <ScrollableTable tableRef={backupTableRef} className="data-table-wrap" height="medium">
-          <table className="activity-table backup-table">
+          <table className="activity-table invite-table">
             <thead>
               <tr>
                 <th>邀请码</th>
@@ -3452,12 +3486,12 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
             <tbody>
               {inviteCodes.length ? inviteCodes.map((item) => (
                 <tr key={item.code}>
-                  <td><code>{item.code}</code></td>
+                  <td><div className="invite-code-cell"><code>{item.code}</code><small>{item.created_at ? `创建于 ${fmtDate(item.created_at)}` : "未记录创建时间"}</small></div></td>
                   <td><span className={classNames("badge", item.enabled ? "ok" : "muted")}>{item.enabled ? "Enabled" : "Disabled"}</span></td>
-                  <td>{item.max_uses > 0 ? `${item.used_count}/${item.max_uses}` : `永久 · 已用 ${item.used_count}`}</td>
-                  <td>{item.last_used_at ? `${fmtDate(item.last_used_at)}${item.last_used_by ? ` · ${item.last_used_by}` : ""}` : "-"}</td>
-                  <td>{item.description || "-"}</td>
-                  <td className="users-actions-cell"><div className="row-actions"><button className="danger small" disabled={inviteBusy === "delete"} onClick={() => removeInviteCode(item.code).catch((error) => toast("error", error.message))}>删除</button></div></td>
+                  <td><span className="invite-usage-cell">{item.max_uses > 0 ? `${item.used_count}/${item.max_uses}` : `永久 · 已用 ${item.used_count}`}</span></td>
+                  <td><div className="invite-last-used">{item.last_used_at ? `${fmtDate(item.last_used_at)}${item.last_used_by ? ` · ${item.last_used_by}` : ""}` : "-"}</div></td>
+                  <td><div className="invite-note-cell">{item.description || "-"}</div></td>
+                  <td className="users-actions-cell"><div className="row-actions"><button className="ghost small" disabled={inviteBusy === "save"} onClick={() => beginEditInviteCode(item)}>编辑</button><button className="ghost small" disabled={inviteBusy === "save"} onClick={() => toggleInviteCode(item).catch((error) => toast("error", error.message))}>{item.enabled ? "停用" : "启用"}</button><button className="danger small" disabled={inviteBusy === "delete"} onClick={() => removeInviteCode(item.code).catch((error) => toast("error", error.message))}>删除</button></div></td>
                 </tr>
               )) : <tr><td colSpan={6} className="empty">暂无邀请码</td></tr>}
             </tbody>
