@@ -97,3 +97,64 @@ func TestUpdateUserTemporaryQuotaDoesNotOverwriteDailyConfiguredQuota(t *testing
 		t.Fatalf("daily_temporary_quota=%d want=7", got.DailyTemporaryQuota)
 	}
 }
+
+func TestListImageTasksPageFiltersDoNotUseAmbiguousColumns(t *testing.T) {
+	store, ctx := openTestStore(t)
+	defer store.Close()
+
+	now := time.Now().UTC()
+	user := domain.User{
+		ID:             "task-user",
+		Email:          "task@example.com",
+		Name:           "Task User",
+		PasswordHash:   "hash",
+		Role:           domain.RoleUser,
+		Status:         domain.UserStatusActive,
+		QuotaUnlimited: true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	task := domain.ImageTask{
+		ID:             "task-filter-1",
+		OwnerID:        user.ID,
+		Status:         "success",
+		Phase:          "finished",
+		Mode:           "generate",
+		Model:          "gpt-image-2",
+		Size:           "1024x1024",
+		Prompt:         "hello world",
+		RequestedCount: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateImageTask(ctx, task); err != nil {
+		t.Fatalf("create image task: %v", err)
+	}
+
+	items, total, err := store.ListImageTasksPage(ctx, "", ImageTaskPageQuery{
+		Page:     1,
+		PageSize: 25,
+		Query:    "task@example.com",
+		Status:   "success",
+		Mode:     "generate",
+		Model:    "gpt-image-2",
+		Size:     "1024x1024",
+		Deleted:  "active",
+	})
+	if err != nil {
+		t.Fatalf("list image tasks page: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("total=%d want=1", total)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items)=%d want=1", len(items))
+	}
+	if items[0].ID != task.ID {
+		t.Fatalf("item id=%q want=%q", items[0].ID, task.ID)
+	}
+}

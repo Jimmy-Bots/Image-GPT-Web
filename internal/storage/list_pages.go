@@ -81,12 +81,12 @@ func (s *Store) ListAccountsPage(ctx context.Context, query AccountListQuery) ([
 
 	summaryQuery := `SELECT
 		COUNT(*),
-		COALESCE(SUM(CASE WHEN status = '正常' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(success), 0),
-		COALESCE(SUM(fail), 0),
-		COALESCE(SUM(CASE WHEN status = '正常' AND image_quota_unknown = 0 THEN quota ELSE 0 END), 0),
-		COALESCE(MAX(CASE WHEN status = '正常' AND image_quota_unknown = 1 THEN 1 ELSE 0 END), 0),
-		COALESCE(MAX(CASE WHEN status = '正常' AND LOWER(type) IN ('pro', 'prolite') THEN 1 ELSE 0 END), 0)
+		COALESCE(SUM(CASE WHEN accounts.status = '正常' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(accounts.success), 0),
+		COALESCE(SUM(accounts.fail), 0),
+		COALESCE(SUM(CASE WHEN accounts.status = '正常' AND accounts.image_quota_unknown = 0 THEN accounts.quota ELSE 0 END), 0),
+		COALESCE(MAX(CASE WHEN accounts.status = '正常' AND accounts.image_quota_unknown = 1 THEN 1 ELSE 0 END), 0),
+		COALESCE(MAX(CASE WHEN accounts.status = '正常' AND LOWER(accounts.type) IN ('pro', 'prolite') THEN 1 ELSE 0 END), 0)
 		FROM accounts`
 	row := s.db.QueryRowContext(ctx, summaryQuery+where, args...)
 	var summary AccountListSummary
@@ -100,7 +100,7 @@ func (s *Store) ListAccountsPage(ctx context.Context, query AccountListQuery) ([
 
 	itemsQuery := `SELECT access_token, password, type, status, quota, max_concurrency, image_quota_unknown, email, user_id, limits_progress_json, default_model_slug,
 		restore_at, recovery_state, recovery_error, success, fail, last_used_at, raw_json, created_at, updated_at
-		FROM accounts` + where + ` ORDER BY updated_at DESC LIMIT ? OFFSET ?`
+		FROM accounts` + where + ` ORDER BY accounts.updated_at DESC LIMIT ? OFFSET ?`
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, itemsQuery, itemsArgs...)
 	if err != nil {
@@ -131,7 +131,7 @@ func (s *Store) ListUsersWithAPIKeysPage(ctx context.Context, query UserListQuer
 	}
 
 	itemsQuery := `SELECT id, email, name, password_hash, role, status, quota_unlimited, permanent_quota, temporary_quota, temporary_quota_date, daily_temporary_quota, quota_used_total, quota_used_today, quota_used_date, created_at, updated_at, last_login_at
-		FROM users` + where + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+		FROM users` + where + ` ORDER BY users.created_at DESC LIMIT ? OFFSET ?`
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, itemsQuery, itemsArgs...)
 	if err != nil {
@@ -176,6 +176,7 @@ func (s *Store) ListLogsPage(ctx context.Context, query LogListQuery) ([]domain.
 		detailExpr = `detail_json`
 	}
 	itemsQuery := `SELECT id, time, type, summary, actor_id, subject_id, task_id, endpoint, status, ` + detailExpr + ` FROM system_logs` + where + ` ORDER BY time DESC LIMIT ? OFFSET ?`
+	itemsQuery = strings.Replace(itemsQuery, " ORDER BY time DESC", " ORDER BY system_logs.time DESC", 1)
 	itemsArgs := append(cloneArgs(args), pageSize, pageOffset(page, pageSize))
 	rows, err := s.db.QueryContext(ctx, itemsQuery, itemsArgs...)
 	if err != nil {
@@ -205,8 +206,11 @@ func (s *Store) ListLogsPage(ctx context.Context, query LogListQuery) ([]domain.
 func (s *Store) ListImageTasksPage(ctx context.Context, ownerID string, query ImageTaskPageQuery) ([]domain.ImageTask, int, error) {
 	page, pageSize := normalizePage(query.Page, query.PageSize)
 	where, args := buildTaskWhere(ownerID, query)
-
-	total, err := countWithWhere(ctx, s.db, `SELECT COUNT(*) FROM image_tasks`, where, args)
+	countBase := `SELECT COUNT(*) FROM image_tasks`
+	if strings.TrimSpace(query.Query) != "" {
+		countBase = `SELECT COUNT(*) FROM image_tasks LEFT JOIN users ON users.id = image_tasks.owner_id`
+	}
+	total, err := countWithWhere(ctx, s.db, countBase, where, args)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -238,16 +242,16 @@ func buildAccountWhere(query AccountListQuery) (string, []any) {
 	clauses := []string{`1=1`}
 	args := make([]any, 0, 8)
 	if status := strings.TrimSpace(query.Status); status != "" {
-		clauses = append(clauses, `status = ?`)
+		clauses = append(clauses, `accounts.status = ?`)
 		args = append(args, status)
 	}
 	if accountType := strings.TrimSpace(query.Type); accountType != "" {
-		clauses = append(clauses, `type = ?`)
+		clauses = append(clauses, `accounts.type = ?`)
 		args = append(args, accountType)
 	}
 	if text := strings.ToLower(strings.TrimSpace(query.Query)); text != "" {
 		like := "%" + text + "%"
-		clauses = append(clauses, `(LOWER(email) LIKE ? OR LOWER(password) LIKE ? OR LOWER(type) LIKE ? OR LOWER(status) LIKE ? OR LOWER(default_model_slug) LIKE ?)`)
+		clauses = append(clauses, `(LOWER(accounts.email) LIKE ? OR LOWER(accounts.password) LIKE ? OR LOWER(accounts.type) LIKE ? OR LOWER(accounts.status) LIKE ? OR LOWER(accounts.default_model_slug) LIKE ?)`)
 		args = append(args, like, like, like, like, like)
 	}
 	return ` WHERE ` + strings.Join(clauses, ` AND `), args
@@ -257,16 +261,16 @@ func buildUserWhere(query UserListQuery) (string, []any) {
 	clauses := []string{`status != 'deleted'`}
 	args := make([]any, 0, 6)
 	if status := strings.TrimSpace(query.Status); status != "" {
-		clauses = append(clauses, `status = ?`)
+		clauses = append(clauses, `users.status = ?`)
 		args = append(args, status)
 	}
 	if role := strings.TrimSpace(query.Role); role != "" {
-		clauses = append(clauses, `role = ?`)
+		clauses = append(clauses, `users.role = ?`)
 		args = append(args, role)
 	}
 	if text := strings.ToLower(strings.TrimSpace(query.Query)); text != "" {
 		like := "%" + text + "%"
-		clauses = append(clauses, `(LOWER(email) LIKE ? OR LOWER(name) LIKE ?)`)
+		clauses = append(clauses, `(LOWER(users.email) LIKE ? OR LOWER(users.name) LIKE ?)`)
 		args = append(args, like, like)
 	}
 	return ` WHERE ` + strings.Join(clauses, ` AND `), args
@@ -276,40 +280,40 @@ func buildLogWhere(query LogListQuery) (string, []any) {
 	clauses := []string{`1=1`}
 	args := make([]any, 0, 12)
 	if logType := strings.TrimSpace(query.Type); logType != "" {
-		clauses = append(clauses, `type = ?`)
+		clauses = append(clauses, `system_logs.type = ?`)
 		args = append(args, logType)
 	}
 	if actorID := strings.TrimSpace(query.ActorID); actorID != "" {
-		clauses = append(clauses, `actor_id = ?`)
+		clauses = append(clauses, `system_logs.actor_id = ?`)
 		args = append(args, actorID)
 	}
 	if subjectID := strings.TrimSpace(query.SubjectID); subjectID != "" {
-		clauses = append(clauses, `subject_id = ?`)
+		clauses = append(clauses, `system_logs.subject_id = ?`)
 		args = append(args, subjectID)
 	}
 	if taskID := strings.TrimSpace(query.TaskID); taskID != "" {
-		clauses = append(clauses, `task_id = ?`)
+		clauses = append(clauses, `system_logs.task_id = ?`)
 		args = append(args, taskID)
 	}
 	if endpoint := strings.TrimSpace(query.Endpoint); endpoint != "" {
-		clauses = append(clauses, `endpoint = ?`)
+		clauses = append(clauses, `system_logs.endpoint = ?`)
 		args = append(args, endpoint)
 	}
 	if status := strings.TrimSpace(query.Status); status != "" {
-		clauses = append(clauses, `status = ?`)
+		clauses = append(clauses, `system_logs.status = ?`)
 		args = append(args, status)
 	}
 	if from := strings.TrimSpace(query.DateFrom); from != "" {
-		clauses = append(clauses, `time >= ?`)
+		clauses = append(clauses, `system_logs.time >= ?`)
 		args = append(args, normalizeDateBoundary(from, false))
 	}
 	if to := strings.TrimSpace(query.DateTo); to != "" {
-		clauses = append(clauses, `time <= ?`)
+		clauses = append(clauses, `system_logs.time <= ?`)
 		args = append(args, normalizeDateBoundary(to, true))
 	}
 	if text := strings.ToLower(strings.TrimSpace(query.Query)); text != "" {
 		like := "%" + text + "%"
-		clauses = append(clauses, `(LOWER(summary) LIKE ? OR LOWER(detail_json) LIKE ? OR LOWER(actor_id) LIKE ? OR LOWER(subject_id) LIKE ? OR LOWER(task_id) LIKE ? OR LOWER(endpoint) LIKE ? OR LOWER(status) LIKE ?)`)
+		clauses = append(clauses, `(LOWER(system_logs.summary) LIKE ? OR LOWER(system_logs.detail_json) LIKE ? OR LOWER(system_logs.actor_id) LIKE ? OR LOWER(system_logs.subject_id) LIKE ? OR LOWER(system_logs.task_id) LIKE ? OR LOWER(system_logs.endpoint) LIKE ? OR LOWER(system_logs.status) LIKE ?)`)
 		args = append(args, like, like, like, like, like, like, like)
 	}
 	return ` WHERE ` + strings.Join(clauses, ` AND `), args
@@ -319,51 +323,51 @@ func buildTaskWhere(ownerID string, query ImageTaskPageQuery) (string, []any) {
 	clauses := make([]string, 0, 10)
 	args := make([]any, 0, 10)
 	if ownerID = strings.TrimSpace(ownerID); ownerID != "" {
-		clauses = append(clauses, `owner_id = ?`)
+		clauses = append(clauses, `image_tasks.owner_id = ?`)
 		args = append(args, ownerID)
 	}
 	if queryOwnerID := strings.TrimSpace(query.OwnerID); queryOwnerID != "" {
-		clauses = append(clauses, `owner_id = ?`)
+		clauses = append(clauses, `image_tasks.owner_id = ?`)
 		args = append(args, queryOwnerID)
 	}
 	switch strings.TrimSpace(query.Deleted) {
 	case "only":
-		clauses = append(clauses, `deleted_at IS NOT NULL`)
+		clauses = append(clauses, `image_tasks.deleted_at IS NOT NULL`)
 	case "active":
-		clauses = append(clauses, `deleted_at IS NULL`)
+		clauses = append(clauses, `image_tasks.deleted_at IS NULL`)
 	default:
 		if !query.IncludeDeleted {
-			clauses = append(clauses, `deleted_at IS NULL`)
+			clauses = append(clauses, `image_tasks.deleted_at IS NULL`)
 		}
 	}
 	if status := strings.TrimSpace(query.Status); status != "" {
-		clauses = append(clauses, `status = ?`)
+		clauses = append(clauses, `image_tasks.status = ?`)
 		args = append(args, status)
 	}
 	if mode := strings.TrimSpace(query.Mode); mode != "" {
-		clauses = append(clauses, `mode = ?`)
+		clauses = append(clauses, `image_tasks.mode = ?`)
 		args = append(args, mode)
 	}
 	if model := strings.TrimSpace(query.Model); model != "" {
-		clauses = append(clauses, `model = ?`)
+		clauses = append(clauses, `image_tasks.model = ?`)
 		args = append(args, model)
 	}
 	if size := strings.TrimSpace(query.Size); size != "" {
-		clauses = append(clauses, `size = ?`)
+		clauses = append(clauses, `image_tasks.size = ?`)
 		args = append(args, size)
 	}
 	if from := strings.TrimSpace(query.DateFrom); from != "" {
-		clauses = append(clauses, `created_at >= ?`)
+		clauses = append(clauses, `image_tasks.created_at >= ?`)
 		args = append(args, normalizeDateBoundary(from, false))
 	}
 	if to := strings.TrimSpace(query.DateTo); to != "" {
-		clauses = append(clauses, `created_at <= ?`)
+		clauses = append(clauses, `image_tasks.created_at <= ?`)
 		args = append(args, normalizeDateBoundary(to, true))
 	}
 	if text := strings.ToLower(strings.TrimSpace(query.Query)); text != "" {
 		like := "%" + text + "%"
-		clauses = append(clauses, `(LOWER(id) LIKE ? OR LOWER(mode) LIKE ? OR LOWER(status) LIKE ? OR LOWER(model) LIKE ? OR LOWER(size) LIKE ? OR LOWER(prompt) LIKE ? OR LOWER(error) LIKE ? OR LOWER(deleted_by) LIKE ?)`)
-		args = append(args, like, like, like, like, like, like, like, like)
+		clauses = append(clauses, `(LOWER(image_tasks.id) LIKE ? OR LOWER(image_tasks.mode) LIKE ? OR LOWER(image_tasks.status) LIKE ? OR LOWER(image_tasks.model) LIKE ? OR LOWER(image_tasks.size) LIKE ? OR LOWER(image_tasks.prompt) LIKE ? OR LOWER(image_tasks.error) LIKE ? OR LOWER(image_tasks.deleted_by) LIKE ? OR LOWER(COALESCE(users.email, '')) LIKE ? OR LOWER(COALESCE(users.name, '')) LIKE ?)`)
+		args = append(args, like, like, like, like, like, like, like, like, like, like)
 	}
 	if len(clauses) == 0 {
 		return ` WHERE 1=1`, args
