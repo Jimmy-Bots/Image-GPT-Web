@@ -112,6 +112,11 @@ export type ApiKey = {
   last_used_at?: string;
 };
 
+export type ApiKeyResetResponse = {
+  item: ApiKey;
+  key: string;
+};
+
 export type ImageTask = {
   id: string;
   owner_id?: string;

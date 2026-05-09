@@ -4,6 +4,8 @@ import {
   Activity,
   ArrowUp,
   Ban,
+  ChevronDown,
+  KeyRound,
   Clock3,
   Copy,
   Download,
@@ -29,7 +31,7 @@ import {
   X
 } from "lucide-react";
 import { api, authHeaders, getStoredToken, request, setStoredToken } from "./api";
-import type { Account, AccountListSummary, AccountRefreshStatus, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, InviteCode, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, Toast, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, BackupRemoteItem, BackupState, Identity, ImageResult, ImageTask, InviteCode, ModelItem, ModelPolicy, ReferenceImage, RegisterRuntime, RegisterStatus, Settings as SettingsType, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, Toast, User } from "./types";
 import { classNames, compact, copyText, createID, ensureSupportedReferenceImage, fileToDataURL, fmtBytes, fmtDate, formatNextRefreshTime, formatQuota, formatRemainingTime, imagePreviewSrc, imageSrc, parseJSON, parseTaskData, safeJSON, statusClass, storedImagePreviewURL, storedImageURL, storedReferencePreviewURL } from "./utils";
 import "./styles.css";
 
@@ -1003,6 +1005,85 @@ function ImageHome({
   closeLightbox: () => void;
 }) {
   const identityMeta = [identity.name || "User", identity.role, displayAppVersion(version)].filter(Boolean).join(" · ");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({ current: "", next: "", confirm: "" });
+  const [passwordError, setPasswordError] = useState("");
+  const [apiKeyOpen, setAPIKeyOpen] = useState(false);
+  const [apiKeyBusy, setAPIKeyBusy] = useState(false);
+  const [apiKeyMeta, setAPIKeyMeta] = useState<ApiKey | null>(null);
+  const [newApiKey, setNewApiKey] = useState("");
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [menuOpen]);
+
+  async function openApiKeyModal() {
+    setAPIKeyBusy(true);
+    setMenuOpen(false);
+    try {
+      const data = await api.myAPIKeys(token);
+      setAPIKeyMeta((data.items || [])[0] || null);
+      setNewApiKey("");
+      setAPIKeyOpen(true);
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "加载 API Key 失败");
+    } finally {
+      setAPIKeyBusy(false);
+    }
+  }
+
+  async function changeMyPassword() {
+    if (passwordBusy) return;
+    if (!passwordForm.current.trim() || !passwordForm.next.trim()) {
+      setPasswordError("请填写当前密码和新密码。");
+      return;
+    }
+    if (passwordForm.next !== passwordForm.confirm) {
+      setPasswordError("两次输入的新密码不一致。");
+      return;
+    }
+    setPasswordBusy(true);
+    setPasswordError("");
+    try {
+      await api.changeMyPassword(token, {
+        current_password: passwordForm.current.trim(),
+        new_password: passwordForm.next.trim()
+      });
+      setPasswordOpen(false);
+      setPasswordForm({ current: "", next: "", confirm: "" });
+      toast("success", "密码已更新。");
+    } catch (error) {
+      setPasswordError(error instanceof Error ? error.message : "修改密码失败");
+    } finally {
+      setPasswordBusy(false);
+    }
+  }
+
+  async function resetMyAPIKey() {
+    if (apiKeyBusy) return;
+    setAPIKeyBusy(true);
+    try {
+      const data = await api.resetMyAPIKey(token);
+      setAPIKeyMeta(data.item || null);
+      setNewApiKey(data.key || "");
+      toast("success", "新的 API Key 已生成。");
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "生成 API Key 失败");
+    } finally {
+      setAPIKeyBusy(false);
+    }
+  }
+
   return (
     <div className="home-shell">
       <header className="home-header">
@@ -1016,7 +1097,37 @@ function ImageHome({
         <div className="home-actions">
           <HealthStatusBadge status={healthBadge} />
           {isAdmin ? <button className="secondary compact" onClick={openAdmin}><LayoutDashboard size={15} /><span>管理后台</span></button> : null}
-          <button className="ghost compact" onClick={logout}><LogOut size={15} /><span>退出</span></button>
+          <div className="user-menu" ref={menuRef}>
+            <button className="ghost compact user-menu-trigger user-menu-trigger-compact" onClick={() => setMenuOpen((value) => !value)}>
+              <span>{identity.name || "User"}</span>
+              <ChevronDown size={15} />
+            </button>
+            {menuOpen ? (
+              <div className="user-menu-popover">
+                <button className="user-menu-item" onClick={() => {
+                  setMenuOpen(false);
+                  setPasswordError("");
+                  setPasswordForm({ current: "", next: "", confirm: "" });
+                  setPasswordOpen(true);
+                }}>
+                  <Eye size={15} />
+                  <span>修改密码</span>
+                </button>
+                <button className="user-menu-item" disabled={apiKeyBusy} onClick={() => openApiKeyModal()}>
+                  <KeyRound size={15} />
+                  <span>{apiKeyBusy ? "加载中" : "获取 API Key"}</span>
+                </button>
+                <div className="user-menu-divider" />
+                <button className="user-menu-item user-menu-item-subtle" onClick={() => {
+                  setMenuOpen(false);
+                  logout();
+                }}>
+                  <LogOut size={15} />
+                  <span>退出登录</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
 
@@ -1031,6 +1142,41 @@ function ImageHome({
           <img src={lightbox.src} alt={lightbox.title || "preview"} />
         </div>
       )}
+      <DetailModal title="修改密码" open={passwordOpen} onClose={() => !passwordBusy && setPasswordOpen(false)} size="narrow">
+        <div className="detail-panel">
+          <div className="detail-grid detail-grid-single">
+            <ControlField label="当前密码"><input type="password" value={passwordForm.current} onChange={(event) => setPasswordForm({ ...passwordForm, current: event.target.value })} placeholder="输入当前密码" /></ControlField>
+            <ControlField label="新密码"><input type="password" value={passwordForm.next} onChange={(event) => setPasswordForm({ ...passwordForm, next: event.target.value })} placeholder="输入新密码" /></ControlField>
+            <ControlField label="确认新密码"><input type="password" value={passwordForm.confirm} onChange={(event) => setPasswordForm({ ...passwordForm, confirm: event.target.value })} placeholder="再次输入新密码" /></ControlField>
+          </div>
+          {passwordError ? <p className="detail-error">{passwordError}</p> : null}
+          <div className="modal-actions">
+            <button className="secondary" disabled={passwordBusy} onClick={() => setPasswordOpen(false)}>取消</button>
+            <button disabled={passwordBusy} onClick={() => changeMyPassword()}>{passwordBusy ? "保存中" : "保存"}</button>
+          </div>
+        </div>
+      </DetailModal>
+      <DetailModal title="API Key" open={apiKeyOpen} onClose={() => !apiKeyBusy && setAPIKeyOpen(false)} size="narrow">
+        <div className="detail-panel">
+          {newApiKey ? (
+            <div className="notice">
+              <span>新的 API Key 只显示一次：</span>
+              <code>{newApiKey}</code>
+              <IconButton title="复制" onClick={() => copyText(newApiKey).then(() => toast("success", "已复制"))}><Copy size={14} /></IconButton>
+              <IconButton title="隐藏" onClick={() => setNewApiKey("")}><EyeOff size={14} /></IconButton>
+            </div>
+          ) : null}
+          <div className="api-key-meta">
+            <div><span>创建时间</span><strong>{apiKeyMeta ? fmtDate(apiKeyMeta.created_at) : "-"}</strong></div>
+            <div><span>最近使用</span><strong>{apiKeyMeta?.last_used_at ? fmtDate(apiKeyMeta.last_used_at) : "-"}</strong></div>
+          </div>
+          <small>原始值不会重复保存。需要查看时会生成新的 API Key，并让旧 key 立即失效。</small>
+          <div className="modal-actions">
+            <button className="secondary" disabled={apiKeyBusy} onClick={() => setAPIKeyOpen(false)}>关闭</button>
+            <button disabled={apiKeyBusy} onClick={() => resetMyAPIKey()}>{apiKeyBusy ? "生成中" : "生成新的 API Key"}</button>
+          </div>
+        </div>
+      </DetailModal>
     </div>
   );
 }
@@ -2507,11 +2653,11 @@ function LogsTable({ token, logs, setLogs, toast }: { token: string; logs: Syste
   );
 }
 
-function DetailModal({ title, open, onClose, children }: { title: string; open: boolean; onClose: () => void; children: React.ReactNode }) {
+function DetailModal({ title, open, onClose, children, size = "default" }: { title: string; open: boolean; onClose: () => void; children: React.ReactNode; size?: "default" | "narrow" }) {
   if (!open) return null;
   return (
     <div className="detail-modal-overlay" onClick={onClose}>
-      <div className="detail-modal" onClick={(event) => event.stopPropagation()}>
+      <div className={classNames("detail-modal", size === "narrow" && "detail-modal-narrow")} onClick={(event) => event.stopPropagation()}>
         <div className="detail-modal-header">
           <strong>{title}</strong>
           <button className="detail-modal-close" onClick={onClose}><X size={18} /></button>

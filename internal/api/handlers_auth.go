@@ -67,6 +67,11 @@ type passwordResetConfirmRequest struct {
 	VerificationCode string `json:"verification_code"`
 }
 
+type changeMyPasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
 type userCreateRequest struct {
 	Email              string      `json:"email"`
 	Name               string      `json:"name"`
@@ -590,6 +595,49 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.requireIdentity(w, r)
+	if !ok {
+		return
+	}
+	var req changeMyPasswordRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	currentPassword := strings.TrimSpace(req.CurrentPassword)
+	newPassword := strings.TrimSpace(req.NewPassword)
+	if currentPassword == "" || newPassword == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "current_password and new_password are required")
+		return
+	}
+	user, err := s.store.GetUserByID(r.Context(), identity.ID)
+	if err != nil {
+		writeError(w, storageStatus(err), "user_not_found", err.Error())
+		return
+	}
+	if user.Status != domain.UserStatusActive || !auth.VerifyPassword(user.PasswordHash, currentPassword) {
+		writeError(w, http.StatusUnauthorized, "invalid_credentials", "current password is incorrect")
+		return
+	}
+	hash, err := auth.HashPassword(newPassword)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_password", err.Error())
+		return
+	}
+	updated, err := s.store.UpdateUser(r.Context(), user.ID, storage.UserUpdate{PasswordHash: &hash})
+	if err != nil {
+		writeError(w, storageStatus(err), "password_update_failed", err.Error())
+		return
+	}
+	s.addAuditLog(r, identity, "user", "修改自己的密码", map[string]any{
+		"user_id": updated.ID,
+		"email":   updated.Email,
+		"role":    updated.Role,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": updated})
+}
+
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -889,6 +937,33 @@ func (s *Server) handleMyAPIKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": publicKeys([]domain.APIKey{item})})
+}
+
+func (s *Server) handleResetMyAPIKey(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.requireIdentity(w, r)
+	if !ok {
+		return
+	}
+	user, err := s.store.GetUserByID(r.Context(), identity.ID)
+	if err != nil {
+		writeError(w, storageStatus(err), "user_not_found", err.Error())
+		return
+	}
+	item, raw, err := s.ensureUserAPIKey(r.Context(), user, "Default API Key", true)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reset_key_failed", err.Error())
+		return
+	}
+	s.addAuditLog(r, identity, "user", "重置自己的 API Key", map[string]any{
+		"user_id":          user.ID,
+		"email":            user.Email,
+		"name":             user.Name,
+		"role":             user.Role,
+		"api_key_id":       item.ID,
+		"api_key_enabled":  item.Enabled,
+		"raw_key_returned": raw != "",
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"item": publicKey(item), "key": raw})
 }
 
 func (s *Server) handleCreateMyAPIKey(w http.ResponseWriter, r *http.Request) {

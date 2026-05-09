@@ -1,4 +1,4 @@
-import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, AuthResponse, BackupArtifact, BackupRemoteItem, BackupState, ImageTask, InviteCode, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, RegisterStatus, Settings, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, User } from "./types";
+import type { Account, AccountListSummary, AccountRefreshStatus, ApiKey, ApiKeyResetResponse, AuthResponse, BackupArtifact, BackupRemoteItem, BackupState, ImageTask, InviteCode, ModelItem, PagedResult, RegisterConfig, RegisterRuntime, RegisterStatus, Settings, StoredImage, StoredReferenceImage, SystemLog, TaskEvent, User } from "./types";
 
 const storageKey = "gpt_image_web_token";
 
@@ -135,6 +135,18 @@ export const api = {
       body: JSON.stringify(body)
     }),
   me: (token: string) => request<MeResponse>(token, "/api/me"),
+  changeMyPassword: (token: string, body: { current_password: string; new_password: string }) =>
+    request<{ ok: boolean; item: User }>(token, "/api/me/password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }),
+  resetMyAPIKey: (token: string) =>
+    request<ApiKeyResetResponse>(token, "/api/me/api-key/reset", {
+      method: "POST"
+    }),
+  myAPIKeys: (token: string) =>
+    request<{ items: ApiKey[] }>(token, "/api/me/api-keys"),
   version: (token: string) => request<{ version: string }>(token, "/version"),
   models: (token: string) => request<{ data: ModelItem[] }>(token, "/v1/models"),
   accounts: (token: string, params: { page?: number; pageSize?: number; query?: string; status?: string; accountType?: string; activeOnly?: boolean; dueOnly?: boolean } = {}) =>
