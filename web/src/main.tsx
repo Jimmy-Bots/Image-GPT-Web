@@ -736,7 +736,7 @@ function App() {
         {activeTab === "images" && isAdmin && <ImagesPanel token={token} images={images} setImages={setImages} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
         {activeTab === "playground" && <Playground token={token} models={models} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
         {activeTab === "users" && isAdmin && <UsersPanel token={token} users={users} setUsers={setUsers} toast={toast} />}
-        {activeTab === "settings" && isAdmin && <SettingsPanel token={token} settings={settings} setSettings={setSettings} toast={toast} openLightbox={(src, title) => setLightbox({ src, title })} />}
+        {activeTab === "settings" && isAdmin && <SettingsPanel token={token} settings={settings} setSettings={setSettings} toast={toast} />}
       </main>
 
       <div className="toast-stack">
@@ -2636,6 +2636,7 @@ function formatRegisterSeconds(value: unknown) {
 }
 
 function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token: string; images: StoredImage[]; setImages: (items: StoredImage[]) => void; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
+  const [view, setView] = useState<"images" | "references">("images");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("new");
   const [dateScope, setDateScope] = useState("");
@@ -2644,9 +2645,21 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(24);
   const [total, setTotal] = useState(0);
+  const [referenceItems, setReferenceItems] = useState<StoredReferenceImage[]>([]);
+  const [referenceSelected, setReferenceSelected] = useState<string[]>([]);
+  const [referencePage, setReferencePage] = useState(1);
+  const [referencePageSize, setReferencePageSize] = useState(25);
+  const [referenceTotal, setReferenceTotal] = useState(0);
+  const [referenceBusy, setReferenceBusy] = useState<"" | "list" | "delete">("");
+  const [referenceSort, setReferenceSort] = useState("new");
+  const [referenceDateScope, setReferenceDateScope] = useState("");
+  const referenceTableRef = useRef<HTMLDivElement | null>(null);
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const referencePageCount = Math.max(1, Math.ceil(referenceTotal / referencePageSize));
   useEffect(() => setPage(1), [pageSize, query, sort, dateScope]);
+  useEffect(() => setReferencePage(1), [referencePageSize, query, referenceSort, referenceDateScope]);
   useEffect(() => {
+    if (view !== "images") return;
     let cancelled = false;
     api.images(token, { page, pageSize, query, sort, dateScope }).then((data) => {
       if (cancelled) return;
@@ -2657,10 +2670,29 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
     return () => {
       cancelled = true;
     };
-  }, [token, page, pageSize, query, sort, dateScope, setImages]);
+  }, [token, page, pageSize, query, sort, dateScope, setImages, view]);
+  useEffect(() => {
+    if (view !== "references") return;
+    let cancelled = false;
+    setReferenceBusy("list");
+    api.referenceImages(token, { page: referencePage, pageSize: referencePageSize, query, sort: referenceSort, dateScope: referenceDateScope }).then((data) => {
+      if (cancelled) return;
+      setReferenceItems(data.items || []);
+      setReferenceTotal(Number(data.total || 0));
+      setReferenceSelected((prev) => prev.filter((path) => (data.items || []).some((item) => item.path === path)));
+    }).catch((error) => {
+      if (!cancelled) toast("error", error instanceof Error ? error.message : "加载参考图失败");
+    }).finally(() => {
+      if (!cancelled) setReferenceBusy("");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, referencePage, referencePageSize, query, referenceSort, referenceDateScope, view]);
   const items = images;
   const detailImage = detailPath ? items.find((item) => item.path === detailPath) || null : null;
   const allVisibleSelected = items.length > 0 && items.every((item) => selected.includes(item.path));
+  const allVisibleReferencesSelected = referenceItems.length > 0 && referenceItems.every((item) => referenceSelected.includes(item.path));
   const groupedItems = items.reduce<Array<{ date: string; items: StoredImage[] }>>((groups, item) => {
     const date = fmtDate(item.created_at).split(" ")[0] || "未知日期";
     const current = groups[groups.length - 1];
@@ -2684,6 +2716,24 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
     setTotal(nextTotal);
     setSelected((prev) => prev.filter((path) => nextItems.some((item) => item.path === path)));
   }
+  async function reloadReferenceImages(nextPage = referencePage) {
+    setReferenceBusy("list");
+    try {
+      const data = await api.referenceImages(token, { page: nextPage, pageSize: referencePageSize, query, sort: referenceSort, dateScope: referenceDateScope });
+      const nextItems = data.items || [];
+      const nextTotal = Number(data.total || 0);
+      const nextPageCount = Math.max(1, Math.ceil(nextTotal / referencePageSize));
+      if (nextPage > nextPageCount) {
+        setReferencePage(nextPageCount);
+        return;
+      }
+      setReferenceItems(nextItems);
+      setReferenceTotal(nextTotal);
+      setReferenceSelected((prev) => prev.filter((path) => nextItems.some((item) => item.path === path)));
+    } finally {
+      setReferenceBusy("");
+    }
+  }
   async function remove() {
     if (!selected.length || !confirm(`删除 ${selected.length} 张图片？`)) return;
     const data = await api.deleteImages(token, selected);
@@ -2691,28 +2741,107 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
     await reload(page);
     toast("success", `已删除 ${data.removed} 张图片`);
   }
+  async function removeReferenceImages(paths: string[]) {
+    if (!paths.length || !confirm(`删除 ${paths.length} 张参考图暂存？`)) return;
+    setReferenceBusy("delete");
+    try {
+      const data = await api.deleteReferenceImages(token, paths);
+      setReferenceSelected([]);
+      await reloadReferenceImages(referencePage);
+      toast("success", `已删除 ${data.removed} 张参考图暂存`);
+    } finally {
+      setReferenceBusy("");
+    }
+  }
   return (
     <section className="panel">
-      <PanelHead title="图片库" subtitle="本地归档图片，支持预览、复制链接和批量删除" action={<><button className="secondary" onClick={() => reload().catch((error) => toast("error", error.message))}>刷新图片</button><button className="danger" disabled={!selected.length} onClick={remove}>删除选中</button></>} />
-      <div className="filters images-filters filters-card">
-        <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件名或路径" />
-        <ControlField label="排序"><select value={sort} onChange={(event) => setSort(event.target.value)}><option value="new">最新优先</option><option value="old">最早优先</option><option value="large">文件最大</option></select></ControlField>
-        <ControlField label="时间"><select value={dateScope} onChange={(event) => setDateScope(event.target.value)}><option value="">全部时间</option><option value="today">仅看今日</option><option value="7d">最近 7 天</option></select></ControlField>
-        <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>12</option><option>24</option><option>48</option><option>96</option></select></ControlField>
-        <div className="filter-actions metrics-only"><span className="chip">当前页 {items.length} / 总计 {total}</span></div>
-      </div>
-      <div className="bulkbar">
-        <label className="inline"><input type="checkbox" checked={allVisibleSelected} onChange={(event) => setSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...items.map((item) => item.path)])) : prev.filter((path) => !items.some((item) => item.path === path)))} /><span>选择当前页</span></label>
-        <span>已选择 {selected.length} 张</span>
-        <button className="ghost small" disabled={!selected.length} onClick={remove}>删除选中</button>
-      </div>
-      <div className="image-groups">{groupedItems.map((group) => <section key={group.date} className="image-group"><div className="image-group-head"><span>{group.date}</span><small>{group.items.length} 张</small></div><div className="image-grid">{group.items.map((item) => {
-        const assetURL = storedImageURL(item, token);
-        const previewURL = storedImagePreviewURL(item, token);
-        const prompt = item.display_prompt || item.prompt || item.revised_prompt || item.name;
-        return <article key={item.path} className="image-item"><div className="image-item-head"><label><input type="checkbox" checked={selected.includes(item.path)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /><span title={prompt}>{prompt}</span></label><div className="image-item-actions"><IconButton title="复制路径" onClick={() => copyText(item.path).then(() => toast("success", "已复制图片路径"))}><Copy size={14} /></IconButton><button className="ghost small" onClick={() => setDetailPath(item.path)}>详情</button></div></div><button className="image-item-preview" onClick={() => openLightbox(assetURL, prompt)}><img src={previewURL} alt={prompt} loading="lazy" /></button></article>;
-      })}</div></section>)}</div>
-      <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
+      <PanelHead title="图片库" subtitle={view === "images" ? "本地归档图片，支持预览、复制链接和批量删除" : "上传后暂存到服务端的参考图，便于集中查看和清理"} action={<div className="actions"><div className="mode-toggle"><button className={classNames(view === "images" && "active")} onClick={() => setView("images")}>归档图片</button><button className={classNames(view === "references" && "active")} onClick={() => setView("references")}>参考图暂存</button></div>{view === "images" ? <><button className="secondary" onClick={() => reload().catch((error) => toast("error", error.message))}>刷新图片</button><button className="danger" disabled={!selected.length} onClick={remove}>删除选中</button></> : <><button className="secondary" disabled={referenceBusy === "list"} onClick={() => reloadReferenceImages().catch((error) => toast("error", error.message))}>{referenceBusy === "list" ? "刷新中" : "刷新参考图"}</button><button className="danger" disabled={!referenceSelected.length || referenceBusy === "delete"} onClick={() => removeReferenceImages(referenceSelected).catch((error) => toast("error", error.message))}>{referenceBusy === "delete" ? "删除中" : "删除选中"}</button></>}</div>} />
+      {view === "images" ? (
+        <>
+          <div className="filters images-filters filters-card">
+            <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件名或路径" />
+            <ControlField label="排序"><select value={sort} onChange={(event) => setSort(event.target.value)}><option value="new">最新优先</option><option value="old">最早优先</option><option value="large">文件最大</option></select></ControlField>
+            <ControlField label="时间"><select value={dateScope} onChange={(event) => setDateScope(event.target.value)}><option value="">全部时间</option><option value="today">仅看今日</option><option value="7d">最近 7 天</option></select></ControlField>
+            <ControlField label="每页"><select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option>12</option><option>24</option><option>48</option><option>96</option></select></ControlField>
+            <div className="filter-actions metrics-only"><span className="chip">当前页 {items.length} / 总计 {total}</span></div>
+          </div>
+          <div className="bulkbar">
+            <label className="inline"><input type="checkbox" checked={allVisibleSelected} onChange={(event) => setSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...items.map((item) => item.path)])) : prev.filter((path) => !items.some((item) => item.path === path)))} /><span>选择当前页</span></label>
+            <span>已选择 {selected.length} 张</span>
+            <button className="ghost small" disabled={!selected.length} onClick={remove}>删除选中</button>
+          </div>
+          <div className="image-groups">{groupedItems.map((group) => <section key={group.date} className="image-group"><div className="image-group-head"><span>{group.date}</span><small>{group.items.length} 张</small></div><div className="image-grid">{group.items.map((item) => {
+            const assetURL = storedImageURL(item, token);
+            const previewURL = storedImagePreviewURL(item, token);
+            const prompt = item.display_prompt || item.prompt || item.revised_prompt || item.name;
+            return <article key={item.path} className="image-item"><div className="image-item-head"><label><input type="checkbox" checked={selected.includes(item.path)} onChange={(event) => setSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /><span title={prompt}>{prompt}</span></label><div className="image-item-actions"><IconButton title="复制路径" onClick={() => copyText(item.path).then(() => toast("success", "已复制图片路径"))}><Copy size={14} /></IconButton><button className="ghost small" onClick={() => setDetailPath(item.path)}>详情</button></div></div><button className="image-item-preview" onClick={() => openLightbox(assetURL, prompt)}><img src={previewURL} alt={prompt} loading="lazy" /></button></article>;
+          })}</div></section>)}</div>
+          <div className="pager"><button className="ghost small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount} · {total} 项</span><button className="ghost small" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>
+        </>
+      ) : (
+        <>
+          <div className="filters filters-card activity-filters">
+            <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索路径、原文件名、用户 ID" />
+            <ControlField label="排序"><select value={referenceSort} onChange={(event) => setReferenceSort(event.target.value)}><option value="new">最新优先</option><option value="old">最早优先</option><option value="large">文件最大</option></select></ControlField>
+            <ControlField label="时间"><select value={referenceDateScope} onChange={(event) => setReferenceDateScope(event.target.value)}><option value="">全部时间</option><option value="today">仅看今日</option><option value="7d">最近 7 天</option></select></ControlField>
+            <ControlField label="每页"><select value={referencePageSize} onChange={(event) => setReferencePageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
+            <div className="filter-actions metrics-only"><span className="chip">当前页 {referenceItems.length} / 总计 {referenceTotal}</span></div>
+          </div>
+          <div className="bulkbar">
+            <label className="inline"><input type="checkbox" checked={allVisibleReferencesSelected} onChange={(event) => {
+              setReferenceSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...referenceItems.map((item) => item.path)])) : prev.filter((path) => !referenceItems.some((item) => item.path === path)));
+            }} /><span>选择当前页</span></label>
+            <span>已选择 {referenceSelected.length} 项</span>
+            <button className="ghost small" disabled={!referenceSelected.length || referenceBusy === "delete"} onClick={() => removeReferenceImages(referenceSelected).catch((error) => toast("error", error.message))}>删除选中</button>
+          </div>
+          <ScrollableTable tableRef={referenceTableRef} className="data-table-wrap" height="medium">
+            <table className="activity-table reference-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>预览</th>
+                  <th>文件</th>
+                  <th>原文件名</th>
+                  <th>类型</th>
+                  <th>大小</th>
+                  <th>用户</th>
+                  <th>时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                {referenceItems.length ? referenceItems.map((item) => (
+                  <tr key={item.path}>
+                    <td><input type="checkbox" checked={referenceSelected.includes(item.path)} onChange={(event) => setReferenceSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /></td>
+                    <td>
+                      <button
+                        className="reference-preview-cell"
+                        type="button"
+                        onClick={() => {
+                          if (!item.url) return;
+                          openLightbox(item.url, item.original_name || item.name);
+                        }}
+                      >
+                        {item.preview_url ? <img src={storedReferencePreviewURL(item, token)} alt={item.original_name || item.name} loading="lazy" /> : <span>无图</span>}
+                      </button>
+                    </td>
+                    <td><div className="reference-file-cell" title={item.path}><strong>{item.original_name || item.name}</strong><small>{item.path}</small></div></td>
+                    <td title={item.original_name || "-"}>{item.original_name || "-"}</td>
+                    <td>{item.content_type || "-"}</td>
+                    <td>{fmtBytes(item.size)}</td>
+                    <td>{item.owner_id || "-"}</td>
+                    <td>{fmtDate(item.created_at)}</td>
+                  </tr>
+                )) : (
+                  <tr>
+                    <td colSpan={8} className="table-empty">{referenceBusy === "list" ? "参考图暂存加载中..." : "暂无参考图暂存"}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </ScrollableTable>
+          <div className="pager"><button className="ghost small" disabled={referencePage <= 1} onClick={() => setReferencePage((value) => Math.max(1, value - 1))}>上一页</button><span>{referencePage} / {referencePageCount} · {referenceTotal} 项</span><button className="ghost small" disabled={referencePage >= referencePageCount} onClick={() => setReferencePage((value) => Math.min(referencePageCount, value + 1))}>下一页</button></div>
+        </>
+      )}
       <DetailModal title={detailImage ? `图片详情 · ${detailImage.display_prompt || detailImage.prompt || detailImage.revised_prompt || detailImage.name}` : "图片详情"} open={Boolean(detailPath)} onClose={() => setDetailPath(null)}>
         {detailImage ? <ImageDetail token={token} image={detailImage} openLightbox={openLightbox} /> : <div className="detail-panel detail-panel-plain">图片详情不存在</div>}
       </DetailModal>
@@ -3084,28 +3213,19 @@ function UserRow({ token, user, reload, toast, showKey, selected, onSelect, onEd
   );
 }
 
-function SettingsPanel({ token, settings, setSettings, toast, openLightbox }: { token: string; settings: SettingsType; setSettings: (settings: SettingsType) => void; toast: (type: Toast["type"], message: string) => void; openLightbox: (src: string, title?: string) => void }) {
+function SettingsPanel({ token, settings, setSettings, toast }: { token: string; settings: SettingsType; setSettings: (settings: SettingsType) => void; toast: (type: Toast["type"], message: string) => void }) {
   const [json, setJson] = useState(safeJSON(settings));
   const [inviteCodes, setInviteCodes] = useState<InviteCode[]>([]);
   const [inviteCodeForm, setInviteCodeForm] = useState({ code: "", maxUses: "0", description: "", enabled: true });
   const [inviteBusy, setInviteBusy] = useState<"" | "list" | "save" | "delete">("");
   const [backupState, setBackupState] = useState<BackupState | null>(null);
   const [backupItems, setBackupItems] = useState<BackupRemoteItem[]>([]);
-  const [referenceItems, setReferenceItems] = useState<StoredReferenceImage[]>([]);
-  const [referenceQuery, setReferenceQuery] = useState("");
-  const [referencePage, setReferencePage] = useState(1);
-  const [referencePageSize, setReferencePageSize] = useState(25);
-  const [referenceTotal, setReferenceTotal] = useState(0);
-  const [referenceBusy, setReferenceBusy] = useState<"" | "list" | "delete">("");
-  const [referenceSelected, setReferenceSelected] = useState<string[]>([]);
   const [backupBusy, setBackupBusy] = useState<"" | "run" | "reload" | "list">("");
   const [deletingBackupKey, setDeletingBackupKey] = useState("");
   const [smtpTestTo, setSMTPTestTo] = useState("");
   const [smtpTestBusy, setSMTPTestBusy] = useState(false);
   const backupTableRef = useRef<HTMLDivElement | null>(null);
-  const referenceTableRef = useRef<HTMLDivElement | null>(null);
   useHorizontalWheelScroll(backupTableRef);
-  useHorizontalWheelScroll(referenceTableRef);
   useEffect(() => setJson(safeJSON(settings)), [settings]);
   const aiReview = settings.ai_review && typeof settings.ai_review === "object" ? settings.ai_review as Record<string, unknown> : {};
   const allowedPublicModels = Array.isArray(settings.allowed_public_models) ? settings.allowed_public_models.map((item) => String(item)) : [];
@@ -3170,19 +3290,6 @@ function SettingsPanel({ token, settings, setSettings, toast, openLightbox }: { 
       setInviteBusy("");
     }
   }
-  useEffect(() => setReferencePage(1), [referenceQuery, referencePageSize]);
-  useEffect(() => {
-    let cancelled = false;
-    api.referenceImages(token, { page: referencePage, pageSize: referencePageSize, query: referenceQuery }).then((data) => {
-      if (cancelled) return;
-      setReferenceItems(data.items || []);
-      setReferenceTotal(Number(data.total || 0));
-      setReferenceSelected((prev) => prev.filter((path) => (data.items || []).some((item) => item.path === path)));
-    }).catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [token, referencePage, referencePageSize, referenceQuery]);
   async function reloadBackupState() {
     setBackupBusy("reload");
     try {
@@ -3199,36 +3306,6 @@ function SettingsPanel({ token, settings, setSettings, toast, openLightbox }: { 
       setBackupItems(data.items || []);
     } finally {
       setBackupBusy("");
-    }
-  }
-  async function reloadReferenceImages(nextPage = referencePage) {
-    setReferenceBusy("list");
-    try {
-      const data = await api.referenceImages(token, { page: nextPage, pageSize: referencePageSize, query: referenceQuery });
-      const nextItems = data.items || [];
-      const nextTotal = Number(data.total || 0);
-      const nextPageCount = Math.max(1, Math.ceil(nextTotal / referencePageSize));
-      if (nextPage > nextPageCount) {
-        setReferencePage(nextPageCount);
-        return;
-      }
-      setReferenceItems(nextItems);
-      setReferenceTotal(nextTotal);
-      setReferenceSelected((prev) => prev.filter((path) => nextItems.some((item) => item.path === path)));
-    } finally {
-      setReferenceBusy("");
-    }
-  }
-  async function removeReferenceImages(paths: string[]) {
-    if (!paths.length || !confirm(`删除 ${paths.length} 张参考图暂存？`)) return;
-    setReferenceBusy("delete");
-    try {
-      const data = await api.deleteReferenceImages(token, paths);
-      setReferenceSelected([]);
-      await reloadReferenceImages(referencePage);
-      toast("success", `已删除 ${data.removed} 张参考图暂存`);
-    } finally {
-      setReferenceBusy("");
     }
   }
   async function runBackupNow() {
@@ -3298,8 +3375,6 @@ function SettingsPanel({ token, settings, setSettings, toast, openLightbox }: { 
     const index = value.lastIndexOf("/");
     return index > 0 ? value.slice(0, index) : "root";
   }
-  const referencePageCount = Math.max(1, Math.ceil(referenceTotal / referencePageSize));
-  const allVisibleReferencesSelected = referenceItems.length > 0 && referenceItems.every((item) => referenceSelected.includes(item.path));
   async function sendSMTPTest() {
     const to = smtpTestTo.trim();
     if (!to) {
@@ -3532,81 +3607,6 @@ function SettingsPanel({ token, settings, setSettings, toast, openLightbox }: { 
             </table>
           </ScrollableTable>
         </div>
-      </section>
-
-      <section className="panel">
-        <PanelHead
-          title="参考图暂存"
-          subtitle="查看和手动清理上传后暂存到服务端的参考图"
-          action={
-            <div className="actions">
-              <button className="secondary" disabled={referenceBusy === "list"} onClick={() => reloadReferenceImages().catch((error) => toast("error", error.message))}>
-                {referenceBusy === "list" ? "刷新中" : "刷新列表"}
-              </button>
-              <button className="danger" disabled={!referenceSelected.length || referenceBusy === "delete"} onClick={() => removeReferenceImages(referenceSelected).catch((error) => toast("error", error.message))}>
-                {referenceBusy === "delete" ? "删除中" : "删除选中"}
-              </button>
-            </div>
-          }
-        />
-        <div className="filters filters-card activity-filters">
-          <SearchControl value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="搜索路径、原文件名、用户 ID" />
-          <ControlField label="每页"><select value={referencePageSize} onChange={(event) => setReferencePageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
-          <div className="filter-actions"><span className="chip">{referenceTotal} 项</span></div>
-        </div>
-        <div className="bulkbar">
-          <label className="inline"><input type="checkbox" checked={allVisibleReferencesSelected} onChange={(event) => {
-            setReferenceSelected((prev) => event.target.checked ? Array.from(new Set([...prev, ...referenceItems.map((item) => item.path)])) : prev.filter((path) => !referenceItems.some((item) => item.path === path)));
-          }} /><span>选择当前页</span></label>
-          <span>已选择 {referenceSelected.length} 项</span>
-          <button className="ghost small" disabled={!referenceSelected.length || referenceBusy === "delete"} onClick={() => removeReferenceImages(referenceSelected).catch((error) => toast("error", error.message))}>删除选中</button>
-        </div>
-        <ScrollableTable tableRef={referenceTableRef} className="data-table-wrap" height="medium">
-          <table className="activity-table reference-table">
-            <thead>
-              <tr>
-                <th></th>
-                <th>预览</th>
-                <th>文件</th>
-                <th>原文件名</th>
-                <th>类型</th>
-                <th>大小</th>
-                <th>用户</th>
-                <th>时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              {referenceItems.length ? referenceItems.map((item) => (
-                <tr key={item.path}>
-                  <td><input type="checkbox" checked={referenceSelected.includes(item.path)} onChange={(event) => setReferenceSelected((prev) => event.target.checked ? [...prev, item.path] : prev.filter((path) => path !== item.path))} /></td>
-                  <td>
-                    <button
-                      className="reference-preview-cell"
-                      type="button"
-                      onClick={() => {
-                        if (!item.url) return;
-                        openLightbox(item.url, item.original_name || item.name);
-                      }}
-                    >
-                      {item.preview_url ? <img src={storedReferencePreviewURL(item, token)} alt={item.original_name || item.name} loading="lazy" /> : <span>无图</span>}
-                    </button>
-                  </td>
-                  <td><div className="reference-file-cell" title={item.path}><strong>{item.original_name || item.name}</strong><small>{item.path}</small></div></td>
-                  <td title={item.original_name || "-"}>{item.original_name || "-"}</td>
-                  <td>{item.content_type || "-"}</td>
-                  <td>{fmtBytes(item.size)}</td>
-                  <td>{item.owner_id || "-"}</td>
-                  <td>{fmtDate(item.created_at)}</td>
-                </tr>
-              )) : (
-                <tr>
-                  <td colSpan={8} className="table-empty">{referenceBusy === "list" ? "参考图暂存加载中..." : "暂无参考图暂存"}</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </ScrollableTable>
-        <div className="pager"><button className="ghost small" disabled={referencePage <= 1} onClick={() => setReferencePage((value) => Math.max(1, value - 1))}>上一页</button><span>{referencePage} / {referencePageCount} · {referenceTotal} 项</span><button className="ghost small" disabled={referencePage >= referencePageCount} onClick={() => setReferencePage((value) => Math.min(referencePageCount, value + 1))}>下一页</button></div>
       </section>
 
       <section className="panel">

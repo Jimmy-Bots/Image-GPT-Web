@@ -254,11 +254,13 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths })
     }),
-  referenceImages: (token: string, params: { page?: number; pageSize?: number; query?: string } = {}) =>
+  referenceImages: (token: string, params: { page?: number; pageSize?: number; query?: string; sort?: string; dateScope?: string } = {}) =>
     request<PagedResult<StoredReferenceImage>>(token, withQuery("/api/reference-images", {
       page: params.page,
       page_size: params.pageSize,
-      query: params.query
+      query: params.query,
+      sort: params.sort,
+      date_scope: params.dateScope
     })),
   deleteReferenceImages: (token: string, paths: string[]) =>
     request<{ removed: number }>(token, "/api/reference-images/delete", {

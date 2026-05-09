@@ -116,7 +116,9 @@ func (s *Server) handleListReferenceImages(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("query")))
-	items, err := s.listStoredReferenceImages(query)
+	sortMode := strings.TrimSpace(r.URL.Query().Get("sort"))
+	dateScope := strings.TrimSpace(r.URL.Query().Get("date_scope"))
+	items, err := s.listStoredReferenceImages(query, sortMode, dateScope)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "reference_image_list_failed", err.Error())
 		return
@@ -258,7 +260,7 @@ func (s *Server) listStoredImages(r *http.Request, query string, sortMode string
 	return items, nil
 }
 
-func (s *Server) listStoredReferenceImages(query string) ([]map[string]any, error) {
+func (s *Server) listStoredReferenceImages(query string, sortMode string, dateScope string) ([]map[string]any, error) {
 	items := make([]map[string]any, 0)
 	err := filepath.WalkDir(s.cfg.ReferenceImagesDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -283,6 +285,9 @@ func (s *Server) listStoredReferenceImages(query string) ([]map[string]any, erro
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
+		if !matchImageDateScope(info.ModTime(), dateScope) {
+			return nil
+		}
 		if query != "" {
 			haystack := strings.ToLower(strings.Join([]string{
 				entry.Name(),
@@ -312,8 +317,21 @@ func (s *Server) listStoredReferenceImages(query string) ([]map[string]any, erro
 		return nil, err
 	}
 	sort.Slice(items, func(i, j int) bool {
+		if sortMode == "large" {
+			leftSize, _ := items[i]["size"].(int64)
+			rightSize, _ := items[j]["size"].(int64)
+			if leftSize == rightSize {
+				left, _ := items[i]["created_at"].(time.Time)
+				right, _ := items[j]["created_at"].(time.Time)
+				return left.After(right)
+			}
+			return leftSize > rightSize
+		}
 		left, _ := items[i]["created_at"].(time.Time)
 		right, _ := items[j]["created_at"].(time.Time)
+		if sortMode == "old" {
+			return left.Before(right)
+		}
 		return left.After(right)
 	})
 	return items, nil
