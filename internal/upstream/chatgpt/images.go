@@ -119,8 +119,12 @@ func (c *Client) runImage(ctx context.Context, request ImageRequest, references 
 	fileIDs, sedimentIDs := state.FileIDs, state.SedimentIDs
 	traceImageSet(ctx, "raw_result_file_ids_sse", fileIDs)
 	traceImageSet(ctx, "raw_result_sediment_ids_sse", sedimentIDs)
+	fileIDs = filterReferenceCandidateIDs(fileIDs, references)
+	sedimentIDs = filterReferenceCandidateIDs(sedimentIDs, references)
 	if state.Conversation != "" && len(fileIDs) == 0 && len(sedimentIDs) == 0 {
 		fileIDs, sedimentIDs = c.pollImageResults(ctx, state.Conversation, request.PollTimeout)
+		fileIDs = filterReferenceCandidateIDs(fileIDs, references)
+		sedimentIDs = filterReferenceCandidateIDs(sedimentIDs, references)
 	}
 	traceImageSet(ctx, "result_file_ids", fileIDs)
 	traceImageSet(ctx, "result_sediment_ids", sedimentIDs)
@@ -764,4 +768,42 @@ func referenceFileIDs(references []uploadedImage) []string {
 		ids = append(ids, strings.TrimSpace(reference.FileID))
 	}
 	return ids
+}
+
+func filterReferenceCandidateIDs(ids []string, references []uploadedImage) []string {
+	if len(ids) == 0 || len(references) == 0 {
+		return uniqueStrings(ids)
+	}
+	referenceIDs := referenceFileIDs(references)
+	if len(referenceIDs) == 0 {
+		return uniqueStrings(ids)
+	}
+	filtered := make([]string, 0, len(ids))
+	for _, id := range uniqueStrings(ids) {
+		if isReferenceCandidateID(id, referenceIDs) {
+			continue
+		}
+		filtered = append(filtered, id)
+	}
+	return filtered
+}
+
+func isReferenceCandidateID(candidate string, referenceIDs []string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	for _, referenceID := range referenceIDs {
+		referenceID = strings.TrimSpace(referenceID)
+		if referenceID == "" {
+			continue
+		}
+		if candidate == referenceID {
+			return true
+		}
+		if strings.HasPrefix(referenceID, candidate) || strings.HasPrefix(candidate, referenceID) {
+			return true
+		}
+	}
+	return false
 }
