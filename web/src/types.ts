@@ -123,7 +123,7 @@ export type ImageTask = {
   owner_email?: string;
   owner_name?: string;
   owner_role?: Role;
-  status: "queued" | "running" | "success" | "error";
+  status: "queued" | "running" | "success" | "error" | "cancelled";
   phase?: string;
   mode: "generate" | "edit";
   model?: string;

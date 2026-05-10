@@ -142,6 +142,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/reference-images/delete", s.handleDeleteReferenceImages)
 	mux.HandleFunc("GET /api/image-tasks", s.handleListImageTasks)
 	mux.HandleFunc("GET /api/image-tasks/{task_id}/events", s.handleListImageTaskEvents)
+	mux.HandleFunc("POST /api/image-tasks/cancel", s.handleCancelImageTask)
 	mux.HandleFunc("POST /api/image-tasks/delete", s.handleDeleteImageTasks)
 	mux.HandleFunc("POST /api/image-tasks/generations", s.handleCreateGenerationTask)
 	mux.HandleFunc("POST /api/image-tasks/edits", s.handleCreateEditTask)

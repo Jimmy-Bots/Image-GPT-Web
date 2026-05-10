@@ -42,6 +42,12 @@ func NewChatGPTUpstream(store *storage.Store, pool *AccountPool, proxyURL string
 	}
 }
 
+func shouldStopImageAttempts(err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, chatgpt.ErrImagePromptAdjust)
+}
+
 func (u *ChatGPTUpstream) SetLogWriter(writer structuredLogWriter) {
 	u.logWriter = writer
 }
@@ -143,6 +149,9 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 				attemptDetail["upstream_text"] = text
 			}
 			appendStructuredLogAttempt(ctx, attemptDetail)
+			if shouldStopImageAttempts(err) {
+				return nil, err
+			}
 			if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
 				status := "异常"
 				quota := 0
@@ -269,6 +278,9 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 				attemptDetail["upstream_text"] = text
 			}
 			appendStructuredLogAttempt(ctx, attemptDetail)
+			if shouldStopImageAttempts(err) {
+				return nil, err
+			}
 			if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
 				status := "异常"
 				quota := 0

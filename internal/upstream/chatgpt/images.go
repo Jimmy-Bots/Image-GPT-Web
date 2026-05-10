@@ -113,7 +113,7 @@ func (c *Client) runImage(ctx context.Context, request ImageRequest, references 
 	if state.Text != "" && len(state.FileIDs) == 0 && len(state.SedimentIDs) == 0 {
 		isText := state.ToolInvoked != nil && !*state.ToolInvoked || state.TurnUseCase == "text"
 		if state.Blocked || isText {
-			return nil, errors.New(state.Text)
+			return nil, &ImagePromptAdjustError{Text: state.Text}
 		}
 	}
 	fileIDs, sedimentIDs := state.FileIDs, state.SedimentIDs
@@ -135,7 +135,7 @@ func (c *Client) runImage(ctx context.Context, request ImageRequest, references 
 	traceImageSet(ctx, "resolved_urls", urls)
 	if len(urls) == 0 {
 		if state.Text != "" {
-			return nil, errors.New(state.Text)
+			return nil, &ImagePromptAdjustError{Text: state.Text}
 		}
 		return nil, errors.New("image generation returned no image")
 	}

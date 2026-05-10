@@ -217,6 +217,7 @@ function describeWorkbenchError(error: unknown) {
     if (normalized.includes("invalid_access_token")) return "可用账号登录态已失效，系统正在尝试恢复，请稍后再试。";
     if (normalized.includes("rate limit") || normalized.includes("too many requests")) return "上游触发限流，请稍后再试。";
     if (normalized.includes("content policy") || normalized.includes("moderation")) return "图片请求被上游内容策略拦截，请调整提示词。";
+    if (normalized.includes("希望") || normalized.includes("请提供") || normalized.includes("需要更具体") || normalized.includes("调整提示词")) return `上游没有直接开始生图，而是回复了文本说明。请根据提示调整提示词后重试：${message}`;
     return "上游服务暂时不可用，请稍后重试。";
   }
   if (normalized.includes("failed to fetch") || normalized.includes("networkerror") || normalized.includes("network request failed")) {
@@ -228,6 +229,7 @@ function describeWorkbenchError(error: unknown) {
   if (normalized.includes("request contains sensitive word")) return "请求内容命中了敏感词规则，请调整提示词后再试。";
   if (normalized.includes("unsupported image format")) return "当前参考图格式暂不支持，请转换为 PNG、JPG 或 GIF 后再试。";
   if (normalized.includes("unknown format")) return "当前参考图格式暂不支持，请转换为 PNG、JPG 或 GIF 后再试。";
+  if (code === "task_cancelled" || normalized.includes("任务已中止")) return "任务已中止。";
 
   return message;
 }
@@ -1504,6 +1506,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
   const [historyReady, setHistoryReady] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const syncControllersRef = useRef(new Map<string, AbortController>());
   const storageKey = useMemo(() => `${workbenchStoragePrefix}${identity.id || identity.key_id || "legacy"}`, [identity.id, identity.key_id]);
   const quota = quotaLabel;
   const model = String(modelPolicy.workbench_model || "gpt-image-2");
@@ -1700,6 +1703,8 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
   }
 
   async function runSyncTurn(turn: WorkbenchTurn) {
+    const controller = new AbortController();
+    syncControllersRef.current.set(turn.id, controller);
     try {
       setTurns((current) => current.map((row) => row.id === turn.id ? {
         ...row,
@@ -1722,10 +1727,10 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
         form.set("n", String(turn.count));
         if (taskSize) form.set("size", taskSize);
         turn.refs.forEach((ref) => form.append("image", ref.file, ref.name));
-        const data = await request<{ data: ImageResult[] }>(token, "/v1/images/edits", { method: "POST", body: form });
+        const data = await request<{ data: ImageResult[] }>(token, "/v1/images/edits", { method: "POST", body: form, signal: controller.signal });
         finishSyncTurn(turn.id, turn, data.data || []);
       } else {
-        const data = await request<{ data: ImageResult[] }>(token, "/v1/images/generations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: turn.prompt, model: turn.model, size: taskSize || undefined, n: turn.count, response_format: "url" }) });
+        const data = await request<{ data: ImageResult[] }>(token, "/v1/images/generations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: turn.prompt, model: turn.model, size: taskSize || undefined, n: turn.count, response_format: "url" }), signal: controller.signal });
         finishSyncTurn(turn.id, turn, data.data || []);
       }
       try {
@@ -1739,15 +1744,31 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
         api.images(token).then((data) => setImages(data.items || [])).catch(() => {});
       }
     } catch (error) {
-      const message = describeWorkbenchError(error);
+      const aborted = error instanceof DOMException && error.name === "AbortError";
+      const message = aborted ? "任务已中止。" : describeWorkbenchError(error);
       setTurns((current) => current.map((row) => row.id === turn.id ? {
         ...row,
         status: "error",
         error: message,
-        images: row.images.map((image) => ({ ...image, status: "error", error: message }))
+        images: row.images.map((image) => ({ ...image, status: "error", error: message, retrying: false, retryHint: aborted ? "任务已中止" : image.retryHint }))
       } : row));
+      try {
+        const latestTasks = await api.tasks(token, [], { page: 1, pageSize: 8 });
+        setTasks((current) => mergeImageTasks(current, latestTasks.items || []));
+        setTaskTotal((value) => Math.max(value, Number(latestTasks.total || value)));
+      } catch {
+        // Keep cancellation feedback smooth even if task list refresh fails.
+      }
       throw error;
+    } finally {
+      syncControllersRef.current.delete(turn.id);
     }
+  }
+
+  function cancelSyncTurn(turnId: string) {
+    const controller = syncControllersRef.current.get(turnId);
+    if (!controller) return;
+    controller.abort();
   }
 
   function finishSyncTurn(turnId: string, source: WorkbenchTurn, images: ImageResult[]) {
@@ -1802,6 +1823,10 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
       }
     } catch (error) {
       refreshUserState().catch(() => {});
+      if (error instanceof DOMException && error.name === "AbortError") {
+        toast("success", "任务已中止");
+        return;
+      }
       toast("error", describeWorkbenchError(error));
     } finally {
       setBusy(false);
@@ -1831,6 +1856,34 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
     try {
       await enqueueImages(retryTurn, [retryId]);
       toast("success", "已重新提交");
+    } catch (error) {
+      toast("error", describeWorkbenchError(error));
+    }
+  }
+
+  async function cancelImageTask(turnId: string, imageId: string) {
+    const source = turns.find((turn) => turn.id === turnId);
+    const item = source?.images.find((image) => image.id === imageId);
+    if (!source || !item?.taskId) return;
+    try {
+      const task = await api.cancelTask(token, { id: item.taskId });
+      const message = task.error || "任务已中止";
+      setTurns((current) => current.map((turn) => {
+        if (turn.id !== turnId) return turn;
+        const images = turn.images.map((image) => image.id === imageId
+          ? {
+              ...image,
+              status: "error" as const,
+              phase: "task" as const,
+              error: message,
+              retrying: false,
+              retryHint: "任务已中止",
+              retryCount: image.retryCount || 0
+            }
+          : image);
+        return { ...turn, images, status: deriveTurnStatus(images), error: images.find((candidate) => candidate.error)?.error };
+      }));
+      toast("success", "任务已中止");
     } catch (error) {
       toast("error", describeWorkbenchError(error));
     }
@@ -1967,6 +2020,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
                         if (!src) return;
                         downloadWorkbenchImage(src, `result-${turn.id}-${index + 1}.png`);
                       }}
+                      onCancel={() => item.taskId ? cancelImageTask(turn.id, item.id) : cancelSyncTurn(turn.id)}
                     />
                   ))}
                 </div>
@@ -2046,7 +2100,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
   );
 }
 
-function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry, onCopy, onDownload }: { item: WorkbenchItem; index: number; size?: string; openLightbox: (src: string, title?: string) => void; onUseAsReference: () => void; onRetry: () => void; onCopy: () => void; onDownload: () => void }) {
+function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry, onCopy, onDownload, onCancel }: { item: WorkbenchItem; index: number; size?: string; openLightbox: (src: string, title?: string) => void; onUseAsReference: () => void; onRetry: () => void; onCopy: () => void; onDownload: () => void; onCancel: () => void }) {
   const src = item.image ? imageSrc(item.image) : "";
   const loadingLabel = workbenchLoadingLabel(item, index);
   const waitingHint = workbenchWaitingHint(item);
@@ -2070,6 +2124,7 @@ function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry
         <Badge value={item.status} />
       </div>
       {src ? <div className="image-card-actions"><button className="ghost small" onClick={onUseAsReference}><Sparkles size={13} />加入编辑</button><IconButton title="下载图片" onClick={onDownload}><Download size={13} /></IconButton>{!src.startsWith("data:") ? <IconButton title="复制链接" onClick={onCopy}><Copy size={13} /></IconButton> : null}</div> : null}
+      {!src && (item.status === "queued" || item.status === "running") ? <button className="ghost small retry-button" onClick={onCancel}><Ban size={13} />中止任务</button> : null}
       {item.status === "error" ? <button className="ghost small retry-button" onClick={onRetry}><RotateCcw size={13} />重新生成</button> : null}
       {item.error ? <p className="error-text">{item.error}</p> : null}
     </article>
@@ -2097,6 +2152,7 @@ function deriveTurnStatus(images: WorkbenchItem[]): WorkbenchTurn["status"] {
 
 function taskStatusToWorkbench(status: ImageTask["status"]): WorkbenchItem["status"] {
   if (status === "success" || status === "error" || status === "running") return status;
+  if (status === "cancelled") return "error";
   return "queued";
 }
 
@@ -2109,6 +2165,11 @@ function turnStatusLabel(status: WorkbenchTurn["status"] | WorkbenchItem["status
   if (status === "running") return "处理中";
   if (status === "success") return "已完成";
   return "失败";
+}
+
+function taskStatusLabel(status: ImageTask["status"]) {
+  if (status === "cancelled") return "已中止";
+  return status;
 }
 
 function workbenchLoadingLabel(item: WorkbenchItem, index: number) {
@@ -2481,6 +2542,36 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
     setSelected([]);
     toast("success", `已删除 ${data.removed} 个任务`);
   }
+  async function cancelTaskItem(task: ImageTask) {
+    const updated = await api.cancelTask(token, { id: task.id, owner_id: task.owner_id });
+    const next = await api.tasks(token, [], taskQueryParams);
+    setTasks(next.items || []);
+    setTotal(Number(next.total || 0));
+    setTaskTotal(Number(next.total || 0));
+    if (detailTaskID === task.id) {
+      setDetailTaskID(updated.id);
+    }
+    toast("success", "任务已中止");
+  }
+  async function cancelSelected() {
+    if (!selected.length) return;
+    const refs = selected.map(parseTaskSelectionKey);
+    let cancelled = 0;
+    for (const ref of refs) {
+      try {
+        await api.cancelTask(token, { id: ref.id, owner_id: ref.owner_id });
+        cancelled += 1;
+      } catch {
+        // Keep cancelling remaining tasks.
+      }
+    }
+    const next = await api.tasks(token, [], taskQueryParams);
+    setTasks(next.items || []);
+    setTotal(Number(next.total || 0));
+    setTaskTotal(Number(next.total || 0));
+    setSelected([]);
+    toast(cancelled > 0 ? "success" : "error", cancelled > 0 ? `已中止 ${cancelled} 个任务` : "没有任务被中止");
+  }
   return (
     <>
       <div className="filters filters-card activity-filters">
@@ -2494,7 +2585,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
         <ControlField label="比例"><input value={sizeFilter} onChange={(event) => setSizeFilter(event.target.value)} placeholder="auto / 1:1" /></ControlField>
         <ControlField label="开始"><input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></ControlField>
         <ControlField label="结束"><input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></ControlField>
-        <div className="filter-actions"><button className="secondary" onClick={() => api.tasks(token, [], taskQueryParams).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="ghost small" onClick={() => { setQuery(""); setStatus(""); setMode(""); setModelFilter(""); setOwnerFilter("all"); setSizeFilter(""); setDateFrom(""); setDateTo(""); setDeletedScope("active"); }}>重置</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
+        <div className="filter-actions"><button className="secondary" onClick={() => api.tasks(token, [], taskQueryParams).then((data) => { setTasks(data.items || []); setTotal(Number(data.total || 0)); setTaskTotal(Number(data.total || 0)); toast("success", "任务已刷新"); })}>刷新任务</button><button className="ghost small" onClick={() => { setQuery(""); setStatus(""); setMode(""); setModelFilter(""); setOwnerFilter("all"); setSizeFilter(""); setDateFrom(""); setDateTo(""); setDeletedScope("active"); }}>重置</button><button className="ghost small" disabled={!selected.length} onClick={cancelSelected}>中止选中</button><button className="danger" disabled={!selected.length} onClick={removeSelected}>删除选中</button></div>
       </div>
       <ScrollableTable tableRef={tableWrapRef} className="data-table-wrap" height="medium"><table className="activity-table task-table"><thead><tr><th><input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.target.checked)} aria-label="选择当前任务" /></th><th>ID</th><th>User</th><th>Mode</th><th>Status</th><th>Prompt</th><th>Model</th><th>Size</th><th>耗时</th><th>Result</th><th>Updated</th><th></th></tr></thead><tbody>{rows.map((task) => {
         const first = parseTaskData(task.data)[0];
@@ -2513,14 +2604,14 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
               </div>
             </td>
             <td>{task.mode}</td>
-            <td>{deleted ? <Badge value="deleted" /> : <Badge value={task.status} />}</td>
+            <td>{deleted ? <Badge value="deleted" /> : <Badge value={taskStatusLabel(task.status)} />}</td>
             <td>{task.prompt || "-"}</td>
             <td>{task.model || "-"}</td>
             <td>{task.size || "-"}</td>
             <td>{taskDuration(task)}</td>
             <td>{canPreview ? <button className="link-button" onClick={() => openPreview(task)}>{loadingPreview === task.id ? "加载" : "预览"}</button> : "-"}</td>
             <td>{fmtDate(task.deleted_at || task.updated_at)}</td>
-            <td><button className="ghost small" onClick={() => openDetail(task)}>{loadingDetail === task.id ? "加载" : "详情"}</button></td>
+            <td><div className="row-actions-inline">{!deleted && (task.status === "queued" || task.status === "running") ? <button className="ghost small" onClick={() => cancelTaskItem(task).catch((error) => toast("error", error instanceof Error ? error.message : "中止任务失败"))}>中止</button> : null}<button className="ghost small" onClick={() => openDetail(task)}>{loadingDetail === task.id ? "加载" : "详情"}</button></div></td>
           </tr>
         );
       })}</tbody></table></ScrollableTable>
@@ -2537,6 +2628,7 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
   const [eventsError, setEventsError] = useState("");
+  const [cancelBusy, setCancelBusy] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setEventsLoading(true);
@@ -2555,15 +2647,26 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
       cancelled = true;
     };
   }, [token, task.id, task.owner_id]);
+  async function cancelTaskNow() {
+    setCancelBusy(true);
+    try {
+      await api.cancelTask(token, { id: task.id, owner_id: task.owner_id });
+      const data = await api.taskEvents(token, task.id, { ownerID: task.owner_id });
+      setEvents(data.items || []);
+    } finally {
+      setCancelBusy(false);
+    }
+  }
   return (
     <div className="detail-panel">
+      {!task.deleted_at && (task.status === "queued" || task.status === "running") ? <div className="modal-actions"><button className="ghost small" disabled={cancelBusy} onClick={() => cancelTaskNow().catch(() => {})}>{cancelBusy ? "中止中" : "中止任务"}</button></div> : null}
       <div className="detail-grid">
         <DetailItem label="任务 ID" value={task.id} code />
         {task.owner_name ? <DetailItem label="用户名称" value={task.owner_name} /> : null}
         {task.owner_email ? <DetailItem label="用户邮箱" value={task.owner_email} /> : null}
         {task.owner_role ? <DetailItem label="用户角色" value={String(task.owner_role)} /> : null}
         {task.owner_id ? <DetailItem label="用户 ID" value={task.owner_id} code /> : null}
-        <DetailItem label="状态" value={task.status} />
+        <DetailItem label="状态" value={taskStatusLabel(task.status)} />
         <DetailItem label="创建时间" value={fmtDate(task.created_at)} />
         <DetailItem label="更新时间" value={fmtDate(task.updated_at)} />
         {task.deleted_at ? <DetailItem label="删除时间" value={fmtDate(task.deleted_at)} /> : null}

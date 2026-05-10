@@ -12,6 +12,7 @@ import (
 
 	"gpt-image-web/internal/domain"
 	"gpt-image-web/internal/storage"
+	"gpt-image-web/internal/upstream/chatgpt"
 )
 
 type taskTestUpstream struct{}
@@ -20,6 +21,11 @@ type taskRetrySignalUpstream struct {
 	mu    sync.Mutex
 	calls int
 }
+type taskCancellableUpstream struct {
+	started chan struct{}
+	done    chan struct{}
+}
+type taskPromptAdjustUpstream struct{}
 
 func (taskTestUpstream) ListModels(ctx context.Context) (map[string]any, error) {
 	return map[string]any{"object": "list", "data": []map[string]any{}}, nil
@@ -198,6 +204,102 @@ func (u *taskRetrySignalUpstream) StreamAnthropicMessages(ctx context.Context, r
 }
 
 func (u *taskRetrySignalUpstream) RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string) {
+	return 0, nil
+}
+
+func (u *taskCancellableUpstream) ListModels(ctx context.Context) (map[string]any, error) {
+	return map[string]any{"object": "list", "data": []map[string]any{}}, nil
+}
+
+func (u *taskCancellableUpstream) GenerateImage(ctx context.Context, req ImageGenerationPayload) (map[string]any, error) {
+	select {
+	case u.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	select {
+	case u.done <- struct{}{}:
+	default:
+	}
+	return nil, ctx.Err()
+}
+
+func (u *taskCancellableUpstream) EditImage(ctx context.Context, req ImageEditPayload) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (u *taskCancellableUpstream) ChatCompletions(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (u *taskCancellableUpstream) StreamChatCompletions(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (u *taskCancellableUpstream) Responses(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (u *taskCancellableUpstream) StreamResponses(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (u *taskCancellableUpstream) AnthropicMessages(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (u *taskCancellableUpstream) StreamAnthropicMessages(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (u *taskCancellableUpstream) RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string) {
+	return 0, nil
+}
+
+func (taskPromptAdjustUpstream) ListModels(ctx context.Context) (map[string]any, error) {
+	return map[string]any{"object": "list", "data": []map[string]any{}}, nil
+}
+
+func (taskPromptAdjustUpstream) GenerateImage(ctx context.Context, req ImageGenerationPayload) (map[string]any, error) {
+	return nil, chatgpt.ErrImagePromptAdjust
+}
+
+func (taskPromptAdjustUpstream) EditImage(ctx context.Context, req ImageEditPayload) (map[string]any, error) {
+	appendStructuredLogAttempt(ctx, map[string]any{
+		"status":        "attempt_failed",
+		"mode":          "edit",
+		"attempt":       1,
+		"error":         "请提供更具体的修改方向",
+		"upstream_text": "请提供更具体的修改方向",
+	})
+	return nil, &chatgpt.ImagePromptAdjustError{Text: "请提供更具体的修改方向"}
+}
+
+func (taskPromptAdjustUpstream) ChatCompletions(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (taskPromptAdjustUpstream) StreamChatCompletions(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (taskPromptAdjustUpstream) Responses(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (taskPromptAdjustUpstream) StreamResponses(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (taskPromptAdjustUpstream) AnthropicMessages(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (taskPromptAdjustUpstream) StreamAnthropicMessages(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (taskPromptAdjustUpstream) RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string) {
 	return 0, nil
 }
 
@@ -516,4 +618,226 @@ func TestTaskQueuePersistsRetrySignalEvents(t *testing.T) {
 		t.Fatalf("list task events final: %v", err)
 	}
 	t.Fatalf("expected attempt_failed + retrying + success events, got %d events", len(events))
+}
+
+func TestTaskQueueCancelTaskMarksCancelled(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	imagesDir := filepath.Join(tempDir, "images")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data: %v", err)
+	}
+	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+		t.Fatalf("mkdir images: %v", err)
+	}
+
+	dbPath := filepath.Join(dataDir, "app.db")
+	store, err := storage.Open(ctx, dbPath, 1)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	user := domain.User{
+		ID:             "cancel-user",
+		Email:          "cancel@example.com",
+		Name:           "Cancel User",
+		PasswordHash:   "hash",
+		Role:           domain.RoleUser,
+		Status:         domain.UserStatusActive,
+		QuotaUnlimited: false,
+		PermanentQuota: 10,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	task := domain.ImageTask{
+		ID:             "cancel-task",
+		OwnerID:        user.ID,
+		Status:         taskQueued,
+		Phase:          taskPhaseQueued,
+		Mode:           "generate",
+		Model:          "gpt-image-2",
+		Prompt:         "cancel me",
+		RequestedCount: 1,
+		ReservedQuota:  jsonData(domain.UserQuotaReceipt{Permanent: 1, Total: 1}),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateImageTask(ctx, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	upstream := &taskCancellableUpstream{started: make(chan struct{}, 1), done: make(chan struct{}, 1)}
+	queue := NewTaskQueue(store, upstream, imagesDir, "", 1, 1)
+	defer queue.Close()
+
+	if err := queue.Submit(taskJob{
+		OwnerID: user.ID,
+		TaskID:  task.ID,
+		Mode:    "generate",
+		Receipt: domain.UserQuotaReceipt{Permanent: 1, Total: 1},
+		Gen: ImageGenerationPayload{
+			Prompt:         "cancel me",
+			Model:          "gpt-image-2",
+			N:              1,
+			ResponseFormat: "b64_json",
+		},
+	}); err != nil {
+		t.Fatalf("submit task: %v", err)
+	}
+
+	select {
+	case <-upstream.started:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for task to start")
+	}
+
+	if !queue.CancelTask(task.ID) {
+		t.Fatalf("expected cancel task to return true")
+	}
+
+	select {
+	case <-upstream.done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for upstream cancellation")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		items, err := store.ListImageTasks(ctx, user.ID, []string{task.ID}, true, true)
+		if err != nil {
+			t.Fatalf("list tasks: %v", err)
+		}
+		if len(items) == 1 && items[0].Status == taskCancelled {
+			events, err := store.ListTaskEvents(ctx, user.ID, task.ID, true)
+			if err != nil {
+				t.Fatalf("list task events: %v", err)
+			}
+			for _, event := range events {
+				if event.Type == "cancelled" {
+					return
+				}
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	t.Fatalf("expected task to become cancelled")
+}
+
+func TestTaskQueuePromptAdjustErrorDoesNotRetry(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	imagesDir := filepath.Join(tempDir, "images")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data: %v", err)
+	}
+	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+		t.Fatalf("mkdir images: %v", err)
+	}
+
+	dbPath := filepath.Join(dataDir, "app.db")
+	store, err := storage.Open(ctx, dbPath, 1)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	user := domain.User{
+		ID:             "prompt-adjust-user",
+		Email:          "prompt-adjust@example.com",
+		Name:           "Prompt Adjust User",
+		PasswordHash:   "hash",
+		Role:           domain.RoleUser,
+		Status:         domain.UserStatusActive,
+		QuotaUnlimited: true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	task := domain.ImageTask{
+		ID:             "prompt-adjust-task",
+		OwnerID:        user.ID,
+		Status:         taskQueued,
+		Phase:          taskPhaseQueued,
+		Mode:           "edit",
+		Model:          "gpt-image-2",
+		Prompt:         "test",
+		RequestedCount: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateImageTask(ctx, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	queue := NewTaskQueue(store, taskPromptAdjustUpstream{}, imagesDir, "", 1, 1)
+	defer queue.Close()
+
+	if err := queue.Submit(taskJob{
+		OwnerID: user.ID,
+		TaskID:  task.ID,
+		Mode:    "edit",
+		Edit: ImageEditPayload{
+			Prompt:         "test",
+			Model:          "gpt-image-2",
+			N:              1,
+			ResponseFormat: "b64_json",
+			Images: []UploadImage{{
+				Name:        "a.png",
+				ContentType: "image/png",
+				Data:        []byte("fake"),
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("submit task: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := store.ListTaskEvents(ctx, user.ID, task.ID, true)
+		if err != nil {
+			t.Fatalf("list task events: %v", err)
+		}
+		if len(events) == 0 {
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		retryingCount := 0
+		attemptFailedCount := 0
+		foundError := false
+		for _, event := range events {
+			switch event.Type {
+			case "retrying":
+				retryingCount++
+			case "attempt_failed":
+				attemptFailedCount++
+			case "error":
+				foundError = true
+			}
+		}
+		if foundError {
+			if retryingCount != 0 {
+				t.Fatalf("expected no retrying events, got %d", retryingCount)
+			}
+			if attemptFailedCount != 1 {
+				t.Fatalf("expected exactly 1 attempt_failed event, got %d", attemptFailedCount)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for prompt-adjust failure without retry")
 }

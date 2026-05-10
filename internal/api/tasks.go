@@ -13,6 +13,7 @@ import (
 	"gpt-image-web/internal/auth"
 	"gpt-image-web/internal/domain"
 	"gpt-image-web/internal/storage"
+	"gpt-image-web/internal/upstream/chatgpt"
 )
 
 const (
@@ -20,6 +21,7 @@ const (
 	taskRunning          = "running"
 	taskSuccess          = "success"
 	taskError            = "error"
+	taskCancelled        = "cancelled"
 	taskPhaseQueued      = "queued"
 	taskPhaseWaitingSlot = "waiting_slot"
 	taskPhaseProcessing  = "processing"
@@ -35,6 +37,8 @@ type TaskQueue struct {
 	upstream  Upstream
 	jobs      chan taskJob
 	cancel    context.CancelFunc
+	runMu     sync.Mutex
+	running   map[string]context.CancelFunc
 	wg        sync.WaitGroup
 }
 
@@ -59,6 +63,7 @@ func NewTaskQueue(store *storage.Store, upstream Upstream, imagesDir string, bas
 		upstream:  upstream,
 		jobs:      make(chan taskJob, queueSize),
 		cancel:    cancel,
+		running:   make(map[string]context.CancelFunc),
 	}
 	for i := 0; i < workers; i++ {
 		q.wg.Add(1)
@@ -97,6 +102,8 @@ func (q *TaskQueue) worker(ctx context.Context) {
 func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 	defer cancel()
+	q.registerRunning(job.TaskID, cancel)
+	defer q.unregisterRunning(job.TaskID)
 	_ = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, taskQueued, taskPhaseWaitingSlot, nil, "")
 	q.addTaskEventContext(context.Background(), job, "queued", "任务进入等待队列", map[string]any{
 		"status": taskQueued,
@@ -140,6 +147,9 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		}
 		appendStructuredLogAttempt(attemptCtx, attemptDetail)
 		q.addTaskEventContext(context.Background(), job, "attempt_failed", "上游尝试失败", attemptDetail)
+		if errors.Is(err, chatgpt.ErrImagePromptAdjust) {
+			break
+		}
 		if attempt < maxImageTaskAttempts {
 			_ = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, taskQueued, taskPhaseWaitingSlot, nil, "")
 			log.Printf("image_task retry id=%s owner=%s mode=%s attempt=%d err=%v", job.TaskID, job.OwnerID, job.Mode, attempt+1, err)
@@ -156,6 +166,10 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		}
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			q.finishCancelledJob(job, "任务已中止")
+			return
+		}
 		attempts := logAttempts(lastAttemptCtx)
 		if job.Receipt.Total > 0 {
 			_, _ = q.store.RefundUserQuota(context.Background(), job.OwnerID, job.Receipt)
@@ -212,6 +226,45 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 		successDetail["task_status_before_event"] = status
 	}
 	q.addTaskEventContext(context.Background(), job, "success", "图片任务成功", successDetail)
+}
+
+func (q *TaskQueue) registerRunning(taskID string, cancel context.CancelFunc) {
+	q.runMu.Lock()
+	defer q.runMu.Unlock()
+	q.running[taskID] = cancel
+}
+
+func (q *TaskQueue) unregisterRunning(taskID string) {
+	q.runMu.Lock()
+	defer q.runMu.Unlock()
+	delete(q.running, taskID)
+}
+
+func (q *TaskQueue) CancelTask(taskID string) bool {
+	q.runMu.Lock()
+	cancel := q.running[taskID]
+	q.runMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+func (q *TaskQueue) finishCancelledJob(job taskJob, message string) {
+	if job.Receipt.Total > 0 {
+		_, _ = q.store.RefundUserQuota(context.Background(), job.OwnerID, job.Receipt)
+	}
+	detail := map[string]any{
+		"status":         taskCancelled,
+		"phase":          taskPhaseFinished,
+		"quota_used":     0,
+		"quota_reserved": job.Receipt.Total,
+		"quota_refund":   job.Receipt.Total,
+		"error":          message,
+	}
+	_ = q.updateImageTaskFinal(context.Background(), job, taskCancelled, jsonData([]any{}), message)
+	q.addTaskEventContext(context.Background(), job, "cancelled", "图片任务已中止", detail)
 }
 
 func (q *TaskQueue) updateImageTaskFinal(ctx context.Context, job taskJob, status string, data json.RawMessage, taskErr string) error {
@@ -365,6 +418,11 @@ type imageTaskDeleteRequest struct {
 	Items []imageTaskDeleteRef `json:"items"`
 }
 
+type imageTaskCancelRequest struct {
+	ID      string `json:"id"`
+	OwnerID string `json:"owner_id"`
+}
+
 type imageTaskDeleteRef struct {
 	ID      string `json:"id"`
 	OwnerID string `json:"owner_id"`
@@ -467,6 +525,71 @@ func (s *Server) handleDeleteImageTasks(w http.ResponseWriter, r *http.Request) 
 		s.addAuditLog(r, identity, "task", "图片任务删除", detail)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+}
+
+func (s *Server) handleCancelImageTask(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.requireIdentity(w, r)
+	if !ok {
+		return
+	}
+	var req imageTaskCancelRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	taskID := strings.TrimSpace(req.ID)
+	if taskID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "id is required")
+		return
+	}
+	ownerID := taskOwnerScope(identity, req.OwnerID)
+	items, err := s.store.ListImageTasks(r.Context(), ownerID, []string{taskID}, true, true)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	if len(items) == 0 {
+		writeError(w, http.StatusNotFound, "not_found", "task not found")
+		return
+	}
+	task := items[0]
+	if task.Status == taskSuccess || task.Status == taskError || task.Status == taskCancelled || task.DeletedAt != nil {
+		writeError(w, http.StatusConflict, "task_not_cancellable", "task is not cancellable")
+		return
+	}
+	cancelled := s.tasks.CancelTask(task.ID)
+	if !cancelled {
+		message := "任务已中止"
+		var receipt domain.UserQuotaReceipt
+		if len(task.ReservedQuota) > 0 {
+			_ = json.Unmarshal(task.ReservedQuota, &receipt)
+		}
+		if receipt.Total > 0 {
+			_, _ = s.store.RefundUserQuota(r.Context(), task.OwnerID, receipt)
+		}
+		_ = s.store.UpdateImageTask(r.Context(), task.OwnerID, task.ID, taskCancelled, taskPhaseFinished, jsonData([]any{}), message)
+		s.addImageTaskEventContext(r.Context(), identity, task, "cancelled", "图片任务已中止", map[string]any{
+			"status":         taskCancelled,
+			"phase":          taskPhaseFinished,
+			"quota_used":     0,
+			"quota_reserved": receipt.Total,
+			"quota_refund":   receipt.Total,
+			"cancelled_by":   identity.ID,
+			"error":          message,
+		})
+	} else {
+		s.addImageTaskEventContext(r.Context(), identity, task, "cancel_requested", "已请求中止图片任务", map[string]any{
+			"status":       task.Status,
+			"phase":        task.Phase,
+			"cancelled_by": identity.ID,
+		})
+	}
+	updated, _ := s.store.ListImageTasks(r.Context(), task.OwnerID, []string{task.ID}, true, true)
+	if len(updated) > 0 {
+		writeJSON(w, http.StatusOK, updated[0])
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": task.ID, "status": taskCancelled, "phase": taskPhaseFinished})
 }
 
 func (s *Server) handleListImageTaskEvents(w http.ResponseWriter, r *http.Request) {

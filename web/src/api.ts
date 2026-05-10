@@ -235,6 +235,12 @@ export const api = {
         })),
   taskEvents: (token: string, id: string, params: { ownerID?: string } = {}) =>
     request<{ items: TaskEvent[]; total: number }>(token, withQuery(`/api/image-tasks/${encodeURIComponent(id)}/events`, { owner_id: params.ownerID })),
+  cancelTask: (token: string, body: { id: string; owner_id?: string }) =>
+    request<ImageTask>(token, "/api/image-tasks/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }),
   deleteTasks: (token: string, items: Array<{ id: string; owner_id?: string }>) =>
     request<{ removed: number }>(token, "/api/image-tasks/delete", {
       method: "POST",

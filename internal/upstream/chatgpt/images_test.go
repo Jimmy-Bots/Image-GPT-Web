@@ -1,6 +1,7 @@
 package chatgpt
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -31,5 +32,15 @@ func TestFilterReferenceCandidateIDsRemovesReferenceAndShortPrefixIDs(t *testing
 	}
 	if got[0] != "file_00000000999988887777666655554444" {
 		t.Fatalf("expected only real result id to remain, got %v", got)
+	}
+}
+
+func TestImagePromptAdjustErrorWrapsSentinel(t *testing.T) {
+	err := &ImagePromptAdjustError{Text: "请提供更具体的修改方向"}
+	if !strings.Contains(err.Error(), "请提供更具体的修改方向") {
+		t.Fatalf("unexpected error text: %q", err.Error())
+	}
+	if !errors.Is(err, ErrImagePromptAdjust) {
+		t.Fatalf("expected ImagePromptAdjustError to match ErrImagePromptAdjust")
 	}
 }

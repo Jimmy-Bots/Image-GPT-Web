@@ -16,6 +16,47 @@ import (
 	"gpt-image-web/internal/domain"
 )
 
+func isRequestCancelled(err error, ctx context.Context) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded)
+}
+
+func (s *Server) handleCancelledSyncImageTask(r *http.Request, identity Identity, task domain.ImageTask, endpoint string, receipt domain.UserQuotaReceipt, user domain.User, duration int64, attempts []map[string]any) {
+	message := "任务已中止"
+	ctx := context.Background()
+	s.refundImageQuota(ctx, identity, receipt)
+	_ = s.store.UpdateImageTask(ctx, identity.ID, task.ID, taskCancelled, taskPhaseFinished, jsonData([]any{}), message)
+	s.addImageTaskEventContext(ctx, identity, task, "cancelled", "同步图片任务已中止", map[string]any{
+		"endpoint":        endpoint,
+		"status":          taskCancelled,
+		"phase":           taskPhaseFinished,
+		"duration_ms":     duration,
+		"quota_reserved":  receipt.Total,
+		"quota_used":      0,
+		"quota_refund":    receipt.Total,
+		"available_quota": user.AvailableQuota,
+		"error":           message,
+		"attempts":        attempts,
+	})
+	s.addLogContext(ctx, "call", endpoint, map[string]any{
+		"subject_id":      identity.ID,
+		"key_id":          identity.KeyID,
+		"name":            identity.Name,
+		"role":            identity.Role,
+		"auth_type":       identity.AuthType,
+		"endpoint":        endpoint,
+		"model":           task.Model,
+		"status":          "cancelled",
+		"error":           message,
+		"task_id":         task.ID,
+		"duration_ms":     duration,
+		"requested_count": task.RequestedCount,
+		"quota_reserved":  receipt.Total,
+		"quota_used":      0,
+		"available_quota": user.AvailableQuota,
+		"attempts":        attempts,
+	})
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireIdentity(w, r); !ok {
 		return
@@ -116,6 +157,10 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	result, err := s.upstream.GenerateImage(ctx, req)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
+		if isRequestCancelled(err, r.Context()) {
+			s.handleCancelledSyncImageTask(r, identity, task, "/v1/images/generations", receipt, user, duration, logAttempts(ctx))
+			return
+		}
 		s.refundImageQuota(r.Context(), identity, receipt)
 		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, taskPhaseFinished, jsonData([]any{}), err.Error())
 		s.addImageTaskEventContext(r.Context(), identity, task, "error", "同步图片生成失败", map[string]any{
@@ -273,6 +318,10 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	result, err := s.upstream.EditImage(ctx, req)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
+		if isRequestCancelled(err, r.Context()) {
+			s.handleCancelledSyncImageTask(r, identity, task, "/v1/images/edits", receipt, user, duration, logAttempts(ctx))
+			return
+		}
 		s.refundImageQuota(r.Context(), identity, receipt)
 		_ = s.store.UpdateImageTask(r.Context(), identity.ID, taskID, taskError, taskPhaseFinished, jsonData([]any{}), err.Error())
 		s.addImageTaskEventContext(r.Context(), identity, task, "error", "同步图片编辑失败", map[string]any{

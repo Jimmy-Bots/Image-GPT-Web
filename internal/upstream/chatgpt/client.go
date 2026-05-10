@@ -24,7 +24,26 @@ const (
 	defaultClientBuildNumber = "5955942"
 )
 
-var ErrInvalidAccessToken = errors.New("invalid_access_token")
+var (
+	ErrInvalidAccessToken = errors.New("invalid_access_token")
+	ErrImagePromptAdjust  = errors.New("image_prompt_adjust_required")
+)
+
+type ImagePromptAdjustError struct {
+	Text string
+}
+
+func (e *ImagePromptAdjustError) Error() string {
+	text := strings.TrimSpace(e.Text)
+	if text == "" {
+		return "上游返回了文本说明，请调整提示词后重试。"
+	}
+	return text
+}
+
+func (e *ImagePromptAdjustError) Unwrap() error {
+	return ErrImagePromptAdjust
+}
 
 type HTTPDoer interface {
 	Do(req *fhttp.Request) (*fhttp.Response, error)
