@@ -117,7 +117,8 @@ func (r *Registrar) Register(ctx context.Context) (RegisterResult, error) {
 	birthdate := r.identity.Birthdate()
 
 	r.logRegistration(ctx, "info", "platform authorize", map[string]any{"email": email})
-	if err := state.platformAuthorize(ctx, email); err != nil {
+	initialCodeVerifier, err := state.platformAuthorize(ctx, email)
+	if err != nil {
 		r.logRegistration(ctx, "error", "platform authorize failed", map[string]any{"email": email, "error": err.Error()})
 		return RegisterResult{}, err
 	}
@@ -140,14 +141,57 @@ func (r *Registrar) Register(ctx context.Context) (RegisterResult, error) {
 	}
 	r.logRegistration(ctx, "info", "verification code received", map[string]any{"email": email, "code": code})
 	r.logRegistration(ctx, "info", "validate email otp", map[string]any{"email": email, "code": code})
-	if _, err := state.validateOTP(ctx, code); err != nil {
+	continueURL, err := state.validateOTP(ctx, code)
+	if err != nil {
 		r.logRegistration(ctx, "error", "validate email otp failed", map[string]any{"email": email, "code": code, "error": err.Error()})
 		return RegisterResult{}, err
 	}
 	r.logRegistration(ctx, "info", "create account profile", map[string]any{"email": email})
 	if err := state.createAccount(ctx, fullName, birthdate); err != nil {
-		r.logRegistration(ctx, "error", "create account profile failed", map[string]any{"email": email, "error": err.Error()})
-		return RegisterResult{}, err
+		if shouldContinueLoginAfterCreateAccount(err) {
+			r.logRegistration(ctx, "warn", "account profile already exists, continue with verified email session", map[string]any{
+				"email": email,
+				"error": err.Error(),
+			})
+			verifiedConsentURL := state.verifiedSessionConsentURL(continueURL)
+			r.logRegistration(ctx, "info", "exchange platform tokens from verified email session", map[string]any{
+				"email":       email,
+				"consent_url": verifiedConsentURL,
+			})
+			tokens, exchangeErr := state.exchangeTokensFromVerifiedEmailSession(ctx, initialCodeVerifier, verifiedConsentURL)
+			if exchangeErr != nil {
+				r.logRegistration(ctx, "error", "exchange platform tokens from verified email session failed", map[string]any{"email": email, "error": exchangeErr.Error()})
+				return RegisterResult{}, exchangeErr
+			}
+			result := RegisterResult{
+				Email:        email,
+				Password:     password,
+				AccessToken:  strings.TrimSpace(tokens.AccessToken),
+				RefreshToken: strings.TrimSpace(tokens.RefreshToken),
+				IDToken:      strings.TrimSpace(tokens.IDToken),
+				CreatedAt:    r.now(),
+			}
+			if result.AccessToken == "" {
+				r.logRegistration(ctx, "error", "empty access token", map[string]any{"email": email})
+				return RegisterResult{}, errors.New("empty access token")
+			}
+			r.logRegistration(ctx, "info", "store account token", map[string]any{"email": email})
+			if _, err := r.accountRepo.AddAccessToken(ctx, result.AccessToken, result.Password); err != nil {
+				r.logRegistration(ctx, "error", "store account token failed", map[string]any{"email": email, "error": err.Error()})
+				return RegisterResult{}, err
+			}
+			r.logRegistration(ctx, "info", "refresh account remote info", map[string]any{"email": email})
+			if err := r.refreshAccountRemoteInfo(ctx, result.AccessToken); err != nil {
+				r.logRegistration(ctx, "warn", "refresh account remote info failed", map[string]any{"email": email, "error": err.Error()})
+			}
+			r.logRegistration(ctx, "info", "register success", map[string]any{
+				"email": result.Email,
+			})
+			return result, nil
+		} else {
+			r.logRegistration(ctx, "error", "create account profile failed", map[string]any{"email": email, "error": err.Error()})
+			return RegisterResult{}, err
+		}
 	}
 
 	r.logRegistration(ctx, "info", "exchange platform tokens", map[string]any{"email": email})
@@ -396,17 +440,17 @@ type tokenBundle struct {
 	IDToken      string
 }
 
-func (f flowState) platformAuthorize(ctx context.Context, email string) error {
+func (f flowState) platformAuthorize(ctx context.Context, email string) (string, error) {
 	authURL, err := url.Parse(f.cfg.AuthBaseURL)
 	if err != nil {
-		return err
+		return "", err
 	}
 	f.client.SetFollowRedirect(true)
 	f.client.SetCookies(authURL, []*fhttp.Cookie{
 		{Name: "oai-did", Value: f.deviceID, Domain: ".auth.openai.com", Path: "/"},
 		{Name: "oai-did", Value: f.deviceID, Domain: "auth.openai.com", Path: "/"},
 	})
-	_, codeChallenge := generatePKCE(f.random)
+	codeVerifier, codeChallenge := generatePKCE(f.random)
 	params := f.oauthParams(email, codeChallenge)
 	headers := f.navigateHeaders(f.cfg.PlatformBaseURL + "/")
 	reqCtx, cancel := withTimeout(ctx, f.cfg.RequestTimeout)
@@ -415,7 +459,7 @@ func (f flowState) platformAuthorize(ctx context.Context, email string) error {
 		return newRequest("GET", f.cfg.AuthBaseURL+"/api/accounts/authorize?"+params.Encode(), headers, nil)
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	if resp.StatusCode != 200 {
 		data := resp.JSON()
@@ -424,9 +468,9 @@ func (f flowState) platformAuthorize(ctx context.Context, email string) error {
 		if len(errData) > 0 {
 			detail = fmt.Sprintf(": %s - %s", stringValue(errData["code"]), stringValue(errData["message"]))
 		}
-		return fmt.Errorf("platform_authorize_http_%d%s", resp.StatusCode, strings.TrimSpace(detail))
+		return "", fmt.Errorf("platform_authorize_http_%d%s", resp.StatusCode, strings.TrimSpace(detail))
 	}
-	return nil
+	return codeVerifier, nil
 }
 
 func (f flowState) registerUser(ctx context.Context, email string, password string) error {
@@ -601,6 +645,13 @@ func (f flowState) loginAndExchangeTokens(ctx context.Context, email string, pas
 }
 
 func (f flowState) exchangePlatformTokens(ctx context.Context, codeVerifier string, consentURL string) (tokenBundle, error) {
+	if callback := parseOAuthCallback(consentURL); callback != nil {
+		code := strings.TrimSpace(callback["code"])
+		if code == "" {
+			return tokenBundle{}, errors.New("missing oauth callback code")
+		}
+		return f.exchangeOAuthCode(ctx, codeVerifier, code)
+	}
 	callback, err := f.extractOAuthCallback(ctx, consentURL)
 	if err != nil {
 		return tokenBundle{}, err
@@ -609,6 +660,27 @@ func (f flowState) exchangePlatformTokens(ctx context.Context, codeVerifier stri
 	if code == "" {
 		return tokenBundle{}, errors.New("missing oauth callback code")
 	}
+	return f.exchangeOAuthCode(ctx, codeVerifier, code)
+}
+
+func (f flowState) exchangeTokensFromVerifiedEmailSession(ctx context.Context, codeVerifier string, continueURL string) (tokenBundle, error) {
+	primaryURL := f.verifiedSessionConsentURL(continueURL)
+	tokens, err := f.exchangePlatformTokens(ctx, codeVerifier, primaryURL)
+	if err == nil {
+		return tokens, nil
+	}
+	defaultConsentURL := f.cfg.AuthBaseURL + "/sign-in-with-chatgpt/codex/consent"
+	if strings.TrimSpace(primaryURL) == defaultConsentURL {
+		return tokenBundle{}, err
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "missing oai-client-auth-session cookie") &&
+		!strings.Contains(strings.ToLower(err.Error()), "missing workspace id") {
+		return tokenBundle{}, err
+	}
+	return f.exchangePlatformTokens(ctx, codeVerifier, defaultConsentURL)
+}
+
+func (f flowState) exchangeOAuthCode(ctx context.Context, codeVerifier string, code string) (tokenBundle, error) {
 	values := url.Values{
 		"grant_type":    []string{"authorization_code"},
 		"code":          []string{code},
@@ -658,6 +730,21 @@ func (f flowState) exchangePlatformTokens(ctx context.Context, codeVerifier stri
 		RefreshToken: refreshToken,
 		IDToken:      idToken,
 	}, nil
+}
+
+func (f flowState) verifiedSessionConsentURL(continueURL string) string {
+	current := strings.TrimSpace(continueURL)
+	if current == "" {
+		return f.cfg.AuthBaseURL + "/sign-in-with-chatgpt/codex/consent"
+	}
+	if parseOAuthCallback(current) != nil {
+		return current
+	}
+	lower := strings.ToLower(current)
+	if strings.Contains(lower, "/consent") || strings.Contains(lower, "sign-in-with-chatgpt") {
+		return current
+	}
+	return f.cfg.AuthBaseURL + "/sign-in-with-chatgpt/codex/consent"
 }
 
 func (f flowState) extractOAuthCallback(ctx context.Context, consentURL string) (map[string]string, error) {
@@ -926,4 +1013,13 @@ func classifyFreshLoginRetryReason(err error) string {
 	default:
 		return "fresh_session_retry"
 	}
+}
+
+func shouldContinueLoginAfterCreateAccount(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "create_account_http_400") &&
+		strings.Contains(text, "user_already_exists")
 }

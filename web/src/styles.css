@@ -428,14 +428,14 @@ button.composer-pill, span.composer-pill { display: inline-flex; align-items: ce
 .segmented button { min-height: 28px; padding: 5px 11px; border-radius: 999px; background: transparent; color: #667386; font-size: 12px; }
 .segmented button.active { background: white; color: #17202a; box-shadow: 0 4px 12px rgba(28, 39, 53, .08); }
 .activity-table th:first-child, .activity-table td:first-child { position: sticky; left: 0; z-index: 4; width: 42px; min-width: 42px; background: inherit; text-align: center; }
-.activity-table th:last-child, .activity-table td:last-child { position: sticky; right: 0; z-index: 5; width: 74px; min-width: 74px; text-align: left; background: inherit; box-shadow: -1px 0 0 #edf2f7; overflow: visible; }
+.activity-table th:last-child, .activity-table td:last-child { position: sticky; right: 0; z-index: 5; width: 112px; min-width: 112px; text-align: left; background: inherit; box-shadow: -1px 0 0 #edf2f7; overflow: visible; }
 .activity-table tbody td:first-child,
 .activity-table tbody td:last-child { background: #fff; }
 .activity-table tbody tr:hover td:first-child,
 .activity-table tbody tr:hover td:last-child { background: #fbfcfe; }
 .activity-table thead th:first-child,
 .activity-table thead th:last-child { background: #fbfcfe; z-index: 8; }
-.task-table { min-width: 1540px; }
+.task-table { min-width: 1588px; }
 .task-table th:nth-child(2), .task-table td:nth-child(2) { position: sticky; left: 42px; z-index: 4; width: 190px; min-width: 190px; background: inherit; box-shadow: 1px 0 0 #edf2f7; }
 .task-table th:nth-child(3), .task-table td:nth-child(3) { width: 220px; min-width: 220px; }
 .task-table th:nth-child(4), .task-table td:nth-child(4) { width: 76px; min-width: 76px; }
@@ -445,10 +445,11 @@ button.composer-pill, span.composer-pill { display: inline-flex; align-items: ce
 .task-table th:nth-child(8), .task-table td:nth-child(8) { width: 74px; min-width: 74px; }
 .task-table th:nth-child(9), .task-table td:nth-child(9) { width: 86px; min-width: 86px; }
 .task-table th:nth-child(10), .task-table td:nth-child(10) { width: 82px; min-width: 82px; }
-.task-table th:nth-child(11), .task-table td:nth-child(11) { width: 172px; min-width: 172px; }
+.task-table th:nth-child(11), .task-table td:nth-child(11) { width: 186px; min-width: 186px; }
 .task-table tbody td:nth-child(2) { background: #fff; }
 .task-table tbody tr:hover td:nth-child(2) { background: #fbfcfe; }
 .task-table thead th:nth-child(2) { background: #fbfcfe; z-index: 8; }
+.task-actions-cell { overflow: visible; }
 .task-owner-cell { min-width: 0; display: grid; gap: 4px; }
 .task-owner-cell strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #17202a; font-size: 13px; }
 .task-owner-cell small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #778499; font-size: 11px; }
@@ -564,6 +565,8 @@ button.composer-pill, span.composer-pill { display: inline-flex; align-items: ce
 .attempt-raw-section strong { color: #748093; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
 .detail-json-compact { max-height: 220px; padding: 9px; font-size: 11px; line-height: 1.5; }
 .row-actions-inline-wrap { flex-wrap: wrap; justify-content: flex-start; }
+.row-actions-inline-task { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; width: 100%; max-width: 148px; }
+.task-action-button { width: 100%; min-width: 0; padding-inline: 0; }
 
 .toast-stack { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 40; }
 .toast { min-width: 240px; max-width: 360px; padding: 11px 12px; border-radius: 8px; background: #17202a; color: white; box-shadow: 0 12px 32px rgba(20, 30, 42, .18); font-size: 13px; }

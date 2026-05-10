@@ -22,6 +22,12 @@ type fakeMailProvider struct {
 	wait   func(context.Context, Mailbox) (string, error)
 }
 
+type httpFactoryFunc func(Config) (HTTPClient, error)
+
+func (f httpFactoryFunc) New(cfg Config) (HTTPClient, error) {
+	return f(cfg)
+}
+
 func (f fakeMailProvider) CreateMailbox(ctx context.Context) (Mailbox, error) {
 	return f.create(ctx)
 }
@@ -484,6 +490,74 @@ func TestValidateOTPIncludesDetailedError(t *testing.T) {
 	}
 	if !strings.Contains(text, "otp_expired") || !strings.Contains(text, "verification code expired") {
 		t.Fatalf("expected detailed otp error, got %q", text)
+	}
+}
+
+type registerExistingUserClient struct{}
+
+func (c *registerExistingUserClient) Do(req *fhttp.Request) (*fhttp.Response, error) {
+	status := http.StatusOK
+	body := `{}`
+	switch {
+	case strings.Contains(req.URL.String(), "sentinel.openai.com/backend-api/sentinel/req"):
+		body = `{"token":"sentinel_token","proofofwork":{"required":false}}`
+	case strings.Contains(req.URL.String(), "/api/accounts/authorize"):
+		body = `{}`
+	case strings.Contains(req.URL.String(), "/api/accounts/user/register"):
+		body = `{}`
+	case strings.Contains(req.URL.String(), "/api/accounts/email-otp/send"):
+		body = `{}`
+	case strings.Contains(req.URL.String(), "/api/accounts/email-otp/validate"):
+		body = `{"continue_url":"https://auth.openai.com/api/auth/callback?state=email_otp_done"}`
+	case strings.Contains(req.URL.String(), "/api/accounts/create_account"):
+		status = http.StatusBadRequest
+		body = `{"error":{"code":"user_already_exists","message":"An account already exists for this email address.","param":null,"type":"invalid_request_error"}}`
+	case strings.Contains(req.URL.String(), "/oauth/token"):
+		body = `{"access_token":"header.` + base64.RawURLEncoding.EncodeToString([]byte(`{"email":"test@example.com"}`)) + `.sig","refresh_token":"refresh","id_token":"header.` + base64.RawURLEncoding.EncodeToString([]byte(`{"email":"test@example.com"}`)) + `.sig"}`
+	}
+	resp := &fhttp.Response{
+		StatusCode: status,
+		Header:     make(fhttp.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+	if strings.Contains(req.URL.String(), "/sign-in-with-chatgpt/codex/consent") {
+		resp.StatusCode = http.StatusFound
+		resp.Header.Set("Location", "https://platform.openai.com/auth/callback?code=oauth_code")
+	}
+	return resp, nil
+}
+
+func (c *registerExistingUserClient) SetFollowRedirect(bool) {}
+func (c *registerExistingUserClient) SetCookies(*url.URL, []*fhttp.Cookie) {}
+func (c *registerExistingUserClient) GetCookies(*url.URL) []*fhttp.Cookie { return nil }
+func (c *registerExistingUserClient) CloseIdleConnections()               {}
+
+func TestRegisterContinuesToLoginWhenCreateAccountReturnsUserAlreadyExists(t *testing.T) {
+	registrar, err := New(Options{
+		MailProvider: fakeMailProvider{
+			create: func(context.Context) (Mailbox, error) { return Mailbox{Address: "test@example.com"}, nil },
+			wait:   func(context.Context, Mailbox) (string, error) { return "123456", nil },
+		},
+		AccountRepo: fakeAccountRepo{},
+		HTTPFactory: httpFactoryFunc(func(Config) (HTTPClient, error) {
+			return &registerExistingUserClient{}, nil
+		}),
+		RandomSource: &deterministicRandom{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := registrar.Register(context.Background())
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if got := strings.TrimSpace(result.AccessToken); got == "" {
+		t.Fatal("expected access token to be returned")
+	}
+	if result.Email != "test@example.com" {
+		t.Fatalf("unexpected email: %s", result.Email)
 	}
 }
 

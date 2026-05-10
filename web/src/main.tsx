@@ -2612,7 +2612,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
             <td>{taskDuration(task)}</td>
             <td>{canPreview ? <button className="link-button" onClick={() => openPreview(task)}>{loadingPreview === task.id ? "加载" : "预览"}</button> : "-"}</td>
             <td>{fmtDate(task.deleted_at || task.updated_at)}</td>
-            <td><div className="row-actions-inline row-actions-inline-wrap">{!deleted && (task.status === "queued" || task.status === "running") ? <button className="ghost small" onClick={() => cancelTaskItem(task).catch((error) => toast("error", error instanceof Error ? error.message : "中止任务失败"))}>中止</button> : null}<button className="ghost small" onClick={() => openDetail(task)}>{loadingDetail === task.id ? "加载" : "详情"}</button></div></td>
+            <td className="task-actions-cell"><div className="row-actions-inline row-actions-inline-wrap row-actions-inline-task">{!deleted && (task.status === "queued" || task.status === "running") ? <button className="ghost small task-action-button" onClick={() => cancelTaskItem(task).catch((error) => toast("error", error instanceof Error ? error.message : "中止任务失败"))}>中止</button> : null}<button className="ghost small task-action-button" onClick={() => openDetail(task)}>{loadingDetail === task.id ? "加载" : "详情"}</button></div></td>
           </tr>
         );
       })}</tbody></table></ScrollableTable>
