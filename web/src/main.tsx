@@ -2024,7 +2024,7 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
                     />
                   ))}
                 </div>
-                {turn.error ? <p className="turn-error">{turn.error}</p> : null}
+                {turn.error && !turn.images.some((item) => item.error) ? <p className="turn-error">{turn.error}</p> : null}
                 <div className="turn-result-actions">
                   <button className="ghost small" onClick={() => regenerateTurn(turn)}><RotateCcw size={14} />全部重新生成</button>
                 </div>
@@ -2105,6 +2105,7 @@ function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry
   const loadingLabel = workbenchLoadingLabel(item, index);
   const waitingHint = workbenchWaitingHint(item);
   const retryBadge = workbenchRetryBadge(item);
+  const compactError = compactHintText(String(item.error || ""));
   return (
     <article className={classNames("creation-image", sizeAspectClass(size), item.status === "error" && "error")}>
       {src ? (
@@ -2113,7 +2114,7 @@ function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry
         <div className="result-placeholder">
           {item.status === "error" ? <X size={22} /> : item.status === "queued" ? <Clock3 size={22} /> : <LoaderCircle className="spin" size={22} />}
           <span>{item.status === "error" ? turnStatusLabel(item.status) : loadingLabel}</span>
-          {waitingHint ? <small>{waitingHint}</small> : null}
+          {item.status === "error" ? (compactError ? <small>{compactError}</small> : null) : waitingHint ? <small>{waitingHint}</small> : null}
         </div>
       )}
       <div className="image-card-footer">
@@ -2126,7 +2127,7 @@ function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry
       {src ? <div className="image-card-actions"><button className="ghost small" onClick={onUseAsReference}><Sparkles size={13} />加入编辑</button><IconButton title="下载图片" onClick={onDownload}><Download size={13} /></IconButton>{!src.startsWith("data:") ? <IconButton title="复制链接" onClick={onCopy}><Copy size={13} /></IconButton> : null}</div> : null}
       {!src && (item.status === "queued" || item.status === "running") ? <button className="ghost small retry-button" onClick={onCancel}><Ban size={13} />中止任务</button> : null}
       {item.status === "error" ? <button className="ghost small retry-button" onClick={onRetry}><RotateCcw size={13} />重新生成</button> : null}
-      {item.error ? <p className="error-text">{item.error}</p> : null}
+      {item.error && src ? <p className="error-text">{item.error}</p> : null}
     </article>
   );
 }
@@ -2611,7 +2612,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
             <td>{taskDuration(task)}</td>
             <td>{canPreview ? <button className="link-button" onClick={() => openPreview(task)}>{loadingPreview === task.id ? "加载" : "预览"}</button> : "-"}</td>
             <td>{fmtDate(task.deleted_at || task.updated_at)}</td>
-            <td><div className="row-actions-inline">{!deleted && (task.status === "queued" || task.status === "running") ? <button className="ghost small" onClick={() => cancelTaskItem(task).catch((error) => toast("error", error instanceof Error ? error.message : "中止任务失败"))}>中止</button> : null}<button className="ghost small" onClick={() => openDetail(task)}>{loadingDetail === task.id ? "加载" : "详情"}</button></div></td>
+            <td><div className="row-actions-inline row-actions-inline-wrap">{!deleted && (task.status === "queued" || task.status === "running") ? <button className="ghost small" onClick={() => cancelTaskItem(task).catch((error) => toast("error", error instanceof Error ? error.message : "中止任务失败"))}>中止</button> : null}<button className="ghost small" onClick={() => openDetail(task)}>{loadingDetail === task.id ? "加载" : "详情"}</button></div></td>
           </tr>
         );
       })}</tbody></table></ScrollableTable>
@@ -2660,7 +2661,7 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
   return (
     <div className="detail-panel">
       {!task.deleted_at && (task.status === "queued" || task.status === "running") ? <div className="modal-actions"><button className="ghost small" disabled={cancelBusy} onClick={() => cancelTaskNow().catch(() => {})}>{cancelBusy ? "中止中" : "中止任务"}</button></div> : null}
-      <div className="detail-grid">
+      <div className="detail-grid detail-grid-three">
         <DetailItem label="任务 ID" value={task.id} code />
         {task.owner_name ? <DetailItem label="用户名称" value={task.owner_name} /> : null}
         {task.owner_email ? <DetailItem label="用户邮箱" value={task.owner_email} /> : null}
@@ -2710,7 +2711,7 @@ function TaskEventTimeline({ events, loading, error }: { events: TaskEvent[]; lo
           <article key={event.id} className="task-event">
             <time>{fmtDate(event.time)}</time>
             <div>
-              <div className="task-event-title"><Badge value={event.type} /><strong>{event.summary}</strong></div>
+              <div className="task-event-title task-event-title-wrap"><Badge value={event.type} /><strong>{event.summary}</strong></div>
               <div className="task-event-meta">
                 {detail.phase ? <span>phase={String(detail.phase)}</span> : null}
                 {detail.attempt ? <span>attempt={String(detail.attempt)}</span> : null}
