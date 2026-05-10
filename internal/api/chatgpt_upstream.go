@@ -20,7 +20,7 @@ type ChatGPTUpstream struct {
 	store      *storage.Store
 	pool       *AccountPool
 	httpClient chatgpt.HTTPDoer
-	proxyURL    string
+	proxyURL   string
 	logWriter  structuredLogWriter
 	refreshMu  sync.Mutex
 	refreshSem chan struct{}
@@ -83,10 +83,12 @@ func (u *ChatGPTUpstream) ListModels(ctx context.Context) (map[string]any, error
 
 func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGenerationPayload) (map[string]any, error) {
 	maxCount := defaultImageMaxCount
+	rawTraceEnabled := false
 	if settings, err := u.store.GetSettings(ctx); err == nil {
 		if limit := intMapValue(settings, "image_max_count"); limit > 0 {
 			maxCount = limit
 		}
+		rawTraceEnabled = boolMapValue(settings, "image_trace_debug_enabled")
 	}
 	if req.N < 1 {
 		req.N = 1
@@ -110,7 +112,7 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 		}
 		start := time.Now()
 		log.Printf("upstream_image generate_attempt index=%d account=%s model=%s size=%s format=%s", index+1, maskToken(account.AccessToken), req.Model, req.Size, req.ResponseFormat)
-		attemptCtx := chatgpt.WithImageTrace(ctx)
+		attemptCtx := chatgpt.WithImageTraceMode(ctx, rawTraceEnabled)
 		imageResults, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).GenerateImage(attemptCtx, chatgpt.ImageRequest{
 			Prompt:         req.Prompt,
 			Model:          req.Model,
@@ -126,17 +128,21 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 			attempted[account.AccessToken] = struct{}{}
 			lastErr = err
 			u.markImageResult(ctx, account.AccessToken, false)
-			appendStructuredLogAttempt(ctx, map[string]any{
-				"status":      "attempt_failed",
-				"mode":        "generate",
-				"attempt":     index + 1,
-				"token_ref":   accountTokenRef(account.AccessToken),
-				"account":     maskToken(account.AccessToken),
-				"duration_ms": duration,
-				"error":       err.Error(),
-				"will_switch": true,
+			attemptDetail := map[string]any{
+				"status":       "attempt_failed",
+				"mode":         "generate",
+				"attempt":      index + 1,
+				"token_ref":    accountTokenRef(account.AccessToken),
+				"account":      maskToken(account.AccessToken),
+				"duration_ms":  duration,
+				"error":        err.Error(),
+				"will_switch":  true,
 				"upstream_raw": upstreamRaw,
-			})
+			}
+			if text := strings.TrimSpace(chatgptTraceText(upstreamRaw)); text != "" {
+				attemptDetail["upstream_text"] = text
+			}
+			appendStructuredLogAttempt(ctx, attemptDetail)
 			if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
 				status := "异常"
 				quota := 0
@@ -149,16 +155,21 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 		}
 		duration := time.Since(start).Milliseconds()
 		log.Printf("upstream_image generate_success index=%d account=%s results=%d duration_ms=%d", index+1, maskToken(account.AccessToken), len(imageResults), duration)
+		acceptedItems := minInt(req.N-len(results), len(imageResults))
+		truncatedItems := maxInt(0, len(imageResults)-acceptedItems)
 		appendStructuredLogAttempt(ctx, map[string]any{
-			"status":      len(attempted) > 0 && index > 0,
-			"mode":        "generate",
-			"attempt":     index + 1,
-			"token_ref":   accountTokenRef(account.AccessToken),
-			"account":     maskToken(account.AccessToken),
-			"duration_ms": duration,
-			"items":       len(imageResults),
-			"success":     true,
-			"upstream_raw": upstreamRaw,
+			"status":          len(attempted) > 0 && index > 0,
+			"mode":            "generate",
+			"attempt":         index + 1,
+			"token_ref":       accountTokenRef(account.AccessToken),
+			"account":         maskToken(account.AccessToken),
+			"duration_ms":     duration,
+			"items":           len(imageResults),
+			"upstream_items":  len(imageResults),
+			"accepted_items":  acceptedItems,
+			"truncated_items": truncatedItems,
+			"success":         true,
+			"upstream_raw":    upstreamRaw,
 		})
 		u.markImageResult(ctx, account.AccessToken, true)
 		for _, item := range imageResults {
@@ -186,10 +197,12 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 
 func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (map[string]any, error) {
 	maxCount := defaultImageMaxCount
+	rawTraceEnabled := false
 	if settings, err := u.store.GetSettings(ctx); err == nil {
 		if limit := intMapValue(settings, "image_max_count"); limit > 0 {
 			maxCount = limit
 		}
+		rawTraceEnabled = boolMapValue(settings, "image_trace_debug_enabled")
 	}
 	if req.N < 1 {
 		req.N = 1
@@ -224,7 +237,7 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 		}
 		start := time.Now()
 		log.Printf("upstream_image edit_attempt index=%d account=%s model=%s size=%s format=%s images=%d", index+1, maskToken(account.AccessToken), req.Model, req.Size, req.ResponseFormat, len(req.Images))
-		attemptCtx := chatgpt.WithImageTrace(ctx)
+		attemptCtx := chatgpt.WithImageTraceMode(ctx, rawTraceEnabled)
 		imageResults, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).EditImage(attemptCtx, chatgpt.ImageRequest{
 			Prompt:         req.Prompt,
 			Model:          req.Model,
@@ -241,17 +254,21 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 			attempted[account.AccessToken] = struct{}{}
 			lastErr = err
 			u.markImageResult(ctx, account.AccessToken, false)
-			appendStructuredLogAttempt(ctx, map[string]any{
-				"status":      "attempt_failed",
-				"mode":        "edit",
-				"attempt":     index + 1,
-				"token_ref":   accountTokenRef(account.AccessToken),
-				"account":     maskToken(account.AccessToken),
-				"duration_ms": duration,
-				"error":       err.Error(),
-				"will_switch": true,
+			attemptDetail := map[string]any{
+				"status":       "attempt_failed",
+				"mode":         "edit",
+				"attempt":      index + 1,
+				"token_ref":    accountTokenRef(account.AccessToken),
+				"account":      maskToken(account.AccessToken),
+				"duration_ms":  duration,
+				"error":        err.Error(),
+				"will_switch":  true,
 				"upstream_raw": upstreamRaw,
-			})
+			}
+			if text := strings.TrimSpace(chatgptTraceText(upstreamRaw)); text != "" {
+				attemptDetail["upstream_text"] = text
+			}
+			appendStructuredLogAttempt(ctx, attemptDetail)
 			if errors.Is(err, chatgpt.ErrInvalidAccessToken) {
 				status := "异常"
 				quota := 0
@@ -264,16 +281,21 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 		}
 		duration := time.Since(start).Milliseconds()
 		log.Printf("upstream_image edit_success index=%d account=%s results=%d duration_ms=%d", index+1, maskToken(account.AccessToken), len(imageResults), duration)
+		acceptedItems := minInt(req.N-len(results), len(imageResults))
+		truncatedItems := maxInt(0, len(imageResults)-acceptedItems)
 		appendStructuredLogAttempt(ctx, map[string]any{
-			"status":      len(attempted) > 0 && index > 0,
-			"mode":        "edit",
-			"attempt":     index + 1,
-			"token_ref":   accountTokenRef(account.AccessToken),
-			"account":     maskToken(account.AccessToken),
-			"duration_ms": duration,
-			"items":       len(imageResults),
-			"success":     true,
-			"upstream_raw": upstreamRaw,
+			"status":          len(attempted) > 0 && index > 0,
+			"mode":            "edit",
+			"attempt":         index + 1,
+			"token_ref":       accountTokenRef(account.AccessToken),
+			"account":         maskToken(account.AccessToken),
+			"duration_ms":     duration,
+			"items":           len(imageResults),
+			"upstream_items":  len(imageResults),
+			"accepted_items":  acceptedItems,
+			"truncated_items": truncatedItems,
+			"success":         true,
+			"upstream_raw":    upstreamRaw,
 		})
 		u.markImageResult(ctx, account.AccessToken, true)
 		for _, item := range imageResults {
@@ -297,6 +319,18 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 		return nil, fmt.Errorf("image edit returned no image")
 	}
 	return map[string]any{"created": time.Now().Unix(), "data": results}, nil
+}
+
+func chatgptTraceText(raw map[string]any) string {
+	if raw == nil {
+		return ""
+	}
+	sse, _ := raw["sse_state"].(map[string]any)
+	if sse == nil {
+		return ""
+	}
+	text, _ := sse["text"].(string)
+	return text
 }
 
 func (u *ChatGPTUpstream) ChatCompletions(ctx context.Context, req map[string]any) (map[string]any, error) {
@@ -668,10 +702,10 @@ func (u *ChatGPTUpstream) RefreshAccounts(ctx context.Context, tokens []string) 
 						err = reloginErr
 					}
 				}
-					results <- jobResult{token: replacedToken, err: err}
-				}
-			}()
-		}
+				results <- jobResult{token: replacedToken, err: err}
+			}
+		}()
+	}
 	go func() {
 		for _, token := range tokens {
 			select {
@@ -1130,4 +1164,11 @@ func roughTokenCount(text string) int {
 		return 0
 	}
 	return (len([]rune(text)) + 3) / 4
+}
+
+func minInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

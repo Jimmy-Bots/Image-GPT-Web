@@ -98,7 +98,7 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 	defer cancel()
 	_ = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, taskQueued, taskPhaseWaitingSlot, nil, "")
-	q.addTaskEventContext(ctx, job, "queued", "任务进入等待队列", map[string]any{
+	q.addTaskEventContext(context.Background(), job, "queued", "任务进入等待队列", map[string]any{
 		"status": taskQueued,
 		"phase":  taskPhaseWaitingSlot,
 	})
@@ -109,7 +109,7 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 	)
 	for attempt := 1; attempt <= maxImageTaskAttempts; attempt++ {
 		_ = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, taskRunning, taskPhaseProcessing, nil, "")
-		q.addTaskEventContext(ctx, job, "processing", "开始处理图片任务", map[string]any{
+		q.addTaskEventContext(context.Background(), job, "processing", "开始处理图片任务", map[string]any{
 			"status":  taskRunning,
 			"phase":   taskPhaseProcessing,
 			"attempt": attempt,
@@ -135,11 +135,23 @@ func (q *TaskQueue) runJob(parent context.Context, job taskJob) {
 			"error":     err.Error(),
 			"queue_try": attempt,
 		}
+		if text := attemptUpstreamText(attemptCtx); text != "" {
+			attemptDetail["upstream_text"] = text
+		}
 		appendStructuredLogAttempt(attemptCtx, attemptDetail)
-		q.addTaskEventContext(ctx, job, "attempt_failed", "上游尝试失败", attemptDetail)
+		q.addTaskEventContext(context.Background(), job, "attempt_failed", "上游尝试失败", attemptDetail)
 		if attempt < maxImageTaskAttempts {
 			_ = q.store.UpdateImageTask(ctx, job.OwnerID, job.TaskID, taskQueued, taskPhaseWaitingSlot, nil, "")
 			log.Printf("image_task retry id=%s owner=%s mode=%s attempt=%d err=%v", job.TaskID, job.OwnerID, job.Mode, attempt+1, err)
+			q.addTaskEventContext(context.Background(), job, "retrying", "系统正在自动重试", map[string]any{
+				"status":         taskQueued,
+				"phase":          taskPhaseWaitingSlot,
+				"mode":           job.Mode,
+				"attempt":        attempt + 1,
+				"previous_try":   attempt,
+				"previous_error": err.Error(),
+				"upstream_text":  attemptDetail["upstream_text"],
+			})
 			time.Sleep(time.Duration(attempt) * time.Second)
 		}
 	}
@@ -246,6 +258,34 @@ func (q *TaskQueue) addTaskEventContext(ctx context.Context, job taskJob, eventT
 		Summary: summary,
 		Detail:  raw,
 	})
+}
+
+func attemptUpstreamText(ctx context.Context) string {
+	attempts := logAttempts(ctx)
+	if len(attempts) == 0 {
+		return ""
+	}
+	last := attempts[len(attempts)-1]
+	if text := strings.TrimSpace(anyTaskString(last["upstream_text"])); text != "" {
+		return text
+	}
+	raw, _ := last["upstream_raw"].(map[string]any)
+	if raw == nil {
+		return ""
+	}
+	if sse, ok := raw["sse_state"].(map[string]any); ok {
+		if text := strings.TrimSpace(anyTaskString(sse["text"])); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func anyTaskString(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return ""
 }
 
 func (q *TaskQueue) taskEventLogWriter(job taskJob) structuredLogWriter {

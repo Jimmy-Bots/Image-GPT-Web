@@ -47,6 +47,9 @@ type WorkbenchItem = {
   taskId?: string;
   image?: ImageResult;
   error?: string;
+  retrying?: boolean;
+  retryHint?: string;
+  retryCount?: number;
 };
 
 type WorkbenchTurn = {
@@ -1596,7 +1599,10 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
           status: taskStatusToWorkbench(task.status),
           startedAt: item.startedAt || task.created_at || turn.createdAt,
           image: result || item.image,
-          error: extractWorkbenchTaskError(task, item.error)
+          error: extractWorkbenchTaskError(task, item.error),
+          retrying: item.retrying,
+          retryHint: item.retryHint,
+          retryCount: item.retryCount
         };
       });
       return { ...turn, images, status: deriveTurnStatus(images), error: images.find((item) => item.error)?.error };
@@ -1607,9 +1613,11 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
     const active = items.filter((task) => task.status === "queued" || task.status === "running");
     if (!active.length) return;
     const updates: ImageTask[] = [];
+    const retryMap = new Map<string, { retrying: boolean; hint: string; retryCount: number }>();
     for (const task of active) {
       try {
         const events = await api.taskEvents(token, task.id, { ownerID: task.owner_id });
+        retryMap.set(task.id, summarizeRetryState(events.items || []));
         const terminal = [...(events.items || [])].reverse().find((event) => event.type === "success" || event.type === "error");
         if (!terminal) continue;
         const detail = taskEventDetail(terminal);
@@ -1628,6 +1636,17 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
       } catch {
         // Event reconciliation is a best-effort guard against transient task row lag.
       }
+    }
+    if (retryMap.size > 0) {
+      setTurns((current) => current.map((turn) => {
+        const images = turn.images.map((image) => {
+          if (!image.taskId) return image;
+          const retry = retryMap.get(image.taskId);
+          if (!retry) return image;
+          return { ...image, retrying: retry.retrying, retryHint: retry.hint || undefined, retryCount: retry.retryCount || 0 };
+        });
+        return { ...turn, images };
+      }));
     }
     if (!updates.length) return;
     setTasks((current) => mergeImageTasks(current, updates));
@@ -2031,6 +2050,7 @@ function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry
   const src = item.image ? imageSrc(item.image) : "";
   const loadingLabel = workbenchLoadingLabel(item, index);
   const waitingHint = workbenchWaitingHint(item);
+  const retryBadge = workbenchRetryBadge(item);
   return (
     <article className={classNames("creation-image", sizeAspectClass(size), item.status === "error" && "error")}>
       {src ? (
@@ -2043,7 +2063,10 @@ function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry
         </div>
       )}
       <div className="image-card-footer">
-        <span>结果 {index + 1}</span>
+        <div className="image-card-footer-meta">
+          <span>结果 {index + 1}</span>
+          {retryBadge ? <span className={classNames("mini-badge", retryBadge.tone)}>{retryBadge.label}</span> : null}
+        </div>
         <Badge value={item.status} />
       </div>
       {src ? <div className="image-card-actions"><button className="ghost small" onClick={onUseAsReference}><Sparkles size={13} />加入编辑</button><IconButton title="下载图片" onClick={onDownload}><Download size={13} /></IconButton>{!src.startsWith("data:") ? <IconButton title="复制链接" onClick={onCopy}><Copy size={13} /></IconButton> : null}</div> : null}
@@ -2051,6 +2074,17 @@ function ResultCard({ item, index, size, openLightbox, onUseAsReference, onRetry
       {item.error ? <p className="error-text">{item.error}</p> : null}
     </article>
   );
+}
+
+function workbenchRetryBadge(item: WorkbenchItem) {
+  const retryCount = Math.max(0, Number(item.retryCount || 0));
+  if (item.retrying) {
+    return { label: retryCount > 0 ? `重试中 · ${retryCount}` : "重试中", tone: "warn" };
+  }
+  if (retryCount > 0) {
+    return { label: `已重试 ${retryCount} 次`, tone: "muted" };
+  }
+  return null;
 }
 
 function deriveTurnStatus(images: WorkbenchItem[]): WorkbenchTurn["status"] {
@@ -2082,7 +2116,11 @@ function workbenchLoadingLabel(item: WorkbenchItem, index: number) {
     return "提交任务中…";
   }
   if (item.phase === "waiting_slot") {
+    if (item.retrying) return "系统正在自动重试，本次生成会比平时更久";
     return "任务已提交，正在等待可用并发";
+  }
+  if (item.retrying) {
+    return "系统正在自动重试并重新生成，请稍候";
   }
   const steps = item.status === "queued"
     ? [
@@ -2107,6 +2145,7 @@ function workbenchLoadingLabel(item: WorkbenchItem, index: number) {
 }
 
 function workbenchWaitingHint(item: WorkbenchItem) {
+  if (item.retryHint) return item.retryHint;
   if (item.phase !== "waiting_slot" || item.status !== "queued") return "";
   const started = Date.parse(item.startedAt || "");
   if (!Number.isFinite(started)) return "";
@@ -2114,6 +2153,53 @@ function workbenchWaitingHint(item: WorkbenchItem) {
   if (elapsed < 12000) return "通常会在 1 分钟左右开始处理。";
   if (elapsed < 45000) return "当前高峰，通常会在 1 分钟左右开始处理，请耐心等待。";
   return "当前高峰，已经排队一会儿了，通常仍会在约 1 分钟内进入处理。";
+}
+
+function summarizeRetryState(events: TaskEvent[]) {
+  const details = events.map(taskEventDetail);
+  const successWithAttempts = [...details].reverse().find((detail) => detailAttempts(detail).length > 0);
+  const attempts = successWithAttempts ? detailAttempts(successWithAttempts) : [];
+  if (attempts.length > 1) {
+    const retryCount = attempts.length - 1;
+    const latestFailed = [...attempts].reverse().find((attempt) => String(attempt.status || "") === "attempt_failed");
+    const upstreamText = latestFailed ? compactHintText(String(latestFailed.upstream_text || latestFailed.error || "")) : "";
+    return {
+      retrying: true,
+      retryCount,
+      hint: upstreamText
+        ? `本次已自动重试 ${retryCount} 次。上一轮上游回复：${upstreamText}`
+        : `本次已自动重试 ${retryCount} 次，整体等待时间会更长。`
+    };
+  }
+  const latestRetrying = [...details].reverse().find((detail) => String(detail.event_type || "") === "retrying");
+  if (latestRetrying) {
+    const upstreamText = compactHintText(String(latestRetrying.upstream_text || latestRetrying.previous_error || ""));
+    return {
+      retrying: true,
+      retryCount: Math.max(1, Number(latestRetrying.previous_try || 1)),
+      hint: upstreamText
+        ? `系统正在自动重试。上一轮上游回复：${upstreamText}`
+        : "系统正在自动重试，本次生成会比平时更久。"
+    };
+  }
+  const latestAttemptFailure = [...details].reverse().find((detail) => String(detail.status || "") === "attempt_failed");
+  if (latestAttemptFailure) {
+    const upstreamText = compactHintText(String(latestAttemptFailure.upstream_text || latestAttemptFailure.error || ""));
+    return {
+      retrying: true,
+      retryCount: Math.max(1, Number(latestAttemptFailure.attempt || 1) - 0),
+      hint: upstreamText
+        ? `刚刚一次上游尝试未成功，系统正在自动重试。上一轮上游回复：${upstreamText}`
+        : "刚刚一次上游尝试未成功，系统正在自动重试，请耐心等待。"
+    };
+  }
+  return { retrying: false, hint: "", retryCount: 0 };
+}
+
+function compactHintText(text: string) {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  return cleaned.length > 72 ? `${cleaned.slice(0, 72)}...` : cleaned;
 }
 
 function taskPhaseToWorkbenchPhase(task: ImageTask, current?: WorkbenchItem["phase"]): WorkbenchItem["phase"] {
@@ -2532,6 +2618,7 @@ function TaskEventTimeline({ events, loading, error }: { events: TaskEvent[]; lo
                 {detail.truncated_items !== undefined ? <span>truncated={String(detail.truncated_items)}</span> : null}
               </div>
               {detail.error ? <p className="task-event-error">{String(detail.error)}</p> : null}
+              {detail.upstream_text ? <p className="task-event-note">上游回复：{String(detail.upstream_text)}</p> : null}
               <StructuredAttempts detail={detail} />
             </div>
           </article>
@@ -2758,6 +2845,7 @@ function StructuredAttempts({ detail }: { detail: Record<string, unknown> }) {
               {attempt.duration_ms !== undefined ? <span>duration={formatDuration(attempt.duration_ms)}</span> : null}
             </div>
             {attempt.error ? <p className="task-event-error">{String(attempt.error)}</p> : null}
+            {attempt.upstream_text ? <p className="task-event-note">上游回复：{String(attempt.upstream_text)}</p> : null}
             {rawSections.length ? (
               <details className="attempt-raw" open>
                 <summary>查看上游 raw</summary>
@@ -3660,6 +3748,7 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
           <label><span>图片保留天数</span><input type="number" value={Number(settings.image_retention_days || 30)} onChange={(event) => updateField("image_retention_days", Number(event.target.value))} /></label>
           <label><span>图片轮询超时</span><input type="number" value={Number(settings.image_poll_timeout_secs || 120)} onChange={(event) => updateField("image_poll_timeout_secs", Number(event.target.value))} /></label>
           <label><span>新用户默认临时额度</span><input type="number" min={0} value={Number(settings.default_new_user_temporary_quota || 0)} onChange={(event) => updateField("default_new_user_temporary_quota", Math.max(0, Number(event.target.value) || 0))} /></label>
+          <label className="inline"><input type="checkbox" checked={Boolean(settings.image_trace_debug_enabled)} onChange={(event) => updateField("image_trace_debug_enabled", event.target.checked)} /><span>记录图片上游 raw 调试信息</span></label>
           <label className="inline"><input type="checkbox" checked={Boolean(settings.public_registration_enabled)} onChange={(event) => updateField("public_registration_enabled", event.target.checked)} /><span>启用公开注册</span></label>
           <label className="inline"><input type="checkbox" checked={Boolean(settings.invite_registration_enabled)} onChange={(event) => updateField("invite_registration_enabled", event.target.checked)} /><span>启用邀请码注册</span></label>
           <label><span>注册验证码冷却（秒）</span><input type="number" min={1} value={Number(settings.register_code_cooldown_seconds || 60)} onChange={(event) => updateField("register_code_cooldown_seconds", Math.max(1, Number(event.target.value) || 60))} /></label>
@@ -3669,6 +3758,7 @@ function SettingsPanel({ token, settings, setSettings, toast }: { token: string;
           <label className="inline"><input type="checkbox" checked={Boolean(aiReview.enabled)} onChange={(event) => updateField("ai_review", { ...aiReview, enabled: event.target.checked })} /><span>启用 AI 内容审核</span></label>
           <label className="wide"><span>敏感词，每行一个</span><textarea value={Array.isArray(settings.sensitive_words) ? settings.sensitive_words.join("\n") : ""} onChange={(event) => updateField("sensitive_words", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} /></label>
         </div>
+        <p className="settings-note">关闭时仅记录必要字段和上游回复文本；开启后会额外记录图片链路的 raw 调试信息，日志体积会明显增大。</p>
       </section>
 
       <section className="panel">

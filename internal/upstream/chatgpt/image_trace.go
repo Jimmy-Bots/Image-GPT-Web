@@ -9,6 +9,11 @@ import (
 )
 
 type imageTraceContextKey struct{}
+type imageTraceModeContextKey struct{}
+
+type imageTraceMode struct {
+	rawEnabled bool
+}
 
 type imageTrace struct {
 	mu   sync.Mutex
@@ -16,12 +21,22 @@ type imageTrace struct {
 }
 
 func WithImageTrace(ctx context.Context) context.Context {
+	return WithImageTraceMode(ctx, false)
+}
+
+func WithImageTraceMode(ctx context.Context, rawEnabled bool) context.Context {
 	if imageTraceFromContext(ctx) != nil {
-		return ctx
+		return context.WithValue(ctx, imageTraceModeContextKey{}, imageTraceMode{rawEnabled: rawEnabled})
 	}
-	return context.WithValue(ctx, imageTraceContextKey{}, &imageTrace{
+	ctx = context.WithValue(ctx, imageTraceContextKey{}, &imageTrace{
 		data: map[string]any{},
 	})
+	return context.WithValue(ctx, imageTraceModeContextKey{}, imageTraceMode{rawEnabled: rawEnabled})
+}
+
+func imageTraceRawEnabled(ctx context.Context) bool {
+	mode, _ := ctx.Value(imageTraceModeContextKey{}).(imageTraceMode)
+	return mode.rawEnabled
 }
 
 func ImageTraceSnapshot(ctx context.Context) map[string]any {
@@ -50,6 +65,9 @@ func traceImageSet(ctx context.Context, key string, value any) {
 	if trace == nil || strings.TrimSpace(key) == "" {
 		return
 	}
+	if !imageTraceRawEnabled(ctx) && isRawTraceKey(key) {
+		return
+	}
 	trace.mu.Lock()
 	defer trace.mu.Unlock()
 	trace.data[key] = sanitizeImageTraceValue(value, 0)
@@ -58,6 +76,9 @@ func traceImageSet(ctx context.Context, key string, value any) {
 func traceImageAppend(ctx context.Context, key string, value any, limit int) {
 	trace := imageTraceFromContext(ctx)
 	if trace == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	if !imageTraceRawEnabled(ctx) && isRawTraceKey(key) {
 		return
 	}
 	trace.mu.Lock()
@@ -157,4 +178,13 @@ func cloneAnyMap(src map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+func isRawTraceKey(key string) bool {
+	switch strings.TrimSpace(key) {
+	case "prepare_raw", "reference_uploads_raw", "sse_raw_events", "sse_raw_json", "poll_conversation_raw", "download_raw":
+		return true
+	default:
+		return false
+	}
 }

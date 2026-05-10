@@ -288,6 +288,10 @@ th input[type="checkbox"], td input[type="checkbox"] { display: block; margin: 0
 .result-placeholder span { font-weight: 700; line-height: 1.45; }
 .result-placeholder small { margin: 0; max-width: 220px; color: #7b8898; font-size: 11px; line-height: 1.5; }
 .image-card-footer, .image-card-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #748093; font-size: 12px; }
+.image-card-footer-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.mini-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; line-height: 1; }
+.mini-badge.warn { background: #fff4da; color: #8a6200; border: 1px solid #ffe2a1; }
+.mini-badge.muted { background: #eef2f7; color: #607084; border: 1px solid #e2e8f0; }
 .image-card-actions { justify-content: flex-start; flex-wrap: wrap; }
 .retry-button { justify-self: start; }
 .turn-error, .error-text, .error-cell { color: #b73232; }
@@ -542,6 +546,8 @@ button.composer-pill, span.composer-pill { display: inline-flex; align-items: ce
 .task-event-title strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #17202a; font-size: 13px; }
 .task-event-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; color: #728195; font-size: 11px; }
 .task-event-error { margin: 6px 0 0; color: #b73232; font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.task-event-note { margin: 6px 0 0; color: #567086; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.settings-note { margin: 10px 2px 0; color: #6c7889; font-size: 12px; line-height: 1.55; }
 .attempt-list { display: grid; gap: 8px; padding: 10px; border-radius: 7px; background: white; border: 1px solid #e6edf5; }
 .attempt-card { display: grid; gap: 8px; padding: 10px; border-radius: 9px; background: #f8fafc; border: 1px solid #e6edf5; }
 .attempt-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

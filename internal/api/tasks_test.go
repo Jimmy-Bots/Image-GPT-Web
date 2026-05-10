@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +16,10 @@ import (
 
 type taskTestUpstream struct{}
 type taskAttemptTestUpstream struct{}
+type taskRetrySignalUpstream struct {
+	mu    sync.Mutex
+	calls int
+}
 
 func (taskTestUpstream) ListModels(ctx context.Context) (map[string]any, error) {
 	return map[string]any{"object": "list", "data": []map[string]any{}}, nil
@@ -119,6 +125,79 @@ func (taskAttemptTestUpstream) StreamAnthropicMessages(ctx context.Context, req 
 }
 
 func (taskAttemptTestUpstream) RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string) {
+	return 0, nil
+}
+
+func (u *taskRetrySignalUpstream) ListModels(ctx context.Context) (map[string]any, error) {
+	return map[string]any{"object": "list", "data": []map[string]any{}}, nil
+}
+
+func (u *taskRetrySignalUpstream) GenerateImage(ctx context.Context, req ImageGenerationPayload) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (u *taskRetrySignalUpstream) EditImage(ctx context.Context, req ImageEditPayload) (map[string]any, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.calls++
+	if u.calls == 1 {
+		appendStructuredLogAttempt(ctx, map[string]any{
+			"status":        "attempt_failed",
+			"mode":          "edit",
+			"attempt":       1,
+			"error":         "看起来你希望化**？",
+			"upstream_text": "看起来你希望根据上传的图片继续调整界面风格。",
+			"upstream_raw": map[string]any{
+				"sse_state": map[string]any{
+					"text": "看起来你希望根据上传的图片继续调整界面风格。",
+				},
+			},
+		})
+		return nil, errors.New("看起来你希望化**？")
+	}
+	appendStructuredLogAttempt(ctx, map[string]any{
+		"status":          "attempt_success",
+		"mode":            "edit",
+		"attempt":         2,
+		"upstream_items":  1,
+		"accepted_items":  1,
+		"truncated_items": 0,
+		"upstream_raw": map[string]any{
+			"resolved_urls": []any{"https://example.com/final.png"},
+		},
+	})
+	return map[string]any{
+		"data": []map[string]any{
+			{"url": "/images/test.png"},
+		},
+	}, nil
+}
+
+func (u *taskRetrySignalUpstream) ChatCompletions(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (u *taskRetrySignalUpstream) StreamChatCompletions(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (u *taskRetrySignalUpstream) Responses(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (u *taskRetrySignalUpstream) StreamResponses(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (u *taskRetrySignalUpstream) AnthropicMessages(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (u *taskRetrySignalUpstream) StreamAnthropicMessages(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (u *taskRetrySignalUpstream) RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string) {
 	return 0, nil
 }
 
@@ -321,4 +400,120 @@ func TestTaskQueueCarriesAttemptsIntoSuccessEvent(t *testing.T) {
 	}
 
 	t.Fatalf("timed out waiting for success event with attempts")
+}
+
+func TestTaskQueuePersistsRetrySignalEvents(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	imagesDir := filepath.Join(tempDir, "images")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data: %v", err)
+	}
+	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+		t.Fatalf("mkdir images: %v", err)
+	}
+
+	dbPath := filepath.Join(dataDir, "app.db")
+	store, err := storage.Open(ctx, dbPath, 1)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	user := domain.User{
+		ID:             "retry-user",
+		Email:          "retry@example.com",
+		Name:           "Retry User",
+		PasswordHash:   "hash",
+		Role:           domain.RoleUser,
+		Status:         domain.UserStatusActive,
+		QuotaUnlimited: true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	task := domain.ImageTask{
+		ID:             "retry-task",
+		OwnerID:        user.ID,
+		Status:         taskQueued,
+		Phase:          taskPhaseQueued,
+		Mode:           "edit",
+		Model:          "gpt-image-2",
+		Prompt:         "test",
+		RequestedCount: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateImageTask(ctx, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	queue := NewTaskQueue(store, &taskRetrySignalUpstream{}, imagesDir, "", 1, 1)
+	defer queue.Close()
+
+	if err := queue.Submit(taskJob{
+		OwnerID: user.ID,
+		TaskID:  task.ID,
+		Mode:    "edit",
+		Edit: ImageEditPayload{
+			Prompt:         "test",
+			Model:          "gpt-image-2",
+			N:              1,
+			ResponseFormat: "b64_json",
+			Images: []UploadImage{{
+				Name:        "a.png",
+				ContentType: "image/png",
+				Data:        []byte("fake"),
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("submit task: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := store.ListTaskEvents(ctx, user.ID, task.ID, true)
+		if err != nil {
+			t.Fatalf("list task events: %v", err)
+		}
+		if len(events) == 0 {
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		var foundAttemptFailed bool
+		var foundRetrying bool
+		var foundSuccess bool
+		for _, event := range events {
+			switch event.Type {
+			case "attempt_failed":
+				foundAttemptFailed = true
+				var detail map[string]any
+				if err := json.Unmarshal(event.Detail, &detail); err != nil {
+					t.Fatalf("unmarshal attempt_failed detail: %v", err)
+				}
+				if got := detail["upstream_text"]; got != "看起来你希望根据上传的图片继续调整界面风格。" {
+					t.Fatalf("expected upstream_text in attempt_failed, got %#v", got)
+				}
+			case "retrying":
+				foundRetrying = true
+			case "success":
+				foundSuccess = true
+			}
+		}
+		if foundAttemptFailed && foundRetrying && foundSuccess {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	events, err := store.ListTaskEvents(ctx, user.ID, task.ID, true)
+	if err != nil {
+		t.Fatalf("list task events final: %v", err)
+	}
+	t.Fatalf("expected attempt_failed + retrying + success events, got %d events", len(events))
 }
