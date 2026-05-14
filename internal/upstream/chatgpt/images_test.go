@@ -44,3 +44,10 @@ func TestImagePromptAdjustErrorWrapsSentinel(t *testing.T) {
 		t.Fatalf("expected ImagePromptAdjustError to match ErrImagePromptAdjust")
 	}
 }
+
+func TestIsImagePromptAdjustTextMatchesPolicyMessage(t *testing.T) {
+	text := "非常抱歉，生成的图片可能违反了我们的内容政策。如果你认为此判断有误，请重试或修改提示语。"
+	if !IsImagePromptAdjustText(text) {
+		t.Fatalf("expected policy text to be treated as prompt-adjust text")
+	}
+}

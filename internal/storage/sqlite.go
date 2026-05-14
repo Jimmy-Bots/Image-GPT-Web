@@ -796,10 +796,10 @@ func (s *Store) UpdateUser(ctx context.Context, id string, update UserUpdate) (d
 	}
 	if update.TemporaryQuota != nil {
 		current.TemporaryQuota = maxInt(0, *update.TemporaryQuota)
-		if current.TemporaryQuota > 0 {
+		if update.TemporaryQuotaDate != nil {
+			current.TemporaryQuotaDate = strings.TrimSpace(*update.TemporaryQuotaDate)
+		} else if current.TemporaryQuota > 0 {
 			current.TemporaryQuotaDate = quotaDayString(time.Now())
-		} else {
-			current.TemporaryQuotaDate = ""
 		}
 	}
 	if update.TemporaryQuotaDate != nil && update.TemporaryQuota == nil {
@@ -955,9 +955,9 @@ func (s *Store) ReserveUserQuota(ctx context.Context, userID string, amount int)
 	consumePermanent := minInt(permanent, remaining)
 	receipt.Permanent = consumePermanent
 	permanent -= consumePermanent
-	temporaryDate := today
-	if temporary == 0 {
-		temporaryDate = ""
+	temporaryDate := ""
+	if temporary > 0 || strings.TrimSpace(user.TemporaryQuotaDate) == today {
+		temporaryDate = today
 	}
 	nowValue := formatTime(now)
 	if _, err := tx.ExecContext(ctx, `UPDATE users SET permanent_quota = ?, temporary_quota = ?, temporary_quota_date = ?, updated_at = ? WHERE id = ?`, permanent, temporary, temporaryDate, nowValue, userID); err != nil {

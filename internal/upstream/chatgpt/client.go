@@ -45,6 +45,19 @@ func (e *ImagePromptAdjustError) Unwrap() error {
 	return ErrImagePromptAdjust
 }
 
+func IsImagePromptAdjustText(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "非常抱歉，生成的图片可能违反了我们的内容政策") ||
+		strings.Contains(normalized, "违反了我们的内容政策") ||
+		strings.Contains(normalized, "请重试或修改提示语") ||
+		strings.Contains(normalized, "may violate our content policy") ||
+		strings.Contains(normalized, "please retry or revise your prompt") ||
+		strings.Contains(normalized, "modify your prompt")
+}
+
 type HTTPDoer interface {
 	Do(req *fhttp.Request) (*fhttp.Response, error)
 }

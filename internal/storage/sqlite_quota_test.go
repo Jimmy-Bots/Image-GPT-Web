@@ -98,6 +98,58 @@ func TestUpdateUserTemporaryQuotaDoesNotOverwriteDailyConfiguredQuota(t *testing
 	}
 }
 
+func TestTemporaryQuotaZeroDoesNotRefreshAgainSameDay(t *testing.T) {
+	store, ctx := openTestStore(t)
+	defer store.Close()
+
+	today := timeutil.ShanghaiDayString(time.Now())
+	user := domain.User{
+		ID:                  "u3",
+		Email:               "u3@example.com",
+		Name:                "u3",
+		PasswordHash:        "hash",
+		Role:                domain.RoleUser,
+		Status:              domain.UserStatusActive,
+		PermanentQuota:      0,
+		TemporaryQuota:      1,
+		TemporaryQuotaDate:  today,
+		DailyTemporaryQuota: 1,
+		CreatedAt:           time.Now().UTC(),
+		UpdatedAt:           time.Now().UTC(),
+	}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	updated, receipt, err := store.ReserveUserQuota(ctx, user.ID, 1)
+	if err != nil {
+		t.Fatalf("reserve user quota: %v", err)
+	}
+	if receipt.Temporary != 1 {
+		t.Fatalf("receipt.temporary=%d want=1", receipt.Temporary)
+	}
+	if updated.TemporaryQuota != 0 {
+		t.Fatalf("temporary_quota=%d want=0", updated.TemporaryQuota)
+	}
+	if updated.TemporaryQuotaDate != today {
+		t.Fatalf("temporary_quota_date=%q want=%q", updated.TemporaryQuotaDate, today)
+	}
+
+	got, err := store.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if got.TemporaryQuota != 0 {
+		t.Fatalf("temporary_quota after reload=%d want=0", got.TemporaryQuota)
+	}
+	if got.TemporaryQuotaDate != today {
+		t.Fatalf("temporary_quota_date after reload=%q want=%q", got.TemporaryQuotaDate, today)
+	}
+	if got.AvailableQuota != 0 {
+		t.Fatalf("available_quota=%d want=0", got.AvailableQuota)
+	}
+}
+
 func TestListImageTasksPageFiltersDoNotUseAmbiguousColumns(t *testing.T) {
 	store, ctx := openTestStore(t)
 	defer store.Close()

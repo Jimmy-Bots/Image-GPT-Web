@@ -2500,6 +2500,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
   const allVisibleSelected = rows.length > 0 && rows.every((task) => selectedSet.has(taskSelectionKey(task)));
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const taskQueryParams = { page, pageSize, query, status, mode, model: modelFilter, ownerID: ownerFilter, size: sizeFilter, dateFrom, dateTo, deleted: deletedScope === "deleted" ? "only" : "", includeDeleted: deletedScope !== "active" };
+  const hasActiveTasks = rows.some((task) => task.status === "queued" || task.status === "running");
   useEffect(() => setPage(1), [query, status, mode, modelFilter, ownerFilter, sizeFilter, dateFrom, dateTo, pageSize, deletedScope]);
   useEffect(() => {
     let cancelled = false;
@@ -2514,6 +2515,17 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
       cancelled = true;
     };
   }, [token, page, pageSize, query, status, mode, modelFilter, ownerFilter, sizeFilter, dateFrom, dateTo, deletedScope, setTaskTotal]);
+  useEffect(() => {
+    if (!hasActiveTasks) return;
+    const timer = window.setInterval(() => {
+      api.tasks(token, [], taskQueryParams).then((data) => {
+        setTasks(data.items || []);
+        setTotal(Number(data.total || 0));
+        setTaskTotal(Number(data.total || 0));
+      }).catch(() => {});
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [hasActiveTasks, token, page, pageSize, query, status, mode, modelFilter, ownerFilter, sizeFilter, dateFrom, dateTo, deletedScope, setTaskTotal]);
   const detailTask = detailTaskID ? rows.find((task) => task.id === detailTaskID) || null : null;
   function toggleVisible(checked: boolean) {
     const visibleKeys = rows.map(taskSelectionKey);
@@ -2656,24 +2668,39 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
   const [eventsLoading, setEventsLoading] = useState(true);
   const [eventsError, setEventsError] = useState("");
   const [cancelBusy, setCancelBusy] = useState(false);
+  const active = task.status === "queued" || task.status === "running";
   useEffect(() => {
     let cancelled = false;
-    setEventsLoading(true);
-    setEventsError("");
-    setEvents([]);
-    api.taskEvents(token, task.id, { ownerID: task.owner_id }).then((data) => {
-      if (cancelled) return;
-      setEvents(data.items || []);
-    }).catch((error) => {
-      if (cancelled) return;
-      setEventsError(error instanceof Error ? error.message : "读取任务事件失败");
-    }).finally(() => {
-      if (!cancelled) setEventsLoading(false);
-    });
+    let timer: number | undefined;
+    async function load(showLoading = false) {
+      if (showLoading) {
+        setEventsLoading(true);
+        setEventsError("");
+        setEvents([]);
+      }
+      try {
+        const data = await api.taskEvents(token, task.id, { ownerID: task.owner_id });
+        if (cancelled) return;
+        setEvents(data.items || []);
+        setEventsError("");
+      } catch (error) {
+        if (cancelled) return;
+        setEventsError(error instanceof Error ? error.message : "读取任务事件失败");
+      } finally {
+        if (!cancelled) setEventsLoading(false);
+      }
+    }
+    load(true);
+    if (active) {
+      timer = window.setInterval(() => {
+        load(false).catch(() => {});
+      }, 2000);
+    }
     return () => {
       cancelled = true;
+      if (timer) window.clearInterval(timer);
     };
-  }, [token, task.id, task.owner_id]);
+  }, [token, task.id, task.owner_id, active]);
   async function cancelTaskNow() {
     setCancelBusy(true);
     try {
@@ -2746,9 +2773,11 @@ function TaskEventTimeline({ events, loading, error }: { events: TaskEvent[]; lo
                 {detail.upstream_items !== undefined ? <span>upstream={String(detail.upstream_items)}</span> : null}
                 {detail.accepted_items !== undefined ? <span>accepted={String(detail.accepted_items)}</span> : null}
                 {detail.truncated_items !== undefined ? <span>truncated={String(detail.truncated_items)}</span> : null}
+                {detail.duration_ms !== undefined ? <span>duration={formatDuration(detail.duration_ms)}</span> : null}
               </div>
               {detail.error ? <p className="task-event-error">{String(detail.error)}</p> : null}
               {detail.upstream_text ? <p className="task-event-note">上游回复：{String(detail.upstream_text)}</p> : null}
+              {String(event.type) === "upstream" && detailAttempts(detail).length === 0 ? <StructuredAttempts detail={{ attempts: [detail] }} /> : null}
               <StructuredAttempts detail={detail} />
             </div>
           </article>

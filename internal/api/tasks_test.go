@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -300,6 +301,55 @@ func (taskPromptAdjustUpstream) StreamAnthropicMessages(ctx context.Context, req
 }
 
 func (taskPromptAdjustUpstream) RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string) {
+	return 0, nil
+}
+
+type taskPolicyPromptAdjustUpstream struct{}
+
+func (taskPolicyPromptAdjustUpstream) ListModels(ctx context.Context) (map[string]any, error) {
+	return map[string]any{"object": "list", "data": []map[string]any{}}, nil
+}
+
+func (taskPolicyPromptAdjustUpstream) GenerateImage(ctx context.Context, req ImageGenerationPayload) (map[string]any, error) {
+	return nil, &chatgpt.ImagePromptAdjustError{Text: "非常抱歉，生成的图片可能违反了我们的内容政策。如果你认为此判断有误，请重试或修改提示语。"}
+}
+
+func (taskPolicyPromptAdjustUpstream) EditImage(ctx context.Context, req ImageEditPayload) (map[string]any, error) {
+	appendStructuredLogAttempt(ctx, map[string]any{
+		"status":        "attempt_failed",
+		"mode":          "edit",
+		"attempt":       1,
+		"error":         "非常抱歉，生成的图片可能违反了我们的内容政策。如果你认为此判断有误，请重试或修改提示语。",
+		"upstream_text": "非常抱歉，生成的图片可能违反了我们的内容政策。如果你认为此判断有误，请重试或修改提示语。",
+	})
+	return nil, &chatgpt.ImagePromptAdjustError{Text: "非常抱歉，生成的图片可能违反了我们的内容政策。如果你认为此判断有误，请重试或修改提示语。"}
+}
+
+func (taskPolicyPromptAdjustUpstream) ChatCompletions(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (taskPolicyPromptAdjustUpstream) StreamChatCompletions(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (taskPolicyPromptAdjustUpstream) Responses(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (taskPolicyPromptAdjustUpstream) StreamResponses(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (taskPolicyPromptAdjustUpstream) AnthropicMessages(ctx context.Context, req map[string]any) (map[string]any, error) {
+	return nil, ErrUpstreamNotImplemented
+}
+
+func (taskPolicyPromptAdjustUpstream) StreamAnthropicMessages(ctx context.Context, req map[string]any, onEvent func(map[string]any) error) error {
+	return ErrUpstreamNotImplemented
+}
+
+func (taskPolicyPromptAdjustUpstream) RefreshAccounts(ctx context.Context, tokens []string) (int, []map[string]string) {
 	return 0, nil
 }
 
@@ -840,4 +890,99 @@ func TestTaskQueuePromptAdjustErrorDoesNotRetry(t *testing.T) {
 	}
 
 	t.Fatalf("timed out waiting for prompt-adjust failure without retry")
+}
+
+func TestTaskQueuePolicyPromptAdjustDoesNotRetry(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "app.db")
+	store, err := storage.Open(ctx, dbPath, 1)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	user := domain.User{
+		ID:             "policy-user",
+		Email:          "policy@example.com",
+		Name:           "Policy User",
+		PasswordHash:   "hash",
+		Role:           domain.RoleUser,
+		Status:         domain.UserStatusActive,
+		QuotaUnlimited: true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	task := domain.ImageTask{
+		ID:             "policy-task",
+		OwnerID:        user.ID,
+		Status:         taskQueued,
+		Phase:          taskPhaseQueued,
+		Mode:           "edit",
+		Model:          "gpt-image-2",
+		Prompt:         "policy",
+		RequestedCount: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateImageTask(ctx, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	queue := NewTaskQueue(store, taskPolicyPromptAdjustUpstream{}, filepath.Join(tempDir, "images"), "", 1, 1)
+	defer queue.Close()
+
+	if err := queue.Submit(taskJob{
+		OwnerID:   user.ID,
+		OwnerName: user.Name,
+		OwnerRole: user.Role,
+		TaskID:    task.ID,
+		Mode:      "edit",
+		Edit: ImageEditPayload{
+			Prompt: "policy",
+			N:      1,
+		},
+	}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := store.ListTaskEvents(ctx, user.ID, task.ID, true)
+		if err != nil {
+			t.Fatalf("list task events: %v", err)
+		}
+		retryingCount := 0
+		policySeen := false
+		for _, event := range events {
+			var detail map[string]any
+			if len(event.Detail) > 0 {
+				if err := json.Unmarshal(event.Detail, &detail); err != nil {
+					t.Fatalf("unmarshal detail: %v", err)
+				}
+			}
+			switch event.Type {
+			case "retrying":
+				retryingCount++
+			case "attempt_failed", "error":
+				if strings.Contains(anyTaskString(detail["error"]), "违反了我们的内容政策") ||
+					strings.Contains(anyTaskString(detail["upstream_text"]), "违反了我们的内容政策") {
+					policySeen = true
+				}
+			}
+		}
+		if policySeen {
+			if retryingCount != 0 {
+				t.Fatalf("expected no retrying events for policy prompt adjust, got %d", retryingCount)
+			}
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for policy prompt-adjust failure without retry")
 }

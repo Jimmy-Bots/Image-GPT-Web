@@ -112,7 +112,7 @@ func (c *Client) runImage(ctx context.Context, request ImageRequest, references 
 	}
 	if state.Text != "" && len(state.FileIDs) == 0 && len(state.SedimentIDs) == 0 {
 		isText := state.ToolInvoked != nil && !*state.ToolInvoked || state.TurnUseCase == "text"
-		if state.Blocked || isText {
+		if state.Blocked || isText || IsImagePromptAdjustText(state.Text) {
 			return nil, &ImagePromptAdjustError{Text: state.Text}
 		}
 	}
