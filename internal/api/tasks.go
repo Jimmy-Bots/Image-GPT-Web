@@ -675,6 +675,10 @@ func (s *Server) handleCreateGenerationTask(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	requestedCount := clampImageTaskCountWithLimit(req.N, s.imageMaxCount(r.Context()))
+	if err := s.ensureUserImageConcurrency(r.Context(), identity.ID); err != nil {
+		writeError(w, http.StatusTooManyRequests, "user_concurrency_exceeded", "too many active image tasks for this user")
+		return
+	}
 	_, receipt, err := s.reserveImageQuota(r.Context(), identity, requestedCount)
 	if err != nil {
 		errorCode := "quota_exceeded"
@@ -792,6 +796,10 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 	taskID := strings.TrimSpace(r.FormValue("client_task_id"))
 	if taskID == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "client_task_id is required")
+		return
+	}
+	if err := s.ensureUserImageConcurrency(r.Context(), identity.ID); err != nil {
+		writeError(w, http.StatusTooManyRequests, "user_concurrency_exceeded", "too many active image tasks for this user")
 		return
 	}
 	_, receipt, err := s.reserveImageQuota(r.Context(), identity, req.N)

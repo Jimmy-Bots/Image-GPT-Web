@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,10 +13,45 @@ import (
 	"testing"
 	"time"
 
+	"gpt-image-web/internal/config"
 	"gpt-image-web/internal/domain"
 	"gpt-image-web/internal/storage"
 	"gpt-image-web/internal/upstream/chatgpt"
 )
+
+func testConfig(root string) config.Config {
+	dataDir := filepath.Join(root, "data")
+	return config.Config{
+		Addr:                         ":0",
+		AppVersion:                   "test",
+		RootDir:                      root,
+		DataDir:                      dataDir,
+		BackupsDir:                   filepath.Join(dataDir, "backups"),
+		WebDir:                       filepath.Join(root, "web"),
+		ImagesDir:                    filepath.Join(root, "images"),
+		ReferenceImagesDir:           filepath.Join(root, "references"),
+		PreviewImagesDir:             filepath.Join(root, "previews"),
+		DatabasePath:                 filepath.Join(dataDir, "app.db"),
+		DBMaxOpenConns:               1,
+		SessionSecret:                "test-secret",
+		SessionTTLHours:              24,
+		AdminEmail:                   "admin@example.com",
+		AdminPassword:                "password",
+		ImageWorkerCount:             1,
+		ImageQueueSize:               8,
+		ImageAccountConcurrency:      1,
+		ImageUserConcurrency:         4,
+		LogLevel:                     "info",
+		MaxRequestBodyBytes:          80 << 20,
+		LoginRateLimitMax:            8,
+		LoginRateLimitWindowSec:      300,
+		RegisterThreads:              1,
+		RegisterTotal:                1,
+		RegisterTargetQuota:          1,
+		RegisterTargetAvailable:      1,
+		RegisterCheckIntervalSeconds: 1,
+	}
+}
 
 type taskTestUpstream struct{}
 type taskAttemptTestUpstream struct{}
@@ -985,6 +1022,80 @@ func TestTaskQueuePolicyPromptAdjustDoesNotRetry(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for policy prompt-adjust failure without retry")
+}
+
+func TestTaskQueueRejectsSubmissionWhenUserConcurrencyExceeded(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "app.db")
+	store, err := storage.Open(ctx, dbPath, 1)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	user := domain.User{
+		ID:             "busy-user",
+		Email:          "busy@example.com",
+		Name:           "Busy User",
+		PasswordHash:   "hash",
+		Role:           domain.RoleUser,
+		Status:         domain.UserStatusActive,
+		QuotaUnlimited: true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := store.SaveSettings(ctx, map[string]any{"image_user_concurrency": 4}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		task := domain.ImageTask{
+			ID:             "busy-task-" + string(rune('a'+i)),
+			OwnerID:        user.ID,
+			Status:         taskQueued,
+			Phase:          taskPhaseQueued,
+			Mode:           "generate",
+			Model:          "gpt-image-2",
+			Prompt:         "busy",
+			RequestedCount: 1,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+		if err := store.CreateImageTask(ctx, task); err != nil {
+			t.Fatalf("create task %d: %v", i, err)
+		}
+	}
+
+	cfg := testConfig(tempDir)
+	server, err := NewServer(cfg, store)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer server.Close()
+
+	_, rawKey, err := server.ensureUserAPIKey(ctx, user, "Default API Key", true)
+	if err != nil {
+		t.Fatalf("ensure api key: %v", err)
+	}
+
+	body := strings.NewReader(`{"client_task_id":"new-busy-task","prompt":"hello","model":"gpt-image-2","n":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/image-tasks/generations", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+
+	server.handleCreateGenerationTask(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_concurrency_exceeded") {
+		t.Fatalf("expected user_concurrency_exceeded, got %s", rec.Body.String())
+	}
 }
 
 func TestCreateEditTaskPersistsReferenceData(t *testing.T) {

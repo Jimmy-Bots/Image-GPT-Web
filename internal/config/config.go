@@ -37,6 +37,7 @@ type Config struct {
 	ImageWorkerCount                int
 	ImageQueueSize                  int
 	ImageAccountConcurrency         int
+	ImageUserConcurrency            int
 	RegisterInbucketAPIBase         string
 	RegisterInbucketDomains         []string
 	RegisterInbucketRandomSubdomain bool
@@ -84,9 +85,10 @@ func Load() (Config, error) {
 		AdminEmail:                      envString("CHATGPT2API_ADMIN_EMAIL", "admin@example.com"),
 		AdminPassword:                   strings.TrimSpace(os.Getenv("CHATGPT2API_ADMIN_PASSWORD")),
 		AllowPublicRegistration:         envBool("CHATGPT2API_ALLOW_REGISTRATION", false),
-		ImageWorkerCount:                envInt("CHATGPT2API_IMAGE_WORKERS", 4, 1),
+		ImageWorkerCount:                envInt("CHATGPT2API_IMAGE_WORKERS", 16, 1),
 		ImageQueueSize:                  envInt("CHATGPT2API_IMAGE_QUEUE_SIZE", 128, 1),
 		ImageAccountConcurrency:         envInt("CHATGPT2API_IMAGE_ACCOUNT_CONCURRENCY", 1, 1),
+		ImageUserConcurrency:            envInt("CHATGPT2API_IMAGE_USER_CONCURRENCY", 4, 1),
 		RegisterInbucketAPIBase:         strings.TrimSpace(os.Getenv("CHATGPT2API_REGISTER_INBUCKET_API_BASE")),
 		RegisterInbucketDomains:         envList("CHATGPT2API_REGISTER_INBUCKET_DOMAINS"),
 		RegisterInbucketRandomSubdomain: envBool("CHATGPT2API_REGISTER_INBUCKET_RANDOM_SUBDOMAIN", true),

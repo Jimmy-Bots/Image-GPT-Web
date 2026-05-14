@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -494,5 +495,114 @@ func TestHandleImageGenerationsMarksCancelledOnRequestAbort(t *testing.T) {
 				t.Fatalf("unexpected response body after cancel: %s", rec.Body.String())
 			}
 		}
+	}
+}
+
+func TestHandleImageGenerationsRejectsWhenUserConcurrencyExceeded(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	webDir := filepath.Join(tempDir, "web")
+	imagesDir := filepath.Join(tempDir, "images")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data: %v", err)
+	}
+	if err := os.MkdirAll(webDir, 0o755); err != nil {
+		t.Fatalf("mkdir web: %v", err)
+	}
+	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+		t.Fatalf("mkdir images: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	dbPath := filepath.Join(dataDir, "app.db")
+	store, err := storage.Open(ctx, dbPath, 1)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	hash, err := auth.HashPassword("password")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	now := time.Now().UTC()
+	user := domain.User{
+		ID:             "sync-busy-user",
+		Email:          "sync-busy@example.com",
+		Name:           "Sync Busy",
+		PasswordHash:   hash,
+		Role:           domain.RoleUser,
+		Status:         domain.UserStatusActive,
+		QuotaUnlimited: true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := store.SaveSettings(ctx, map[string]any{"image_user_concurrency": 4}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		task := domain.ImageTask{
+			ID:             "sync-busy-task-" + strconv.Itoa(i),
+			OwnerID:        user.ID,
+			Status:         taskQueued,
+			Phase:          taskPhaseQueued,
+			Mode:           "generate",
+			Model:          "gpt-image-2",
+			Prompt:         "busy",
+			RequestedCount: 1,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+		if err := store.CreateImageTask(ctx, task); err != nil {
+			t.Fatalf("create task %d: %v", i, err)
+		}
+	}
+
+	cfg := config.Config{
+		DataDir:              dataDir,
+		DatabasePath:         dbPath,
+		WebDir:               webDir,
+		ImagesDir:            imagesDir,
+		SessionSecret:        "test-secret",
+		SessionTTLHours:      24,
+		ImageUserConcurrency: 4,
+	}
+	server, err := NewServer(cfg, store)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer server.Close()
+
+	_, rawKey, err := server.ensureUserAPIKey(ctx, user, "Default API Key", true)
+	if err != nil {
+		t.Fatalf("ensure api key: %v", err)
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"prompt":          "should reject",
+		"model":           "gpt-image-2",
+		"n":               1,
+		"response_format": "url",
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+
+	server.handleImageGenerations(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_concurrency_exceeded") {
+		t.Fatalf("expected user_concurrency_exceeded, got %s", rec.Body.String())
 	}
 }

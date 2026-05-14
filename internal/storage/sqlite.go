@@ -1876,6 +1876,21 @@ func (s *Store) UpdateImageTask(ctx context.Context, ownerID string, id string, 
 	return err
 }
 
+func (s *Store) CountActiveImageTasksByOwner(ctx context.Context, ownerID string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM image_tasks
+		 WHERE owner_id = ?
+		   AND deleted_at IS NULL
+		   AND status IN (?, ?)`,
+		strings.TrimSpace(ownerID),
+		"queued",
+		"running",
+	).Scan(&count)
+	return count, err
+}
+
 func defaultSettings() map[string]any {
 	return map[string]any{
 		"proxy":                             "",
@@ -1887,6 +1902,7 @@ func defaultSettings() map[string]any {
 		"refresh_account_normal_batch_size": 8,
 		"image_retention_days":              30,
 		"image_poll_timeout_secs":           120,
+		"image_user_concurrency":            4,
 		"image_account_concurrency":         1,
 		"default_new_user_temporary_quota":  10,
 		"public_registration_enabled":       false,

@@ -84,6 +84,10 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "bad_request", "prompt is required")
 		return
 	}
+	if err := s.ensureUserImageConcurrency(r.Context(), identity.ID); err != nil {
+		writeError(w, http.StatusTooManyRequests, "user_concurrency_exceeded", "too many active image tasks for this user")
+		return
+	}
 	model, err := s.enforceImageRequestModel(r.Context(), identity, req.Model)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_model", err.Error())
@@ -243,6 +247,10 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	}
 	req, ok := s.parseImageEditPayload(w, r, identity.ID)
 	if !ok {
+		return
+	}
+	if err := s.ensureUserImageConcurrency(r.Context(), identity.ID); err != nil {
+		writeError(w, http.StatusTooManyRequests, "user_concurrency_exceeded", "too many active image tasks for this user")
 		return
 	}
 	model, err := s.enforceImageRequestModel(r.Context(), identity, req.Model)
