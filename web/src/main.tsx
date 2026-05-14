@@ -3022,6 +3022,7 @@ function StructuredAttempts({ detail }: { detail: Record<string, unknown> }) {
             </div>
             {attempt.error ? <p className="task-event-error">{String(attempt.error)}</p> : null}
             {attempt.upstream_text ? <p className="task-event-note">上游回复：{String(attempt.upstream_text)}</p> : null}
+            {String(attempt.status || "") === "attempt_running" ? <p className="task-event-note">当前尝试正在进行中，等待上游返回结果。</p> : null}
             {rawSections.length ? (
               <details className="attempt-raw" open>
                 <summary>查看上游 raw</summary>

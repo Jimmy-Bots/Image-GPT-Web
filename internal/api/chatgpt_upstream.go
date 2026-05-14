@@ -118,6 +118,14 @@ func (u *ChatGPTUpstream) GenerateImage(ctx context.Context, req ImageGeneration
 		}
 		start := time.Now()
 		log.Printf("upstream_image generate_attempt index=%d account=%s model=%s size=%s format=%s", index+1, maskToken(account.AccessToken), req.Model, req.Size, req.ResponseFormat)
+		emitStructuredLog(ctx, "开始上游图片尝试", map[string]any{
+			"status":       "attempt_running",
+			"mode":         "generate",
+			"attempt":      index + 1,
+			"token_ref":    accountTokenRef(account.AccessToken),
+			"account":      maskToken(account.AccessToken),
+			"input_images": 0,
+		})
 		attemptCtx := chatgpt.WithImageTraceMode(ctx, rawTraceEnabled)
 		imageResults, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).GenerateImage(attemptCtx, chatgpt.ImageRequest{
 			Prompt:         req.Prompt,
@@ -246,6 +254,14 @@ func (u *ChatGPTUpstream) EditImage(ctx context.Context, req ImageEditPayload) (
 		}
 		start := time.Now()
 		log.Printf("upstream_image edit_attempt index=%d account=%s model=%s size=%s format=%s images=%d", index+1, maskToken(account.AccessToken), req.Model, req.Size, req.ResponseFormat, len(req.Images))
+		emitStructuredLog(ctx, "开始上游图片尝试", map[string]any{
+			"status":       "attempt_running",
+			"mode":         "edit",
+			"attempt":      index + 1,
+			"token_ref":    accountTokenRef(account.AccessToken),
+			"account":      maskToken(account.AccessToken),
+			"input_images": len(req.Images),
+		})
 		attemptCtx := chatgpt.WithImageTraceMode(ctx, rawTraceEnabled)
 		imageResults, err := chatgpt.NewClient(account.AccessToken, chatgpt.WithHTTPClient(u.httpClient)).EditImage(attemptCtx, chatgpt.ImageRequest{
 			Prompt:         req.Prompt,
