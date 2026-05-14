@@ -175,6 +175,7 @@ export type StoredReferenceImage = {
   size: number;
   created_at: string;
   owner_id?: string;
+  owner_name?: string;
   original_name?: string;
   content_type?: string;
   source_type?: string;

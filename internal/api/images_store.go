@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -265,6 +266,7 @@ func (s *Server) listStoredImages(r *http.Request, query string, sortMode string
 
 func (s *Server) listStoredReferenceImages(query string, sortMode string, dateScope string) ([]map[string]any, error) {
 	items := make([]map[string]any, 0)
+	userNames := map[string]string{}
 	err := filepath.WalkDir(s.cfg.ReferenceImagesDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -295,15 +297,30 @@ func (s *Server) listStoredReferenceImages(query string, sortMode string, dateSc
 			return nil
 		}
 		if query != "" {
+			ownerName := userNames[meta.OwnerID]
+			if ownerName == "" && strings.TrimSpace(meta.OwnerID) != "" {
+				if user, userErr := s.store.GetUserByID(context.Background(), meta.OwnerID); userErr == nil {
+					ownerName = strings.TrimSpace(user.Name)
+					userNames[meta.OwnerID] = ownerName
+				}
+			}
 			haystack := strings.ToLower(strings.Join([]string{
 				entry.Name(),
 				rel,
 				meta.OriginalName,
 				meta.ContentType,
 				meta.OwnerID,
+				ownerName,
 			}, " "))
 			if !strings.Contains(haystack, query) {
 				return nil
+			}
+		}
+		ownerName := userNames[meta.OwnerID]
+		if ownerName == "" && strings.TrimSpace(meta.OwnerID) != "" {
+			if user, userErr := s.store.GetUserByID(context.Background(), meta.OwnerID); userErr == nil {
+				ownerName = strings.TrimSpace(user.Name)
+				userNames[meta.OwnerID] = ownerName
 			}
 		}
 		items = append(items, map[string]any{
@@ -314,6 +331,7 @@ func (s *Server) listStoredReferenceImages(query string, sortMode string, dateSc
 			"size":          info.Size(),
 			"created_at":    info.ModTime().UTC(),
 			"owner_id":      meta.OwnerID,
+			"owner_name":    ownerName,
 			"original_name": meta.OriginalName,
 			"content_type":  meta.ContentType,
 			"source_type":   meta.SourceType,

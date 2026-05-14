@@ -3215,7 +3215,7 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
       ) : (
         <>
           <div className="filters filters-card activity-filters">
-            <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索路径、原文件名、用户 ID" />
+            <SearchControl value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索路径、原文件名、用户名" />
             <ControlField label="排序"><select value={referenceSort} onChange={(event) => setReferenceSort(event.target.value)}><option value="new">最新优先</option><option value="old">最早优先</option><option value="large">文件最大</option></select></ControlField>
             <ControlField label="时间"><select value={referenceDateScope} onChange={(event) => setReferenceDateScope(event.target.value)}><option value="">全部时间</option><option value="today">仅看今日</option><option value="7d">最近 7 天</option></select></ControlField>
             <ControlField label="每页"><select value={referencePageSize} onChange={(event) => setReferencePageSize(Number(event.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select></ControlField>
@@ -3235,11 +3235,11 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
                   <th></th>
                   <th>预览</th>
                   <th>文件</th>
+                  <th>用户</th>
                   <th>原文件名</th>
                   <th>来源</th>
                   <th>类型</th>
                   <th>大小</th>
-                  <th>用户</th>
                   <th>时间</th>
                 </tr>
               </thead>
@@ -3260,11 +3260,11 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
                       </button>
                     </td>
                     <td><div className="reference-file-cell" title={item.path}><strong>{item.original_name || item.name}</strong><small>{item.path}</small></div></td>
+                    <td>{item.owner_name || item.owner_id || "-"}</td>
                     <td title={item.original_name || "-"}>{item.original_name || "-"}</td>
                     <td>{item.source_type === "generated" ? <div className="reference-file-cell"><strong>引用归档图</strong><small title={item.source_path || ""}>{item.source_path || "-"}</small></div> : "独立上传"}</td>
                     <td>{item.content_type || "-"}</td>
                     <td>{fmtBytes(item.size)}</td>
-                    <td>{item.owner_id || "-"}</td>
                     <td>{fmtDate(item.created_at)}</td>
                   </tr>
                 )) : (
