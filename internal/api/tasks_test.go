@@ -986,3 +986,75 @@ func TestTaskQueuePolicyPromptAdjustDoesNotRetry(t *testing.T) {
 	}
 	t.Fatalf("timed out waiting for policy prompt-adjust failure without retry")
 }
+
+func TestCreateEditTaskPersistsReferenceData(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	imagesDir := filepath.Join(tempDir, "images")
+	referencesDir := filepath.Join(tempDir, "references")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data: %v", err)
+	}
+	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+		t.Fatalf("mkdir images: %v", err)
+	}
+	if err := os.MkdirAll(referencesDir, 0o755); err != nil {
+		t.Fatalf("mkdir references: %v", err)
+	}
+
+	dbPath := filepath.Join(dataDir, "app.db")
+	store, err := storage.Open(ctx, dbPath, 1)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	user := domain.User{
+		ID:             "ref-task-user",
+		Email:          "ref-task@example.com",
+		Name:           "Ref Task User",
+		PasswordHash:   "hash",
+		Role:           domain.RoleUser,
+		Status:         domain.UserStatusActive,
+		QuotaUnlimited: true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	task := domain.ImageTask{
+		ID:             "ref-task",
+		OwnerID:        user.ID,
+		Status:         taskQueued,
+		Phase:          taskPhaseQueued,
+		Mode:           "edit",
+		Model:          "gpt-image-2",
+		Prompt:         "test",
+		RequestedCount: 1,
+		ReferenceData: jsonData([]taskReferenceImage{{
+			Path: "2026/05/10/example.png",
+			URL:  "/reference-images/2026/05/10/example.png",
+			Name: "example.png",
+		}}),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.CreateImageTask(ctx, task); err != nil {
+		t.Fatalf("create image task: %v", err)
+	}
+
+	items, err := store.ListImageTasks(ctx, user.ID, []string{task.ID}, true, true)
+	if err != nil {
+		t.Fatalf("list image tasks: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items)=%d want=1", len(items))
+	}
+	if len(items[0].ReferenceData) == 0 {
+		t.Fatalf("expected reference_data to persist")
+	}
+}

@@ -2414,7 +2414,7 @@ function mergeImageTasks(current: ImageTask[], updates: ImageTask[]) {
   const map = new Map(current.map((task) => [task.id, task]));
   updates.forEach((task) => {
     const previous = map.get(task.id);
-    map.set(task.id, previous ? { ...previous, ...task, data: task.data ?? previous.data } : task);
+    map.set(task.id, previous ? { ...previous, ...task, data: task.data ?? previous.data, reference_data: task.reference_data ?? previous.reference_data } : task);
   });
   return Array.from(map.values()).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 }
@@ -2664,6 +2664,7 @@ function TasksTable({ token, tasks, setTasks, setTaskTotal, openLightbox, toast 
 
 function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageTask; openLightbox: (src: string, title?: string) => void }) {
   const results = parseTaskData(task.data);
+  const references = Array.isArray(task.reference_data) ? task.reference_data : [];
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
   const [eventsError, setEventsError] = useState("");
@@ -2732,10 +2733,26 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
         <DetailItem label="请求张数" value={String(task.requested_count || results.length || 0)} />
       </div>
       {task.prompt ? <div className="detail-prompt"><span>提示词</span><p>{task.prompt}</p></div> : null}
+      {references.length ? (
+        <div className="detail-prompt">
+          <span>参考图</span>
+          <div className="detail-images detail-reference-images">
+            {references.map((item, index) => {
+              const src = item.url || (item.path ? `/reference-images/${item.path}` : "");
+              const preview = item.path ? `/reference-images-preview/${item.path}` : src;
+              return src ? (
+                <button key={`${item.path}-${index}`} onClick={() => openLightbox(src, item.name || `参考图 ${index + 1}`)}>
+                  <img src={preview} alt={item.name || `reference ${index + 1}`} loading="lazy" />
+                </button>
+              ) : null;
+            })}
+          </div>
+        </div>
+      ) : null}
       {task.error ? <p className="detail-error">{task.error}</p> : null}
       {results.length ? <div className="detail-images">{results.map((item, index) => { const src = imageSrc(item, token); const preview = imagePreviewSrc(item, token); return src ? <button key={index} onClick={() => openLightbox(src, task.id)}><img src={preview} alt={`task ${index + 1}`} loading="lazy" /></button> : null; })}</div> : null}
       <TaskEventTimeline events={events} loading={eventsLoading} error={eventsError} />
-      <pre className="detail-json">{safeJSON({ ...task, data: results })}</pre>
+      <pre className="detail-json">{safeJSON({ ...task, data: results, reference_data: references })}</pre>
     </div>
   );
 }

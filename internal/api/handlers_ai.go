@@ -302,6 +302,7 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		Prompt:         req.Prompt,
 		RequestedCount: requestedCount,
 		ReservedQuota:  jsonData(receipt),
+		ReferenceData:  jsonData(imageTaskReferences(taskJob{Mode: "edit", Edit: req})),
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}

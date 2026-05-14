@@ -54,6 +54,12 @@ type taskJob struct {
 	Edit          ImageEditPayload
 }
 
+type taskReferenceImage struct {
+	Path string `json:"path"`
+	URL  string `json:"url"`
+	Name string `json:"name,omitempty"`
+}
+
 func NewTaskQueue(store *storage.Store, upstream Upstream, imagesDir string, baseURL string, workers int, queueSize int) *TaskQueue {
 	ctx, cancel := context.WithCancel(context.Background())
 	q := &TaskQueue{
@@ -403,6 +409,25 @@ func imageTaskCount(job taskJob) int {
 		return job.Edit.N
 	}
 	return job.Gen.N
+}
+
+func imageTaskReferences(job taskJob) []taskReferenceImage {
+	if job.Mode != "edit" || len(job.Edit.Images) == 0 {
+		return nil
+	}
+	items := make([]taskReferenceImage, 0, len(job.Edit.Images))
+	for _, image := range job.Edit.Images {
+		path := strings.TrimSpace(image.StoredPath)
+		if path == "" {
+			continue
+		}
+		items = append(items, taskReferenceImage{
+			Path: path,
+			URL:  "/reference-images/" + path,
+			Name: strings.TrimSpace(image.Name),
+		})
+	}
+	return items
 }
 
 type imageTaskCreateRequest struct {
@@ -810,6 +835,7 @@ func (s *Server) handleCreateEditTask(w http.ResponseWriter, r *http.Request) {
 		Prompt:         req.Prompt,
 		RequestedCount: req.N,
 		ReservedQuota:  jsonData(receipt),
+		ReferenceData:  jsonData(imageTaskReferences(taskJob{Mode: "edit", Edit: req})),
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}

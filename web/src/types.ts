@@ -131,6 +131,11 @@ export type ImageTask = {
   prompt?: string;
   requested_count?: number;
   data?: ImageResult[];
+  reference_data?: Array<{
+    path: string;
+    url?: string;
+    name?: string;
+  }>;
   error?: string;
   created_at: string;
   updated_at: string;

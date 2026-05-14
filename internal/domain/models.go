@@ -125,6 +125,7 @@ type ImageTask struct {
 	RequestedCount int             `json:"requested_count,omitempty"`
 	ReservedQuota  json.RawMessage `json:"-"`
 	Data           json.RawMessage `json:"data,omitempty"`
+	ReferenceData  json.RawMessage `json:"reference_data,omitempty"`
 	Error          string          `json:"error,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`

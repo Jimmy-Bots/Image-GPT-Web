@@ -536,6 +536,7 @@ button.composer-pill, span.composer-pill { display: inline-flex; align-items: ce
 .detail-error { margin: 0; padding: 8px 10px; border-radius: 7px; background: #fff0f0; color: #b73232; font-size: 12px; line-height: 1.5; }
 .detail-json { max-height: 300px; overflow: auto; margin: 0; padding: 10px; border-radius: 7px; background: #111923; color: #dff6ff; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.55; }
 .detail-images { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.detail-reference-images { margin-top: 4px; }
 .detail-images button { padding: 0; overflow: hidden; border-radius: 7px; background: #eef2f7; }
 .detail-images img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
 .task-timeline { display: grid; gap: 8px; padding: 10px; border-radius: 7px; background: white; border: 1px solid #e6edf5; }

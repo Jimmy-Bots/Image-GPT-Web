@@ -178,6 +178,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			requested_count INTEGER NOT NULL DEFAULT 1,
 			reserved_quota_json TEXT NOT NULL DEFAULT '{}',
 			data_json TEXT,
+			reference_data_json TEXT,
 			error TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
@@ -267,6 +268,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "image_tasks", "reserved_quota_json", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "image_tasks", "reference_data_json", "TEXT"); err != nil {
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "image_tasks", "deleted_at", "TEXT"); err != nil {
@@ -1758,8 +1762,8 @@ func (s *Store) ListTaskEvents(ctx context.Context, ownerID string, taskID strin
 func (s *Store) CreateImageTask(ctx context.Context, task domain.ImageTask) error {
 	_, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO image_tasks (owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, data_json, error, created_at, updated_at, deleted_at, deleted_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO image_tasks (owner_id, id, status, phase, mode, model, size, prompt, requested_count, reserved_quota_json, data_json, reference_data_json, error, created_at, updated_at, deleted_at, deleted_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.OwnerID,
 		task.ID,
 		task.Status,
@@ -1771,6 +1775,7 @@ func (s *Store) CreateImageTask(ctx context.Context, task domain.ImageTask) erro
 		maxInt(1, task.RequestedCount),
 		string(defaultJSON(task.ReservedQuota, `{}`)),
 		nullJSON(task.Data),
+		nullJSON(task.ReferenceData),
 		task.Error,
 		formatTime(task.CreatedAt),
 		formatTime(task.UpdatedAt),
@@ -1785,7 +1790,7 @@ func (s *Store) ListImageTasks(ctx context.Context, ownerID string, ids []string
 	if includeData {
 		dataExpr = `data_json`
 	}
-	query := `SELECT image_tasks.owner_id, users.email, users.name, users.role, image_tasks.id, image_tasks.status, image_tasks.phase, image_tasks.mode, image_tasks.model, image_tasks.size, image_tasks.prompt, image_tasks.requested_count, image_tasks.reserved_quota_json, ` + dataExpr + `, image_tasks.error, image_tasks.created_at, image_tasks.updated_at, image_tasks.deleted_at, image_tasks.deleted_by
+	query := `SELECT image_tasks.owner_id, users.email, users.name, users.role, image_tasks.id, image_tasks.status, image_tasks.phase, image_tasks.mode, image_tasks.model, image_tasks.size, image_tasks.prompt, image_tasks.requested_count, image_tasks.reserved_quota_json, ` + dataExpr + `, image_tasks.reference_data_json, image_tasks.error, image_tasks.created_at, image_tasks.updated_at, image_tasks.deleted_at, image_tasks.deleted_by
 		FROM image_tasks
 		LEFT JOIN users ON users.id = image_tasks.owner_id
 		WHERE 1=1`
@@ -2081,10 +2086,11 @@ func scanImageTask(row rowScanner) (domain.ImageTask, error) {
 	var ownerRole sql.NullString
 	var reservedQuota string
 	var data sql.NullString
+	var referenceData sql.NullString
 	var createdAt string
 	var updatedAt string
 	var deletedAt sql.NullString
-	err := row.Scan(&item.OwnerID, &item.OwnerEmail, &item.OwnerName, &ownerRole, &item.ID, &item.Status, &item.Phase, &item.Mode, &item.Model, &item.Size, &item.Prompt, &item.RequestedCount, &reservedQuota, &data, &item.Error, &createdAt, &updatedAt, &deletedAt, &item.DeletedBy)
+	err := row.Scan(&item.OwnerID, &item.OwnerEmail, &item.OwnerName, &ownerRole, &item.ID, &item.Status, &item.Phase, &item.Mode, &item.Model, &item.Size, &item.Prompt, &item.RequestedCount, &reservedQuota, &data, &referenceData, &item.Error, &createdAt, &updatedAt, &deletedAt, &item.DeletedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ImageTask{}, ErrNotFound
 	}
@@ -2099,6 +2105,9 @@ func scanImageTask(row rowScanner) (domain.ImageTask, error) {
 	}
 	if data.Valid && data.String != "" {
 		item.Data = json.RawMessage(data.String)
+	}
+	if referenceData.Valid && referenceData.String != "" {
+		item.ReferenceData = json.RawMessage(referenceData.String)
 	}
 	item.CreatedAt = parseTime(createdAt)
 	item.UpdatedAt = parseTime(updatedAt)
