@@ -599,6 +599,7 @@ func (s *Server) parseImageEditPayload(w http.ResponseWriter, r *http.Request, o
 		return ImageEditPayload{}, false
 	}
 	for _, header := range files {
+		index := len(req.Images)
 		file, err := header.Open()
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -610,10 +611,12 @@ func (s *Server) parseImageEditPayload(w http.ResponseWriter, r *http.Request, o
 			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return ImageEditPayload{}, false
 		}
-		storedPath, err := persistReferenceImage(s.cfg.ReferenceImagesDir, UploadImage{
+		sourcePath := strings.TrimSpace(r.FormValue(fmt.Sprintf("image_source_path_%d", index)))
+		storedPath, err := persistReferenceImage(s.cfg.ImagesDir, s.cfg.ReferenceImagesDir, UploadImage{
 			Name:        header.Filename,
 			ContentType: header.Header.Get("Content-Type"),
 			Data:        data,
+			SourcePath:  sourcePath,
 		}, ownerID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "reference_store_failed", err.Error())
@@ -624,6 +627,7 @@ func (s *Server) parseImageEditPayload(w http.ResponseWriter, r *http.Request, o
 			ContentType: header.Header.Get("Content-Type"),
 			Data:        data,
 			StoredPath:  storedPath,
+			SourcePath:  sourcePath,
 		})
 	}
 	return req, true

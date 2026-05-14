@@ -66,7 +66,12 @@ type WorkbenchTurn = {
   error?: string;
 };
 
-type StoredWorkbenchRef = Omit<ReferenceImage, "file">;
+type StoredWorkbenchRef = {
+  id: string;
+  name: string;
+  dataUrl?: string;
+  sourcePath?: string;
+};
 type StoredWorkbenchTurn = Omit<WorkbenchTurn, "refs"> & { refs: StoredWorkbenchRef[] };
 type StoredWorkbenchState = {
   version: 1;
@@ -1664,7 +1669,10 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
       form.set("prompt", turn.prompt);
       form.set("model", turn.model);
       if (taskSize) form.set("size", taskSize);
-      turn.refs.forEach((ref) => form.append("image", ref.file, ref.name));
+      turn.refs.forEach((ref, index) => {
+        form.append("image", ref.file, ref.name);
+        if (ref.sourcePath) form.append(`image_source_path_${index}`, ref.sourcePath);
+      });
       return api.createEditTask(token, form);
     }
     return api.createGenerationTask(token, { client_task_id: item.id, prompt: turn.prompt, model: turn.model, size: taskSize || undefined, n: 1 });
@@ -1726,7 +1734,10 @@ function ImageWorkbench({ token, identity, user, modelPolicy, quotaLabel, refres
         form.set("response_format", "url");
         form.set("n", String(turn.count));
         if (taskSize) form.set("size", taskSize);
-        turn.refs.forEach((ref) => form.append("image", ref.file, ref.name));
+        turn.refs.forEach((ref, index) => {
+          form.append("image", ref.file, ref.name);
+          if (ref.sourcePath) form.append(`image_source_path_${index}`, ref.sourcePath);
+        });
         const data = await request<{ data: ImageResult[] }>(token, "/v1/images/edits", { method: "POST", body: form, signal: controller.signal });
         finishSyncTurn(turn.id, turn, data.data || []);
       } else {
@@ -2316,7 +2327,7 @@ function dataURLToFile(dataUrl: string, name: string) {
 function serializeWorkbenchTurns(turns: WorkbenchTurn[]): StoredWorkbenchTurn[] {
   return turns.slice(0, 80).map((turn) => ({
     ...turn,
-    refs: turn.refs.map(({ id, name, dataUrl }) => ({ id, name, dataUrl }))
+    refs: turn.refs.map(({ id, name, dataUrl, sourcePath }) => ({ id, name, dataUrl: sourcePath ? "" : dataUrl, sourcePath }))
   }));
 }
 
@@ -2325,16 +2336,30 @@ async function loadWorkbenchState(key: string): Promise<{ activeTurnId: string |
   if (!raw) return { activeTurnId: null, turns: [] };
   const parsed = JSON.parse(raw) as Partial<StoredWorkbenchState>;
   if (parsed.version !== 1 || !Array.isArray(parsed.turns)) return { activeTurnId: null, turns: [] };
-  const turns = await Promise.all(parsed.turns.map(restoreWorkbenchTurn));
+  const settled = await Promise.allSettled(parsed.turns.map(restoreWorkbenchTurn));
+  const turns = settled.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
   const activeTurnId = parsed.activeTurnId && turns.some((turn) => turn.id === parsed.activeTurnId) ? parsed.activeTurnId : turns[0]?.id ?? null;
   return { activeTurnId, turns };
 }
 
 async function restoreWorkbenchTurn(turn: StoredWorkbenchTurn): Promise<WorkbenchTurn> {
-  const refs = turn.refs.map((ref) => {
-    const file = dataURLToFile(ref.dataUrl, ref.name || `${ref.id}.png`);
-    return { ...ref, file };
-  });
+  const settledRefs = await Promise.allSettled(turn.refs.map(async (ref) => {
+    if (ref.dataUrl) {
+      const file = dataURLToFile(ref.dataUrl, ref.name || `${ref.id}.png`);
+      return { ...ref, dataUrl: ref.dataUrl, file, sourcePath: ref.sourcePath };
+    }
+    if (ref.sourcePath) {
+      const response = await fetch(`/images/${ref.sourcePath}`, { credentials: "same-origin" });
+      if (!response.ok) {
+        throw new Error("恢复参考图失败");
+      }
+      const blob = await response.blob();
+      const file = new File([blob], ref.name || `${ref.id}.png`, { type: blob.type || "image/png" });
+      return { ...ref, dataUrl: await fileToDataURL(file), file, sourcePath: ref.sourcePath };
+    }
+    throw new Error("恢复参考图失败");
+  }));
+  const refs = settledRefs.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
   const images = Array.isArray(turn.images) ? turn.images : [];
   return {
     ...turn,
@@ -2362,15 +2387,16 @@ async function buildReferenceFromResult(item: WorkbenchItem, token?: string): Pr
   const src = imageSrc(item.image, token);
   if (!src) throw new Error("没有可用图片");
   const name = `result-${item.id}.png`;
+  const sourcePath = item.image.path;
   if (src.startsWith("data:")) {
     const file = dataURLToFile(src, name);
-    return { id: createID("ref"), name, file, dataUrl: src };
+    return { id: createID("ref"), name, file, dataUrl: src, sourcePath };
   }
   const res = await fetch(src, { credentials: "same-origin" });
   if (!res.ok) throw new Error("读取结果图失败");
   const blob = await res.blob();
   const file = new File([blob], name, { type: blob.type || "image/png" });
-  return { id: createID("ref"), name, file, dataUrl: await fileToDataURL(file) };
+  return { id: createID("ref"), name, file, dataUrl: await fileToDataURL(file), sourcePath };
 }
 
 function downloadWorkbenchImage(src: string, name: string) {
@@ -3210,6 +3236,7 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
                   <th>预览</th>
                   <th>文件</th>
                   <th>原文件名</th>
+                  <th>来源</th>
                   <th>类型</th>
                   <th>大小</th>
                   <th>用户</th>
@@ -3234,6 +3261,7 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
                     </td>
                     <td><div className="reference-file-cell" title={item.path}><strong>{item.original_name || item.name}</strong><small>{item.path}</small></div></td>
                     <td title={item.original_name || "-"}>{item.original_name || "-"}</td>
+                    <td>{item.source_type === "generated" ? <div className="reference-file-cell"><strong>引用归档图</strong><small title={item.source_path || ""}>{item.source_path || "-"}</small></div> : "独立上传"}</td>
                     <td>{item.content_type || "-"}</td>
                     <td>{fmtBytes(item.size)}</td>
                     <td>{item.owner_id || "-"}</td>
@@ -3241,7 +3269,7 @@ function ImagesPanel({ token, images, setImages, toast, openLightbox }: { token:
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan={8} className="table-empty">{referenceBusy === "list" ? "参考图暂存加载中..." : "暂无参考图暂存"}</td>
+                    <td colSpan={9} className="table-empty">{referenceBusy === "list" ? "参考图暂存加载中..." : "暂无参考图暂存"}</td>
                   </tr>
                 )}
               </tbody>

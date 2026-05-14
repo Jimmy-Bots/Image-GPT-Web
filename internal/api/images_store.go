@@ -40,10 +40,13 @@ type storedImageMeta struct {
 }
 
 type storedReferenceMeta struct {
-	OriginalName string    `json:"original_name,omitempty"`
-	ContentType  string    `json:"content_type,omitempty"`
-	StoredAt     time.Time `json:"stored_at,omitempty"`
-	OwnerID      string    `json:"owner_id,omitempty"`
+	OriginalName  string    `json:"original_name,omitempty"`
+	ContentType   string    `json:"content_type,omitempty"`
+	StoredAt      time.Time `json:"stored_at,omitempty"`
+	OwnerID       string    `json:"owner_id,omitempty"`
+	SourceType    string    `json:"source_type,omitempty"`
+	SourcePath    string    `json:"source_path,omitempty"`
+	CanonicalPath string    `json:"canonical_path,omitempty"`
 }
 
 func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +287,9 @@ func (s *Server) listStoredReferenceImages(query string, sortMode string, dateSc
 		if strings.TrimSpace(meta.OwnerID) == "" {
 			return nil
 		}
+		if strings.TrimSpace(meta.CanonicalPath) != "" {
+			return nil
+		}
 		rel = filepath.ToSlash(rel)
 		if !matchImageDateScope(info.ModTime(), dateScope) {
 			return nil
@@ -310,6 +316,8 @@ func (s *Server) listStoredReferenceImages(query string, sortMode string, dateSc
 			"owner_id":      meta.OwnerID,
 			"original_name": meta.OriginalName,
 			"content_type":  meta.ContentType,
+			"source_type":   meta.SourceType,
+			"source_path":   meta.SourcePath,
 		})
 		return nil
 	})
@@ -439,11 +447,17 @@ func writeReferenceMeta(path string, meta storedReferenceMeta) {
 	_ = os.WriteFile(imageMetaPath(path), payload, 0o644)
 }
 
-func persistReferenceImage(root string, image UploadImage, ownerID string) (string, error) {
+func persistReferenceImage(imagesRoot string, referenceRoot string, image UploadImage, ownerID string) (string, error) {
 	if len(image.Data) == 0 {
 		return "", fmt.Errorf("reference image data is empty")
 	}
 	sum := sha256.Sum256(image.Data)
+	if rel, ok := resolveGeneratedImageReference(imagesRoot, image.SourcePath, image.Data); ok {
+		return persistGeneratedReferenceIndex(imagesRoot, referenceRoot, rel, image, ownerID)
+	}
+	if rel, ok := findExistingReferenceByHash(referenceRoot, sum); ok {
+		return rel, nil
+	}
 	now := time.Now().UTC()
 	ext := filepath.Ext(strings.TrimSpace(image.Name))
 	if ext == "" {
@@ -458,7 +472,7 @@ func persistReferenceImage(root string, image UploadImage, ownerID string) (stri
 		now.Format("02"),
 		fmt.Sprintf("%d_%s%s", now.Unix(), hex.EncodeToString(sum[:])[:16], ext),
 	))
-	path := filepath.Join(root, filepath.FromSlash(rel))
+	path := filepath.Join(referenceRoot, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
@@ -470,8 +484,305 @@ func persistReferenceImage(root string, image UploadImage, ownerID string) (stri
 		ContentType:  strings.TrimSpace(image.ContentType),
 		StoredAt:     now,
 		OwnerID:      strings.TrimSpace(ownerID),
+		SourceType:   "uploaded",
 	})
 	return rel, nil
+}
+
+func resolveGeneratedImageReference(imagesRoot string, sourcePath string, data []byte) (string, bool) {
+	rel := strings.TrimSpace(sourcePath)
+	if rel == "" {
+		return "", false
+	}
+	path, ok := safeJoin(imagesRoot, rel)
+	if !ok {
+		return "", false
+	}
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	if sha256.Sum256(existing) != sha256.Sum256(data) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+func persistGeneratedReferenceIndex(imagesRoot string, referenceRoot string, sourceRel string, image UploadImage, ownerID string) (string, error) {
+	if existing, ok := findExistingGeneratedReferenceBySource(referenceRoot, sourceRel); ok {
+		return existing, nil
+	}
+	sourcePath, ok := safeJoin(imagesRoot, sourceRel)
+	if !ok {
+		return "", fmt.Errorf("invalid generated image source path")
+	}
+	now := time.Now().UTC()
+	sum := sha256.Sum256(image.Data)
+	ext := filepath.Ext(strings.TrimSpace(image.Name))
+	if ext == "" {
+		ext = filepath.Ext(sourceRel)
+	}
+	if ext == "" {
+		ext = contentTypeExtension(image.ContentType)
+	}
+	if ext == "" {
+		ext = ".bin"
+	}
+	rel := filepath.ToSlash(filepath.Join(
+		now.Format("2006"),
+		now.Format("01"),
+		now.Format("02"),
+		fmt.Sprintf("%d_%s%s", now.Unix(), hex.EncodeToString(sum[:])[:16], ext),
+	))
+	path := filepath.Join(referenceRoot, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Link(sourcePath, path); err != nil {
+		if writeErr := os.WriteFile(path, image.Data, 0o644); writeErr != nil {
+			return "", err
+		}
+	}
+	writeReferenceMeta(path, storedReferenceMeta{
+		OriginalName: strings.TrimSpace(image.Name),
+		ContentType:  strings.TrimSpace(image.ContentType),
+		StoredAt:     now,
+		OwnerID:      strings.TrimSpace(ownerID),
+		SourceType:   "generated",
+		SourcePath:   sourceRel,
+	})
+	return rel, nil
+}
+
+func findExistingGeneratedReferenceBySource(root string, sourceRel string) (string, bool) {
+	target := filepath.ToSlash(strings.TrimSpace(sourceRel))
+	if target == "" {
+		return "", false
+	}
+	var matched string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry == nil {
+			return err
+		}
+		if entry.IsDir() || strings.HasSuffix(strings.ToLower(entry.Name()), imageMetaSuffix) {
+			return nil
+		}
+		meta := readReferenceMeta(path)
+		if meta.SourceType != "generated" {
+			return nil
+		}
+		if filepath.ToSlash(strings.TrimSpace(meta.SourcePath)) != target {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		matched = filepath.ToSlash(rel)
+		return filepath.SkipAll
+	})
+	if err != nil || matched == "" {
+		return "", false
+	}
+	return matched, true
+}
+
+func findExistingReferenceByHash(root string, sum [32]byte) (string, bool) {
+	prefix := hex.EncodeToString(sum[:])[:16]
+	var matched string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry == nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(strings.ToLower(entry.Name()), imageMetaSuffix) {
+			return nil
+		}
+		if !strings.Contains(entry.Name(), prefix) {
+			return nil
+		}
+		meta := readReferenceMeta(path)
+		if canonical := strings.TrimSpace(meta.CanonicalPath); canonical != "" {
+			matched = filepath.ToSlash(canonical)
+			return filepath.SkipAll
+		}
+		existing, readErr := os.ReadFile(path)
+		if readErr != nil || sha256.Sum256(existing) != sum {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		matched = filepath.ToSlash(rel)
+		return filepath.SkipAll
+	})
+	if err == nil && strings.TrimSpace(matched) != "" {
+		return matched, true
+	}
+	// Compatibility fallback for older cached references whose filenames did not
+	// embed the content-hash prefix. This is slower, so we only run it after the
+	// fast path misses.
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry == nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(strings.ToLower(entry.Name()), imageMetaSuffix) {
+			return nil
+		}
+		meta := readReferenceMeta(path)
+		if canonical := strings.TrimSpace(meta.CanonicalPath); canonical != "" {
+			matched = filepath.ToSlash(canonical)
+			return filepath.SkipAll
+		}
+		existing, readErr := os.ReadFile(path)
+		if readErr != nil || sha256.Sum256(existing) != sum {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		matched = filepath.ToSlash(rel)
+		return filepath.SkipAll
+	})
+	if err != nil || strings.TrimSpace(matched) == "" {
+		return "", false
+	}
+	return matched, true
+}
+
+func normalizeLegacyReferenceDedup(root string) (int, error) {
+	type candidate struct {
+		rel     string
+		path    string
+		modTime time.Time
+	}
+	canonicals := map[[32]byte]candidate{}
+	duplicates := make([]candidate, 0)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry == nil {
+			return err
+		}
+		if entry.IsDir() || strings.HasSuffix(strings.ToLower(entry.Name()), imageMetaSuffix) {
+			return nil
+		}
+		meta := readReferenceMeta(path)
+		if meta.SourceType == "generated" && strings.TrimSpace(meta.SourcePath) != "" {
+			return nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil || len(data) == 0 {
+			return nil
+		}
+		sum := sha256.Sum256(data)
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		current := candidate{
+			rel:     filepath.ToSlash(rel),
+			path:    path,
+			modTime: info.ModTime(),
+		}
+		if existing, ok := canonicals[sum]; ok {
+			if current.rel < existing.rel {
+				duplicates = append(duplicates, existing)
+				canonicals[sum] = current
+			} else {
+				duplicates = append(duplicates, current)
+			}
+			return nil
+		}
+		canonicals[sum] = current
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	indexed := 0
+	for _, item := range duplicates {
+		meta := readReferenceMeta(item.path)
+		if strings.TrimSpace(meta.CanonicalPath) != "" {
+			continue
+		}
+		data, readErr := os.ReadFile(item.path)
+		if readErr != nil || len(data) == 0 {
+			continue
+		}
+		sum := sha256.Sum256(data)
+		canonical := canonicals[sum]
+		if canonical.rel == "" || canonical.rel == item.rel {
+			continue
+		}
+		meta.CanonicalPath = canonical.rel
+		if strings.TrimSpace(meta.SourceType) == "" {
+			meta.SourceType = "uploaded"
+		}
+		writeReferenceMeta(item.path, meta)
+		indexed++
+	}
+	return indexed, nil
+}
+
+func backfillGeneratedReferenceIndexes(imagesRoot string, referenceRoot string) (int, error) {
+	if _, err := os.Stat(imagesRoot); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	indexed := 0
+	err := filepath.WalkDir(imagesRoot, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry == nil {
+			return err
+		}
+		if entry.IsDir() || strings.HasSuffix(strings.ToLower(entry.Name()), imageMetaSuffix) {
+			return nil
+		}
+		meta := readReferenceMeta(path)
+		if meta.SourceType != "generated" {
+			return nil
+		}
+		rel, relErr := filepath.Rel(imagesRoot, path)
+		if relErr != nil {
+			return nil
+		}
+		sourceRel := filepath.ToSlash(rel)
+		if _, ok := findExistingGeneratedReferenceBySource(referenceRoot, sourceRel); ok {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil || len(data) == 0 {
+			return nil
+		}
+		name := strings.TrimSpace(meta.OriginalName)
+		if name == "" {
+			name = filepath.Base(sourceRel)
+		}
+		if _, persistErr := persistGeneratedReferenceIndex(imagesRoot, referenceRoot, sourceRel, UploadImage{
+			Name:        name,
+			ContentType: strings.TrimSpace(meta.ContentType),
+			Data:        data,
+		}, strings.TrimSpace(meta.OwnerID)); persistErr != nil {
+			return nil
+		}
+		indexed++
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return indexed, nil
 }
 
 func contentTypeExtension(contentType string) string {

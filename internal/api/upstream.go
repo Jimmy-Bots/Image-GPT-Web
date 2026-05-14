@@ -44,6 +44,7 @@ type UploadImage struct {
 	ContentType string
 	Data        []byte
 	StoredPath  string
+	SourcePath  string
 }
 
 type NotImplementedUpstream struct{}

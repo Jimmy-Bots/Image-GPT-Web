@@ -177,6 +177,8 @@ export type StoredReferenceImage = {
   owner_id?: string;
   original_name?: string;
   content_type?: string;
+  source_type?: string;
+  source_path?: string;
 };
 
 export type SystemLog = {
@@ -292,6 +294,7 @@ export type ReferenceImage = {
   name: string;
   file: File;
   dataUrl: string;
+  sourcePath?: string;
 };
 
 export type AccountRefreshStatus = {

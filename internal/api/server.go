@@ -22,29 +22,29 @@ import (
 const sessionCookieName = "gpt_image_web_session"
 
 type Server struct {
-	cfg      config.Config
-	store    *storage.Store
-	sessions *auth.SessionSigner
-	upstream Upstream
-	pool     *AccountPool
-	tasks    *TaskQueue
-	limiter  *loginLimiter
-	register *registerManager
-	autoRef  *accountAutoRefresher
-	backup   *backupManager
-	regCodes *registerCodeStore
+	cfg        config.Config
+	store      *storage.Store
+	sessions   *auth.SessionSigner
+	upstream   Upstream
+	pool       *AccountPool
+	tasks      *TaskQueue
+	limiter    *loginLimiter
+	register   *registerManager
+	autoRef    *accountAutoRefresher
+	backup     *backupManager
+	regCodes   *registerCodeStore
 	resetCodes *registerCodeStore
 }
 
 func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
 	pool := NewAccountPool(store, cfg.ImageAccountConcurrency)
 	s := &Server{
-		cfg:      cfg,
-		store:    store,
-		sessions: auth.NewSessionSigner(cfg.SessionSecret, time.Duration(cfg.SessionTTLHours)*time.Hour),
-		pool:     pool,
-		limiter:  newLoginLimiter(cfg.LoginRateLimitMax, time.Duration(cfg.LoginRateLimitWindowSec)*time.Second),
-		regCodes: newRegisterCodeStore(10 * time.Minute),
+		cfg:        cfg,
+		store:      store,
+		sessions:   auth.NewSessionSigner(cfg.SessionSecret, time.Duration(cfg.SessionTTLHours)*time.Hour),
+		pool:       pool,
+		limiter:    newLoginLimiter(cfg.LoginRateLimitMax, time.Duration(cfg.LoginRateLimitWindowSec)*time.Second),
+		regCodes:   newRegisterCodeStore(10 * time.Minute),
 		resetCodes: newRegisterCodeStore(10 * time.Minute),
 	}
 	s.upstream = NewChatGPTUpstream(store, pool, cfg.ProxyURL)
@@ -54,6 +54,16 @@ func NewServer(cfg config.Config, store *storage.Store) (*Server, error) {
 	s.register = newRegisterManager(cfg, store, s.upstream)
 	if err := s.bootstrap(context.Background()); err != nil {
 		return nil, err
+	}
+	if backfilled, err := backfillGeneratedReferenceIndexes(cfg.ImagesDir, cfg.ReferenceImagesDir); err != nil {
+		log.Printf("reference image generated-index backfill failed: %v", err)
+	} else if backfilled > 0 {
+		log.Printf("reference image generated-index backfill indexed=%d", backfilled)
+	}
+	if indexed, err := normalizeLegacyReferenceDedup(cfg.ReferenceImagesDir); err != nil {
+		log.Printf("reference image dedup normalization failed: %v", err)
+	} else if indexed > 0 {
+		log.Printf("reference image dedup normalization indexed=%d", indexed)
 	}
 	s.tasks = NewTaskQueue(store, s.upstream, cfg.ImagesDir, cfg.BaseURL, cfg.ImageWorkerCount, cfg.ImageQueueSize)
 	s.autoRef = newAccountAutoRefresher(store, s.upstream)
