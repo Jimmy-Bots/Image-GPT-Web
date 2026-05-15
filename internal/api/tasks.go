@@ -56,7 +56,7 @@ type taskJob struct {
 
 type taskReferenceImage struct {
 	Path string `json:"path"`
-	URL  string `json:"url"`
+	URL  string `json:"url,omitempty"`
 	Name string `json:"name,omitempty"`
 }
 
@@ -423,7 +423,6 @@ func imageTaskReferences(job taskJob) []taskReferenceImage {
 		}
 		items = append(items, taskReferenceImage{
 			Path: path,
-			URL:  "/reference-images/" + path,
 			Name: strings.TrimSpace(image.Name),
 		})
 	}

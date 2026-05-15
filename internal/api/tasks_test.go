@@ -1148,7 +1148,6 @@ func TestCreateEditTaskPersistsReferenceData(t *testing.T) {
 		RequestedCount: 1,
 		ReferenceData: jsonData([]taskReferenceImage{{
 			Path: "2026/05/10/example.png",
-			URL:  "/reference-images/2026/05/10/example.png",
 			Name: "example.png",
 		}}),
 		CreatedAt: now,

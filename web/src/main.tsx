@@ -2738,7 +2738,7 @@ function TaskDetail({ token, task, openLightbox }: { token: string; task: ImageT
           <span>参考图</span>
           <div className="detail-images detail-reference-images">
             {references.map((item, index) => {
-              const src = item.url || (item.path ? `/reference-images/${item.path}` : "");
+              const src = item.path ? `/reference-images/${item.path}` : (item.url || "");
               const preview = item.path ? `/reference-images-preview/${item.path}` : src;
               return src ? (
                 <button key={`${item.path}-${index}`} onClick={() => openLightbox(src, item.name || `参考图 ${index + 1}`)}>

@@ -173,6 +173,61 @@ func TestNormalizeLegacyReferenceDedupIndexesExistingDuplicates(t *testing.T) {
 	}
 }
 
+func TestFindExistingReferenceByHashIgnoresBrokenCanonicalPath(t *testing.T) {
+	tempDir := t.TempDir()
+	referenceRoot := filepath.Join(tempDir, "references")
+	if err := os.MkdirAll(referenceRoot, 0o755); err != nil {
+		t.Fatalf("mkdir references: %v", err)
+	}
+
+	canonicalRel := filepath.ToSlash(filepath.Join("2026", "05", "14", "canonical-a.jpg"))
+	canonicalPath := filepath.Join(referenceRoot, filepath.FromSlash(canonicalRel))
+	duplicateRel := filepath.ToSlash(filepath.Join("legacy", "wrong-canonical-meta.jpg"))
+	duplicatePath := filepath.Join(referenceRoot, filepath.FromSlash(duplicateRel))
+	otherRel := filepath.ToSlash(filepath.Join("2026", "05", "14", "other-b.jpg"))
+	otherPath := filepath.Join(referenceRoot, filepath.FromSlash(otherRel))
+	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
+		t.Fatalf("mkdir canonical parent: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(duplicatePath), 0o755); err != nil {
+		t.Fatalf("mkdir duplicate parent: %v", err)
+	}
+	dataA := []byte("image-a")
+	dataB := []byte("image-b")
+	if err := os.WriteFile(canonicalPath, dataA, 0o644); err != nil {
+		t.Fatalf("write canonical reference: %v", err)
+	}
+	if err := os.WriteFile(duplicatePath, dataA, 0o644); err != nil {
+		t.Fatalf("write duplicate reference: %v", err)
+	}
+	if err := os.WriteFile(otherPath, dataB, 0o644); err != nil {
+		t.Fatalf("write other reference: %v", err)
+	}
+	writeReferenceMeta(duplicatePath, storedReferenceMeta{
+		OriginalName:  "wrong-canonical-meta.jpg",
+		ContentType:   "image/jpeg",
+		OwnerID:       "user-1",
+		SourceType:    "uploaded",
+		CanonicalPath: otherRel,
+	})
+
+	matchedA, ok := findExistingReferenceByHash(referenceRoot, sha256.Sum256(dataA))
+	if !ok {
+		t.Fatalf("expected hash lookup for image A to succeed")
+	}
+	if matchedA != canonicalRel && matchedA != duplicateRel {
+		t.Fatalf("expected lookup for image A to stay on matching content path, got %q", matchedA)
+	}
+
+	matchedB, ok := findExistingReferenceByHash(referenceRoot, sha256.Sum256(dataB))
+	if !ok {
+		t.Fatalf("expected hash lookup for image B to succeed")
+	}
+	if matchedB != otherRel {
+		t.Fatalf("expected lookup for image B to match its own path %q, got %q", otherRel, matchedB)
+	}
+}
+
 func TestPersistReferenceImageCreatesReferenceIndexForGeneratedSource(t *testing.T) {
 	tempDir := t.TempDir()
 	referenceRoot := filepath.Join(tempDir, "references")

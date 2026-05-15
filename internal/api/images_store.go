@@ -605,6 +605,22 @@ func findExistingGeneratedReferenceBySource(root string, sourceRel string) (stri
 	return matched, true
 }
 
+func resolveCanonicalReferenceByHash(root string, canonical string, sum [32]byte) (string, bool) {
+	target := filepath.ToSlash(strings.TrimSpace(canonical))
+	if target == "" {
+		return "", false
+	}
+	path, ok := safeJoin(root, target)
+	if !ok {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || sha256.Sum256(data) != sum {
+		return "", false
+	}
+	return target, true
+}
+
 func findExistingReferenceByHash(root string, sum [32]byte) (string, bool) {
 	prefix := hex.EncodeToString(sum[:])[:16]
 	var matched string
@@ -622,13 +638,15 @@ func findExistingReferenceByHash(root string, sum [32]byte) (string, bool) {
 			return nil
 		}
 		meta := readReferenceMeta(path)
-		if canonical := strings.TrimSpace(meta.CanonicalPath); canonical != "" {
-			matched = filepath.ToSlash(canonical)
-			return filepath.SkipAll
-		}
 		existing, readErr := os.ReadFile(path)
 		if readErr != nil || sha256.Sum256(existing) != sum {
 			return nil
+		}
+		if canonical := strings.TrimSpace(meta.CanonicalPath); canonical != "" {
+			if resolved, ok := resolveCanonicalReferenceByHash(root, canonical, sum); ok {
+				matched = resolved
+				return filepath.SkipAll
+			}
 		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
@@ -654,13 +672,15 @@ func findExistingReferenceByHash(root string, sum [32]byte) (string, bool) {
 			return nil
 		}
 		meta := readReferenceMeta(path)
-		if canonical := strings.TrimSpace(meta.CanonicalPath); canonical != "" {
-			matched = filepath.ToSlash(canonical)
-			return filepath.SkipAll
-		}
 		existing, readErr := os.ReadFile(path)
 		if readErr != nil || sha256.Sum256(existing) != sum {
 			return nil
+		}
+		if canonical := strings.TrimSpace(meta.CanonicalPath); canonical != "" {
+			if resolved, ok := resolveCanonicalReferenceByHash(root, canonical, sum); ok {
+				matched = resolved
+				return filepath.SkipAll
+			}
 		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
